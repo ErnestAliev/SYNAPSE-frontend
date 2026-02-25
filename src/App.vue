@@ -1,14 +1,40 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { onMounted, watch } from 'vue';
 import AppHeader from './components/layout/AppHeader.vue';
 import AgentChatDock from './components/ui/AgentChatDock.vue';
 import { useEntitiesStore } from './stores/entities';
+import { useAuthStore } from './stores/auth';
 
 const entitiesStore = useEntitiesStore();
+const authStore = useAuthStore();
 
 onMounted(async () => {
-  await entitiesStore.bootstrap();
+  await authStore.bootstrap();
+  if (authStore.isAuthenticated) {
+    await entitiesStore.bootstrap();
+  }
 });
+
+watch(
+  () => authStore.isAuthenticated,
+  async (isAuthenticated, wasAuthenticated) => {
+    if (isAuthenticated) {
+      if (!entitiesStore.initialized) {
+        await entitiesStore.bootstrap();
+        return;
+      }
+
+      await entitiesStore.fetchEntities({ silent: true });
+      return;
+    }
+
+    if (wasAuthenticated) {
+      entitiesStore.items = [];
+      entitiesStore.initialized = false;
+      entitiesStore.error = null;
+    }
+  },
+);
 </script>
 
 <template>

@@ -3,7 +3,9 @@ import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useEntitiesStore } from '../../stores/entities';
 import AppIcon from '../ui/AppIcon.vue';
+import GoogleSignInButton from '../auth/GoogleSignInButton.vue';
 import type { EntityType } from '../../types/entity';
+import { useAuthStore } from '../../stores/auth';
 
 type TabConfig = {
   id: EntityType;
@@ -26,6 +28,8 @@ const tabs: TabConfig[] = [
 const route = useRoute();
 const router = useRouter();
 const entitiesStore = useEntitiesStore();
+const authStore = useAuthStore();
+const googleClientId = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || '').trim();
 
 function normalizeType(value: unknown): EntityType {
   const allowed: EntityType[] = [
@@ -58,6 +62,39 @@ const activeTab = computed<EntityType>(() => {
 function goToTab(tab: TabConfig) {
   router.push(tab.to);
 }
+
+const authDisplayName = computed(() => {
+  const user = authStore.user;
+  if (!user) return '';
+  if (user.givenName?.trim()) return user.givenName.trim();
+  if (user.name?.trim()) return user.name.trim();
+  return user.email;
+});
+
+async function onGoogleCredential(credential: string) {
+  try {
+    await authStore.signInWithGoogleCredential(credential);
+
+    if (!entitiesStore.initialized) {
+      await entitiesStore.bootstrap();
+      return;
+    }
+
+    await entitiesStore.fetchEntities({ silent: true });
+  } catch {
+    // Error is handled in authStore.
+  }
+}
+
+function onGoogleError(message: string) {
+  if (!authStore.error) {
+    authStore.error = message;
+  }
+}
+
+async function onSignOut() {
+  await authStore.signOut();
+}
 </script>
 
 <template>
@@ -77,7 +114,34 @@ function goToTab(tab: TabConfig) {
         </div>
       </div>
     </nav>
+
+    <div class="auth-panel">
+      <GoogleSignInButton
+        v-if="!authStore.isAuthenticated"
+        :client-id="googleClientId"
+        :disabled="authStore.loading"
+        @credential="onGoogleCredential"
+        @error="onGoogleError"
+      />
+
+      <div v-else class="auth-user">
+        <img
+          v-if="authStore.user?.picture"
+          class="auth-avatar"
+          :src="authStore.user.picture"
+          alt=""
+        />
+        <span v-else class="auth-avatar auth-avatar-fallback">
+          {{ authDisplayName.charAt(0).toUpperCase() || 'U' }}
+        </span>
+        <span class="auth-name">{{ authDisplayName }}</span>
+        <button type="button" class="auth-logout-btn" @click="onSignOut">
+          Выйти
+        </button>
+      </div>
+    </div>
   </header>
+  <div v-if="authStore.error" class="auth-inline-error">{{ authStore.error }}</div>
 </template>
 
 <style scoped>
@@ -90,7 +154,7 @@ function goToTab(tab: TabConfig) {
   display: flex;
   align-items: center;
   padding: 0 24px;
-  gap: 0;
+  gap: 14px;
   z-index: 100;
   flex-shrink: 0;
   box-shadow: 0 2px 10px rgba(112, 144, 176, 0.05);
@@ -172,6 +236,80 @@ function goToTab(tab: TabConfig) {
   pointer-events: none;
 }
 
+.auth-panel {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 220px;
+}
+
+.auth-user {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.auth-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid #dbe4f3;
+  background: #fff;
+}
+
+.auth-avatar-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  background: #e2e8f0;
+}
+
+.auth-name {
+  max-width: 118px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.auth-logout-btn {
+  height: 32px;
+  border: 1px solid #dbe4f3;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 11px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.auth-logout-btn:hover {
+  color: #1058ff;
+  border-color: #bfd5ff;
+  background: #eef4ff;
+}
+
+.auth-inline-error {
+  padding: 4px 24px 0;
+  color: #b91c1c;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 @keyframes pulseFlash {
   0% {
     transform: scale(1);
@@ -205,6 +343,14 @@ function goToTab(tab: TabConfig) {
 @media (max-width: 980px) {
   .global-header {
     padding: 0 12px;
+  }
+
+  .auth-panel {
+    min-width: 160px;
+  }
+
+  .auth-name {
+    max-width: 74px;
   }
 }
 </style>
