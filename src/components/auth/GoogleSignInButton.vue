@@ -86,7 +86,6 @@ function renderGoogleButton() {
     const hasRenderedButton = Boolean(containerRef.value?.children.length);
     if (!hasRenderedButton) {
       showFallback.value = true;
-      emit('error', 'Google Sign-In недоступен: origin не разрешен в Google Cloud');
     }
   });
 }
@@ -125,7 +124,6 @@ onMounted(async () => {
 
   if (!props.clientId.trim()) {
     showFallback.value = true;
-    emit('error', 'VITE_GOOGLE_CLIENT_ID is not configured');
     return;
   }
 
@@ -144,7 +142,7 @@ onMounted(async () => {
   <div class="google-sign-in-btn">
     <div v-if="!showFallback && !disabled && clientId.trim()" ref="containerRef" class="google-btn-slot" />
     <button v-else type="button" class="google-btn-fallback" disabled>
-      Google Sign-In недоступен
+      Войти через Google
     </button>
   </div>
 </template>

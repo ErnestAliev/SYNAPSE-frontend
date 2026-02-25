@@ -30,6 +30,7 @@ const router = useRouter();
 const entitiesStore = useEntitiesStore();
 const authStore = useAuthStore();
 const showTabs = computed(() => authStore.isAuthenticated);
+const isAuthPage = computed(() => route.name === 'auth-login');
 const isGoogleButtonReady = computed(
   () => Boolean(authStore.googleClientId) || authStore.publicConfigLoaded,
 );
@@ -123,7 +124,7 @@ onMounted(() => {
     </nav>
     <div v-else class="header-title">Synapse12</div>
 
-    <div class="auth-panel">
+    <div v-if="!isAuthPage" class="auth-panel">
       <GoogleSignInButton
         v-if="!authStore.isAuthenticated && isGoogleButtonReady"
         :client-id="authStore.googleClientId"
@@ -152,7 +153,7 @@ onMounted(() => {
       </div>
     </div>
   </header>
-  <div v-if="authStore.error" class="auth-inline-error">{{ authStore.error }}</div>
+  <div v-if="authStore.error && !isAuthPage" class="auth-inline-error">{{ authStore.error }}</div>
 </template>
 
 <style scoped>

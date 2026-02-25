@@ -39,6 +39,9 @@ interface PublicAuthConfigResponse {
   googleClientId?: string;
 }
 
+const DEFAULT_GOOGLE_CLIENT_ID =
+  '1045694315962-uh125p31np5gori1q6oga0geevpusatk.apps.googleusercontent.com';
+
 function readStoredSessionToken() {
   if (typeof window === 'undefined') return '';
   try {
@@ -98,7 +101,7 @@ export const useAuthStore = defineStore('auth', {
     isAuthenticated: (state) => Boolean(state.user),
     googleClientId: (state) => {
       const fromBuildEnv = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || '').trim();
-      return fromBuildEnv || state.runtimeGoogleClientId;
+      return fromBuildEnv || state.runtimeGoogleClientId || DEFAULT_GOOGLE_CLIENT_ID;
     },
   },
 
