@@ -1,13 +1,23 @@
 import { createRouter, createWebHistory } from 'vue-router';
+import { useAuthStore } from '../stores/auth';
 import CollectionView from '../views/CollectionView.vue';
 import CanvasView from '../views/CanvasView.vue';
+import LoginView from '../views/LoginView.vue';
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
       path: '/',
-      redirect: '/projects',
+      redirect: '/auth',
+    },
+    {
+      path: '/auth',
+      name: 'auth-login',
+      component: LoginView,
+      meta: {
+        public: true,
+      },
     },
     {
       path: '/projects',
@@ -37,9 +47,34 @@ const router = createRouter({
     },
     {
       path: '/:pathMatch(.*)*',
-      redirect: '/projects',
+      redirect: '/auth',
     },
   ],
+});
+
+router.beforeEach(async (to) => {
+  const authStore = useAuthStore();
+
+  if (!authStore.initialized) {
+    await authStore.bootstrap();
+  }
+
+  const isPublicRoute = Boolean(to.meta.public);
+  if (!authStore.isAuthenticated && !isPublicRoute) {
+    return {
+      name: 'auth-login',
+      query: {
+        redirect: to.fullPath,
+      },
+    };
+  }
+
+  if (authStore.isAuthenticated && to.name === 'auth-login') {
+    const redirect = typeof to.query.redirect === 'string' ? to.query.redirect : '/projects';
+    return redirect;
+  }
+
+  return true;
 });
 
 export default router;

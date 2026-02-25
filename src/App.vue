@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, watch } from 'vue';
+import { computed, onMounted, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import AppHeader from './components/layout/AppHeader.vue';
 import AgentChatDock from './components/ui/AgentChatDock.vue';
 import { useEntitiesStore } from './stores/entities';
@@ -7,6 +8,12 @@ import { useAuthStore } from './stores/auth';
 
 const entitiesStore = useEntitiesStore();
 const authStore = useAuthStore();
+const route = useRoute();
+
+const showWorkspaceExtras = computed(() => {
+  if (!authStore.isAuthenticated) return false;
+  return route.name !== 'auth-login';
+});
 
 onMounted(async () => {
   await authStore.bootstrap();
@@ -45,9 +52,9 @@ watch(
       <RouterView />
     </main>
 
-    <AgentChatDock />
+    <AgentChatDock v-if="showWorkspaceExtras" />
 
-    <button class="settings-btn" aria-label="Настройки">
+    <button v-if="showWorkspaceExtras" class="settings-btn" aria-label="Настройки">
       <svg
         width="22"
         height="22"

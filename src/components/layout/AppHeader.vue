@@ -30,6 +30,7 @@ const router = useRouter();
 const entitiesStore = useEntitiesStore();
 const authStore = useAuthStore();
 const googleClientId = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || '').trim();
+const showTabs = computed(() => authStore.isAuthenticated);
 
 function normalizeType(value: unknown): EntityType {
   const allowed: EntityType[] = [
@@ -99,7 +100,7 @@ async function onSignOut() {
 
 <template>
   <header class="global-header">
-    <nav class="tabs-container" aria-label="Primary tabs">
+    <nav v-if="showTabs" class="tabs-container" aria-label="Primary tabs">
       <div v-for="tab in tabs" :key="tab.id" class="tab-wrapper">
         <button class="tab-btn" :class="{ active: activeTab === tab.id }" @click="goToTab(tab)">
           <AppIcon :name="tab.id" />
@@ -114,6 +115,7 @@ async function onSignOut() {
         </div>
       </div>
     </nav>
+    <div v-else class="header-title">Synapse12</div>
 
     <div class="auth-panel">
       <GoogleSignInButton
@@ -171,6 +173,14 @@ async function onSignOut() {
 
 .tabs-container::-webkit-scrollbar {
   display: none;
+}
+
+.header-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 800;
+  color: #0f172a;
 }
 
 .tab-wrapper {
