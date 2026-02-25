@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import AppIcon from '../ui/AppIcon.vue';
 import ProfileProgressRing from '../ui/ProfileProgressRing.vue';
 import { useEntitiesStore } from '../../stores/entities';
+import { useAuthStore } from '../../stores/auth';
 import { calculateEntityProfileProgress } from '../../utils/profileProgress';
 import type {
   CanvasEdgeProjection,
@@ -154,6 +155,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
 };
 
 const entitiesStore = useEntitiesStore();
+const authStore = useAuthStore();
 
 const draft = ref<{
   entityId: string;
@@ -965,6 +967,10 @@ watch(
   () => props.entityId,
   async (entityId) => {
     if (!entityId) return;
+    if (!authStore.isAuthenticated) {
+      closeModal();
+      return;
+    }
     if (!entitiesStore.initialized) {
       await entitiesStore.bootstrap();
     }

@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useEntitiesStore } from '../stores/entities';
+import { useAuthStore } from '../stores/auth';
 import AppIcon from '../components/ui/AppIcon.vue';
 import FilterDropdown from '../components/ui/FilterDropdown.vue';
 import ProfileProgressRing from '../components/ui/ProfileProgressRing.vue';
@@ -14,6 +15,7 @@ const props = defineProps<{
 }>();
 
 const entitiesStore = useEntitiesStore();
+const authStore = useAuthStore();
 const router = useRouter();
 
 type MetadataFieldKey =
@@ -372,6 +374,10 @@ const remainingEntities = computed(() => {
 });
 
 onMounted(async () => {
+  if (!authStore.isAuthenticated) {
+    return;
+  }
+
   if (!entitiesStore.initialized) {
     await entitiesStore.bootstrap();
   }

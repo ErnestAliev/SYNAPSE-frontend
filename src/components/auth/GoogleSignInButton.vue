@@ -44,6 +44,7 @@ const emit = defineEmits<{
 }>();
 
 const containerRef = ref<HTMLDivElement | null>(null);
+const showFallback = ref(false);
 
 function onGoogleCredentialResponse(response: GoogleCredentialResponse) {
   const credential = typeof response.credential === 'string' ? response.credential.trim() : '';
@@ -60,6 +61,7 @@ function renderGoogleButton() {
   if (!window.google?.accounts?.id) return;
   if (!props.clientId.trim()) return;
 
+  showFallback.value = false;
   containerRef.value.innerHTML = '';
 
   window.google.accounts.id.initialize({
@@ -77,6 +79,15 @@ function renderGoogleButton() {
     width: 210,
     logo_alignment: 'left',
     locale: 'ru',
+  });
+
+  // If Google button was not rendered (e.g. origin is not allowed), show fallback UI.
+  requestAnimationFrame(() => {
+    const hasRenderedButton = Boolean(containerRef.value?.children.length);
+    if (!hasRenderedButton) {
+      showFallback.value = true;
+      emit('error', 'Google Sign-In недоступен: origin не разрешен в Google Cloud');
+    }
   });
 }
 
@@ -113,6 +124,7 @@ onMounted(async () => {
   if (props.disabled) return;
 
   if (!props.clientId.trim()) {
+    showFallback.value = true;
     emit('error', 'VITE_GOOGLE_CLIENT_ID is not configured');
     return;
   }
@@ -121,6 +133,7 @@ onMounted(async () => {
     await loadGoogleIdentityScript();
     renderGoogleButton();
   } catch (error) {
+    showFallback.value = true;
     const message = error instanceof Error ? error.message : 'Failed to initialize Google Sign-In';
     emit('error', message);
   }
@@ -129,9 +142,9 @@ onMounted(async () => {
 
 <template>
   <div class="google-sign-in-btn">
-    <div v-if="!disabled && clientId.trim()" ref="containerRef" class="google-btn-slot" />
+    <div v-if="!showFallback && !disabled && clientId.trim()" ref="containerRef" class="google-btn-slot" />
     <button v-else type="button" class="google-btn-fallback" disabled>
-      Вход через Google
+      Google Sign-In недоступен
     </button>
   </div>
 </template>

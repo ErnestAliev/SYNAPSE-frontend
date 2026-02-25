@@ -8,6 +8,7 @@ import CanvasNode from '../components/canvas/CanvasNode.vue';
 import AppIcon from '../components/ui/AppIcon.vue';
 import ProfileProgressRing from '../components/ui/ProfileProgressRing.vue';
 import { useEntitiesStore } from '../stores/entities';
+import { useAuthStore } from '../stores/auth';
 import { calculateEntityProfileProgress } from '../utils/profileProgress';
 import type { LogoLibraryItem } from '../data/logoLibrary';
 import type {
@@ -364,6 +365,7 @@ const LIBRARY_CATEGORY_ORDER: EntityType[] = [
 const route = useRoute();
 const router = useRouter();
 const entitiesStore = useEntitiesStore();
+const authStore = useAuthStore();
 
 const viewportRef = ref<HTMLDivElement | null>(null);
 const nodes = ref<CanvasNodeProjection[]>([]);
@@ -2519,6 +2521,10 @@ async function loadProjectCanvas(projectId: string) {
   closeResetCanvasConfirm();
 
   try {
+    if (!authStore.isAuthenticated) {
+      throw new Error('Требуется вход через Google');
+    }
+
     if (!entitiesStore.initialized) {
       await entitiesStore.bootstrap();
     }
