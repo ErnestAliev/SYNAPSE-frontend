@@ -24,6 +24,8 @@ interface AuthState {
   publicConfigLoading: boolean;
 }
 
+let bootstrapPromise: Promise<void> | null = null;
+
 interface GoogleAuthResponse {
   user: AuthUser;
   sessionToken: string;
@@ -131,28 +133,40 @@ export const useAuthStore = defineStore('auth', {
 
     async bootstrap() {
       if (this.initialized) return;
-
-      await this.loadPublicConfig();
-
-      const token = readStoredSessionToken();
-      if (!token) {
-        this.initialized = true;
+      if (bootstrapPromise) {
+        await bootstrapPromise;
         return;
       }
 
-      this.loading = true;
-      this.error = null;
+      bootstrapPromise = (async () => {
+        await this.loadPublicConfig();
+
+        const token = readStoredSessionToken();
+        if (!token) {
+          this.initialized = true;
+          return;
+        }
+
+        this.loading = true;
+        this.error = null;
+
+        try {
+          const { data } = await apiClient.get<{ user: AuthUser }>('/auth/me');
+          this.user = data.user;
+        } catch (error: unknown) {
+          this.user = null;
+          this.clearLocalSession();
+          this.error = formatApiError(error);
+        } finally {
+          this.loading = false;
+          this.initialized = true;
+        }
+      })();
 
       try {
-        const { data } = await apiClient.get<{ user: AuthUser }>('/auth/me');
-        this.user = data.user;
-      } catch (error: unknown) {
-        this.user = null;
-        this.clearLocalSession();
-        this.error = formatApiError(error);
+        await bootstrapPromise;
       } finally {
-        this.loading = false;
-        this.initialized = true;
+        bootstrapPromise = null;
       }
     },
 
