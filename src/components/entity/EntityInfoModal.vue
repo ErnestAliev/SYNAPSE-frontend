@@ -1,10 +1,18 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import ruEmojiData from 'emojibase-data/ru/data.json';
 import AppIcon from '../ui/AppIcon.vue';
 import ProfileProgressRing from '../ui/ProfileProgressRing.vue';
 import { useEntitiesStore } from '../../stores/entities';
 import { useAuthStore } from '../../stores/auth';
 import { calculateEntityProfileProgress } from '../../utils/profileProgress';
+import {
+  SYSTEM_SOCIAL_LOGOS,
+  addCustomLogo,
+  createLogoKeywords,
+  readCustomLogos,
+  type LogoLibraryItem,
+} from '../../data/logoLibrary';
 import type {
   CanvasEdgeProjection,
   CanvasNodeProjection,
@@ -52,6 +60,19 @@ interface EntityChatMessage {
   text: string;
   createdAt: string;
   attachments: EntityAttachment[];
+}
+
+interface EmojiRecord {
+  emoji?: string;
+  label?: string;
+  tags?: string[];
+}
+
+interface EmojiItem {
+  emoji: string;
+  label: string;
+  searchLabel: string;
+  searchTags: string[];
 }
 
 type MetadataFieldKey =
@@ -183,6 +204,17 @@ const projectActionMessage = ref('');
 const isProjectActionBusy = ref(false);
 const selectedProjectId = ref('');
 const isDeleteConfirmOpen = ref(false);
+const profileFooterOpen = ref(false);
+const footerColorInputRef = ref<HTMLInputElement | null>(null);
+const footerImageInputRef = ref<HTMLInputElement | null>(null);
+const footerLogoInputRef = ref<HTMLInputElement | null>(null);
+const footerEmojiOpen = ref(false);
+const footerLogoOpen = ref(false);
+const footerEmojiQuery = ref('');
+const footerLogoQuery = ref('');
+const footerCustomLogos = ref<LogoLibraryItem[]>([]);
+const footerCustomLogoName = ref('');
+const footerLogoUploadError = ref('');
 
 function toProfile(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -211,6 +243,23 @@ function toBooleanFlag(value: unknown) {
   }
 
   return false;
+}
+
+function closeFooterPanels() {
+  footerEmojiOpen.value = false;
+  footerLogoOpen.value = false;
+}
+
+function closeProfileFooter() {
+  profileFooterOpen.value = false;
+  closeFooterPanels();
+}
+
+function toggleProfileFooter() {
+  profileFooterOpen.value = !profileFooterOpen.value;
+  if (!profileFooterOpen.value) {
+    closeFooterPanels();
+  }
 }
 
 function toStringArray(value: unknown) {
@@ -269,6 +318,15 @@ function snap(value: number) {
 function getIsoNow() {
   return new Date().toISOString();
 }
+
+const emojiItems = (ruEmojiData as EmojiRecord[])
+  .filter((record) => typeof record.emoji === 'string' && record.emoji.trim().length > 0)
+  .map<EmojiItem>((record) => ({
+    emoji: record.emoji as string,
+    label: typeof record.label === 'string' ? record.label.trim() : '',
+    searchLabel: record.label?.toLowerCase() || '',
+    searchTags: (record.tags || []).map((tag) => tag.toLowerCase()),
+  }));
 
 function normalizeChatHistory(value: unknown) {
   if (!Array.isArray(value)) {
@@ -383,6 +441,8 @@ function findProjectInsertPosition(nodes: CanvasNodeProjection[]) {
 function loadDraft(entityId: string) {
   const entity = entitiesStore.byId(entityId);
   if (!entity) return;
+
+  closeProfileFooter();
 
   const aiMetadata = toProfile(entity.ai_metadata);
   const rawDocuments = Array.isArray(aiMetadata.documents) ? aiMetadata.documents : [];
@@ -507,6 +567,7 @@ function closeModal() {
   selectedProjectId.value = '';
   isProjectPickerOpen.value = false;
   isDeleteConfirmOpen.value = false;
+  closeProfileFooter();
   emit('close');
 }
 
@@ -906,6 +967,39 @@ const modalIcon = computed(() => {
   };
 });
 
+const filteredFooterEmoji = computed(() => {
+  const query = footerEmojiQuery.value.trim().toLowerCase();
+  if (!query) {
+    return emojiItems.slice(0, 180);
+  }
+
+  return emojiItems
+    .filter((item) => item.searchLabel.includes(query) || item.searchTags.some((tag) => tag.includes(query)))
+    .slice(0, 180);
+});
+
+const filteredFooterSystemLogos = computed(() => {
+  const query = footerLogoQuery.value.trim().toLowerCase();
+  if (!query) {
+    return SYSTEM_SOCIAL_LOGOS;
+  }
+
+  return SYSTEM_SOCIAL_LOGOS.filter((logo) => {
+    if (logo.name.toLowerCase().includes(query)) return true;
+    return logo.keywords.some((keyword) => keyword.includes(query));
+  });
+});
+
+const filteredFooterCustomLogos = computed(() => {
+  const query = footerLogoQuery.value.trim().toLowerCase();
+  if (!query) return footerCustomLogos.value;
+
+  return footerCustomLogos.value.filter((logo) => {
+    if (logo.name.toLowerCase().includes(query)) return true;
+    return logo.keywords.some((keyword) => keyword.includes(query));
+  });
+});
+
 const activeFields = computed(() => {
   const type = draft.value?.type || 'shape';
   return getEntityContextFields(type);
@@ -963,6 +1057,170 @@ const profileProgressLevel = computed(() => {
   return 'Низкая заполненность';
 });
 
+function queueProfilePatch(patch: Record<string, unknown>) {
+  const entity = currentEntity.value;
+  if (!entity) return;
+
+  const nextProfile = toProfile(entity.profile);
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined || value === null) {
+      delete nextProfile[key];
+      continue;
+    }
+    nextProfile[key] = value;
+  }
+
+  entitiesStore.queueEntityUpdate(
+    entity._id,
+    {
+      profile: nextProfile,
+    },
+    { delay: ENTITY_SYNC_DELAY },
+  );
+}
+
+function queueEntityNameUpdate(nextName: string) {
+  const entity = currentEntity.value;
+  if (!entity) return;
+  const normalized = nextName.trim();
+  if (!normalized) return;
+
+  entitiesStore.queueEntityUpdate(
+    entity._id,
+    {
+      name: normalized,
+    },
+    { delay: ENTITY_SYNC_DELAY },
+  );
+
+  if (draft.value && draft.value.entityId === entity._id) {
+    draft.value.name = normalized;
+  }
+}
+
+function onFooterColorClick() {
+  footerColorInputRef.value?.click();
+}
+
+function onFooterColorInput(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const color = input?.value;
+  if (!color) return;
+  queueProfilePatch({ color });
+}
+
+function onFooterImageClick() {
+  footerImageInputRef.value?.click();
+}
+
+async function onFooterImageInput(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const file = input?.files?.[0];
+  if (!file) return;
+
+  const image = await fileToDataUrl(file);
+  if (!image) return;
+
+  queueProfilePatch({
+    image,
+    emoji: '',
+    logo: undefined,
+  });
+
+  if (input) {
+    input.value = '';
+  }
+}
+
+function toggleFooterEmojiPanel() {
+  if (footerEmojiOpen.value) {
+    footerEmojiOpen.value = false;
+    return;
+  }
+  footerLogoOpen.value = false;
+  footerEmojiOpen.value = true;
+}
+
+function onFooterEmojiPick(item: EmojiItem) {
+  queueProfilePatch({
+    emoji: item.emoji,
+    image: '',
+    logo: undefined,
+  });
+  if (item.label) {
+    queueEntityNameUpdate(item.label);
+  }
+  footerEmojiOpen.value = false;
+}
+
+function toggleFooterLogoPanel() {
+  if (!footerCustomLogos.value.length) {
+    footerCustomLogos.value = readCustomLogos();
+  }
+  if (footerLogoOpen.value) {
+    footerLogoOpen.value = false;
+    return;
+  }
+  footerEmojiOpen.value = false;
+  footerLogoOpen.value = true;
+}
+
+function onFooterLogoPick(logo: LogoLibraryItem) {
+  queueProfilePatch({
+    logo: {
+      id: logo.id,
+      name: logo.name,
+      background: logo.background,
+      source: logo.source,
+      image: logo.image,
+      keywords: Array.isArray(logo.keywords) ? [...logo.keywords] : [],
+    },
+    color: logo.background,
+    image: logo.image,
+    emoji: '',
+  });
+  queueEntityNameUpdate(logo.name);
+  footerLogoOpen.value = false;
+}
+
+function onFooterLogoUploadClick() {
+  footerLogoUploadError.value = '';
+  footerLogoInputRef.value?.click();
+}
+
+async function onFooterLogoUpload(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const file = input?.files?.[0];
+  if (!file) return;
+
+  const name = footerCustomLogoName.value.trim();
+  if (!name) {
+    footerLogoUploadError.value = 'Введите название логотипа';
+    if (input) input.value = '';
+    return;
+  }
+
+  const image = await fileToDataUrl(file);
+  if (!image) {
+    footerLogoUploadError.value = 'Не удалось загрузить логотип';
+    if (input) input.value = '';
+    return;
+  }
+
+  footerCustomLogos.value = addCustomLogo({
+    name,
+    image,
+    background: '#ffffff',
+    keywords: createLogoKeywords(name),
+  });
+  footerCustomLogoName.value = '';
+  footerLogoUploadError.value = '';
+
+  if (input) {
+    input.value = '';
+  }
+}
+
 watch(
   () => props.entityId,
   async (entityId) => {
@@ -1003,27 +1261,34 @@ onBeforeUnmount(() => {
     <div v-if="draft" class="entity-info-modal" @pointerdown.stop>
       <header class="entity-info-header">
         <div v-if="modalIcon" class="entity-info-progress-avatar">
-          <ProfileProgressRing :value="profileProgress" :size="72" :stroke-width="5">
-            <span
-              class="entity-info-icon"
-              :style="{ background: modalIcon.color, borderColor: modalIcon.color }"
-            >
-              <img
-                v-if="modalIcon.image && !modalIcon.hasLogo"
-                class="entity-info-icon-image"
-                :src="modalIcon.image"
-                alt=""
-              />
-              <img
-                v-else-if="modalIcon.hasLogo"
-                class="entity-info-icon-logo"
-                :src="modalIcon.image"
-                alt=""
-              />
-              <span v-else-if="modalIcon.emoji" class="entity-info-icon-emoji">{{ modalIcon.emoji }}</span>
-              <AppIcon v-else :name="modalIcon.type" class="entity-info-icon-symbol" />
-            </span>
-          </ProfileProgressRing>
+          <button
+            type="button"
+            class="profile-progress-content"
+            title="Открыть быстрое меню"
+            @click="toggleProfileFooter"
+          >
+            <ProfileProgressRing :value="profileProgress" :size="72" :stroke-width="5">
+              <span
+                class="entity-info-icon"
+                :style="{ background: modalIcon.color, borderColor: modalIcon.color }"
+              >
+                <img
+                  v-if="modalIcon.image && !modalIcon.hasLogo"
+                  class="entity-info-icon-image"
+                  :src="modalIcon.image"
+                  alt=""
+                />
+                <img
+                  v-else-if="modalIcon.hasLogo"
+                  class="entity-info-icon-logo"
+                  :src="modalIcon.image"
+                  alt=""
+                />
+                <span v-else-if="modalIcon.emoji" class="entity-info-icon-emoji">{{ modalIcon.emoji }}</span>
+                <AppIcon v-else :name="modalIcon.type" class="entity-info-icon-symbol" />
+              </span>
+            </ProfileProgressRing>
+          </button>
         </div>
 
         <div class="entity-info-title">
@@ -1237,6 +1502,150 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </section>
+
+      <div
+        v-if="profileFooterOpen"
+        class="entity-info-footer-backdrop"
+        @pointerdown="closeProfileFooter"
+      />
+
+      <section
+        v-if="profileFooterOpen"
+        class="entity-info-menu-footer"
+        @pointerdown.stop
+      >
+        <button type="button" class="menu-circle-btn" title="Цвет" @click="onFooterColorClick">
+          <input
+            ref="footerColorInputRef"
+            type="color"
+            class="entity-info-hidden-input"
+            @input="onFooterColorInput"
+          />
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3a9 9 0 1 0 9 9c0-1-.8-1.8-1.8-1.8h-1.6a1.8 1.8 0 0 1 0-3.6h1.2A1.8 1.8 0 0 0 20.6 5 9 9 0 0 0 12 3Z" />
+            <circle cx="7.5" cy="11.5" r="1" />
+            <circle cx="10.5" cy="8.5" r="1" />
+            <circle cx="14.5" cy="8.5" r="1" />
+            <circle cx="16.5" cy="12.5" r="1" />
+          </svg>
+        </button>
+
+        <button type="button" class="menu-circle-btn" title="Фото" @click="onFooterImageClick">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="5" width="18" height="14" rx="2" />
+            <circle cx="9" cy="10" r="1.7" />
+            <path d="m21 16-4.5-4.5-4.2 4.2L10 13.4 5 18.4" />
+          </svg>
+        </button>
+        <input
+          ref="footerImageInputRef"
+          type="file"
+          accept="image/*"
+          class="entity-info-hidden-input"
+          @change="onFooterImageInput"
+        />
+
+        <button
+          type="button"
+          class="menu-circle-btn"
+          :class="{ active: footerEmojiOpen }"
+          title="Эмодзи"
+          @click="toggleFooterEmojiPanel"
+        >
+          <span class="menu-btn-emoji">🙂</span>
+        </button>
+
+        <button
+          type="button"
+          class="menu-circle-btn"
+          :class="{ active: footerLogoOpen }"
+          title="Логотипы"
+          @click="toggleFooterLogoPanel"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M7 14c0-2.2 1.8-4 4-4h6v8h-6a4 4 0 0 1-4-4Z" />
+            <path d="M11 10V6h6v4" />
+          </svg>
+        </button>
+
+        <div v-if="footerEmojiOpen" class="entity-footer-panel emoji-panel" @pointerdown.stop>
+          <input
+            v-model="footerEmojiQuery"
+            type="text"
+            class="entity-footer-search"
+            placeholder="Поиск эмодзи..."
+          />
+          <div class="entity-footer-emoji-grid">
+            <button
+              v-for="item in filteredFooterEmoji"
+              :key="`${item.emoji}-${item.label}`"
+              type="button"
+              class="entity-footer-emoji-btn"
+              @click="onFooterEmojiPick(item)"
+            >
+              <span>{{ item.emoji }}</span>
+            </button>
+          </div>
+        </div>
+
+        <div v-if="footerLogoOpen" class="entity-footer-panel logo-panel" @pointerdown.stop>
+          <input
+            v-model="footerLogoQuery"
+            type="text"
+            class="entity-footer-search"
+            placeholder="Поиск логотипа..."
+          />
+
+          <div class="entity-footer-logo-upload">
+            <input
+              v-model="footerCustomLogoName"
+              type="text"
+              class="entity-footer-upload-input"
+              maxlength="32"
+              placeholder="Название логотипа"
+            />
+            <button type="button" class="entity-footer-upload-btn" @click="onFooterLogoUploadClick">
+              Загрузить
+            </button>
+            <input
+              ref="footerLogoInputRef"
+              type="file"
+              accept="image/*,.svg"
+              class="entity-info-hidden-input"
+              @change="onFooterLogoUpload"
+            />
+          </div>
+          <div v-if="footerLogoUploadError" class="entity-footer-upload-error">{{ footerLogoUploadError }}</div>
+
+          <div class="entity-footer-logo-list">
+            <button
+              v-for="logo in filteredFooterSystemLogos"
+              :key="logo.id"
+              type="button"
+              class="entity-footer-logo-item"
+              @click="onFooterLogoPick(logo)"
+            >
+              <span class="entity-footer-logo-preview" :style="{ background: logo.background }">
+                <img :src="logo.image" alt="" />
+              </span>
+              <span class="entity-footer-logo-name">{{ logo.name }}</span>
+            </button>
+            <button
+              v-for="logo in filteredFooterCustomLogos"
+              :key="logo.id"
+              type="button"
+              class="entity-footer-logo-item custom"
+              @click="onFooterLogoPick(logo)"
+            >
+              <span class="entity-footer-logo-preview" :style="{ background: logo.background }">
+                <img :src="logo.image" alt="" />
+              </span>
+              <span class="entity-footer-logo-name">{{ logo.name }}</span>
+            </button>
+          </div>
+        </div>
+      </section>
     </div>
 
     <div
@@ -1289,6 +1698,7 @@ onBeforeUnmount(() => {
   width: min(456px, 96vw);
   height: min(86vh, 920px);
   max-height: 92vh;
+  position: relative;
   overflow: hidden;
   border-radius: 18px;
   border: 1px solid #dbe4f3;
@@ -1313,6 +1723,24 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+.profile-progress-content {
+  width: 72px;
+  height: 72px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.16s ease;
+}
+
+.profile-progress-content:hover {
+  transform: translateY(-1px);
 }
 
 .entity-info-icon {
@@ -1774,6 +2202,225 @@ onBeforeUnmount(() => {
   height: 0;
   opacity: 0;
   pointer-events: none;
+}
+
+.entity-info-footer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.28);
+  z-index: 18;
+}
+
+.entity-info-menu-footer {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  min-height: 42px;
+  border-radius: 14px;
+  border: 1px solid #dbe4f3;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 16px 28px rgba(15, 23, 42, 0.24);
+  padding: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  z-index: 20;
+}
+
+.menu-circle-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #64748b;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.menu-circle-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.menu-btn-emoji {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.menu-circle-btn:hover,
+.menu-circle-btn.active {
+  color: #1058ff;
+  border-color: #bfd5ff;
+  background: #eef4ff;
+}
+
+.entity-footer-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 48px;
+  border-radius: 12px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  box-shadow: 0 14px 24px rgba(15, 23, 42, 0.2);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.entity-footer-search {
+  width: 100%;
+  height: 30px;
+  border: 1px solid #dbe4f3;
+  border-radius: 8px;
+  outline: none;
+  padding: 0 10px;
+  font-size: 12px;
+  color: #0f172a;
+}
+
+.entity-footer-search:focus {
+  border-color: #bfdbfe;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.14);
+}
+
+.entity-footer-emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 6px;
+  max-height: 156px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.entity-footer-emoji-btn {
+  height: 30px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.entity-footer-emoji-btn:hover {
+  border-color: #bfd5ff;
+  background: #eef4ff;
+}
+
+.entity-footer-logo-upload {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.entity-footer-upload-input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  border: 1px solid #dbe4f3;
+  border-radius: 8px;
+  padding: 0 9px;
+  font-size: 12px;
+  color: #0f172a;
+  outline: none;
+}
+
+.entity-footer-upload-input:focus {
+  border-color: #bfdbfe;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.14);
+}
+
+.entity-footer-upload-btn {
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid #dbe4f3;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.entity-footer-upload-btn:hover {
+  border-color: #bfd5ff;
+  background: #eef4ff;
+  color: #1058ff;
+}
+
+.entity-footer-upload-error {
+  color: #b91c1c;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.entity-footer-logo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 170px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.entity-footer-logo-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.entity-footer-logo-item:hover {
+  border-color: #bfd5ff;
+  background: #eef4ff;
+}
+
+.entity-footer-logo-item.custom {
+  border-style: dashed;
+}
+
+.entity-footer-logo-preview {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.entity-footer-logo-preview img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.entity-footer-logo-name {
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .entity-delete-confirm-overlay {
