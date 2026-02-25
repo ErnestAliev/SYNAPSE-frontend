@@ -125,14 +125,20 @@ const selectedFieldFilters = ref<Record<string, string>>({});
 const entityInfoEntityId = ref<string | null>(null);
 const activeProjectRenameId = ref<string | null>(null);
 const projectRenameDraft = ref('');
-const projectInputRefs = ref<Record<string, HTMLInputElement | null>>({});
 const projectDeleteTarget = ref<Entity | null>(null);
 const isProjectDeleteBusy = ref(false);
+const isCreateBusy = ref(false);
 
 interface ProjectPreviewPoint {
   id: string;
   x: number;
   y: number;
+  r: number;
+  color: string;
+  image: string;
+  emoji: string;
+  glyph: string;
+  clipId: string;
 }
 
 interface ProjectPreviewEdge {
@@ -146,6 +152,48 @@ interface ProjectPreviewEdge {
 interface ProjectPreview {
   nodes: ProjectPreviewPoint[];
   edges: ProjectPreviewEdge[];
+}
+
+const PROJECT_PREVIEW_WIDTH = 180;
+const PROJECT_PREVIEW_HEIGHT = 112;
+const PROJECT_NODE_BASE_RADIUS = 36;
+
+function normalizeNodeScale(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.min(1.2, Math.max(0.8, value));
+  }
+  return 1;
+}
+
+function parseProfile(raw: unknown) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {} as Record<string, unknown>;
+  }
+  return raw as Record<string, unknown>;
+}
+
+function parseLogoImage(profile: Record<string, unknown>) {
+  const raw = profile.logo;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return '';
+  }
+  const logo = raw as Record<string, unknown>;
+  return typeof logo.image === 'string' ? logo.image.trim() : '';
+}
+
+function getNodeGlyph(type: EntityType) {
+  const glyphMap: Record<EntityType, string> = {
+    project: 'П',
+    person: 'Л',
+    company: 'К',
+    event: 'С',
+    resource: 'Р',
+    goal: 'Ц',
+    result: 'И',
+    task: 'З',
+    shape: 'Э',
+  };
+  return glyphMap[type] || '•';
 }
 
 function normalizeType(value: unknown): EntityType {
@@ -178,40 +226,109 @@ function normalizeProjectPreview(entity: Entity): ProjectPreview | null {
 
   const rawNodes = Array.isArray(rawCanvas.nodes) ? rawCanvas.nodes : [];
   const rawEdges = Array.isArray(rawCanvas.edges) ? rawCanvas.edges : [];
+  const rawViewport =
+    rawCanvas.viewport && typeof rawCanvas.viewport === 'object' ? rawCanvas.viewport : null;
+
   const nodes = rawNodes
     .filter((node) => {
       return (
         !!node &&
         typeof node.id === 'string' &&
+        typeof node.entityId === 'string' &&
         Number.isFinite(node.x) &&
         Number.isFinite(node.y)
       );
     })
     .map((node) => ({
       id: node.id,
+      entityId: node.entityId,
       x: node.x,
       y: node.y,
+      scale: normalizeNodeScale(node.scale),
     }));
 
   if (!nodes.length) return null;
 
-  const minX = Math.min(...nodes.map((node) => node.x));
-  const maxX = Math.max(...nodes.map((node) => node.x));
-  const minY = Math.min(...nodes.map((node) => node.y));
-  const maxY = Math.max(...nodes.map((node) => node.y));
-  const spanX = Math.max(1, maxX - minX);
-  const spanY = Math.max(1, maxY - minY);
-  const viewWidth = 180;
-  const viewHeight = 112;
-  const padding = 10;
-  const innerWidth = viewWidth - padding * 2;
-  const innerHeight = viewHeight - padding * 2;
+  const viewportIsValid =
+    rawViewport &&
+    Number.isFinite(rawViewport.x) &&
+    Number.isFinite(rawViewport.y) &&
+    Number.isFinite(rawViewport.zoom) &&
+    rawViewport.zoom > 0 &&
+    Number.isFinite(rawViewport.width) &&
+    rawViewport.width > 0 &&
+    Number.isFinite(rawViewport.height) &&
+    rawViewport.height > 0;
 
-  const previewNodes = nodes.map((node) => ({
-    id: node.id,
-    x: padding + ((node.x - minX) / spanX) * innerWidth,
-    y: padding + ((node.y - minY) / spanY) * innerHeight,
-  }));
+  let worldMinX = 0;
+  let worldMinY = 0;
+  let sourceWidth = PROJECT_PREVIEW_WIDTH;
+  let sourceHeight = PROJECT_PREVIEW_HEIGHT;
+  let sourceZoom = 1;
+  let sourceOffsetX = 0;
+  let sourceOffsetY = 0;
+
+  if (viewportIsValid && rawViewport) {
+    sourceWidth = rawViewport.width;
+    sourceHeight = rawViewport.height;
+    sourceZoom = rawViewport.zoom;
+    sourceOffsetX = rawViewport.x;
+    sourceOffsetY = rawViewport.y;
+  } else {
+    worldMinX = Math.min(...nodes.map((node) => node.x - PROJECT_NODE_BASE_RADIUS * node.scale));
+    const worldMaxX = Math.max(...nodes.map((node) => node.x + PROJECT_NODE_BASE_RADIUS * node.scale));
+    worldMinY = Math.min(...nodes.map((node) => node.y - PROJECT_NODE_BASE_RADIUS * node.scale));
+    const worldMaxY = Math.max(...nodes.map((node) => node.y + PROJECT_NODE_BASE_RADIUS * node.scale));
+
+    sourceWidth = Math.max(1, worldMaxX - worldMinX);
+    sourceHeight = Math.max(1, worldMaxY - worldMinY);
+  }
+
+  const previewScale = Math.min(
+    PROJECT_PREVIEW_WIDTH / Math.max(1, sourceWidth),
+    PROJECT_PREVIEW_HEIGHT / Math.max(1, sourceHeight),
+  );
+  const previewOffsetX = (PROJECT_PREVIEW_WIDTH - sourceWidth * previewScale) / 2;
+  const previewOffsetY = (PROJECT_PREVIEW_HEIGHT - sourceHeight * previewScale) / 2;
+
+  const previewNodes = nodes.map((node) => {
+    const linkedEntity = entitiesStore.byId(node.entityId);
+    const linkedProfile = parseProfile(linkedEntity?.profile);
+    const nodeColor =
+      typeof linkedProfile.color === 'string' && linkedProfile.color.trim()
+        ? linkedProfile.color.trim()
+        : '#1058ff';
+    const nodeImageRaw =
+      typeof linkedProfile.image === 'string' && linkedProfile.image.trim()
+        ? linkedProfile.image.trim()
+        : parseLogoImage(linkedProfile);
+    const nodeEmoji =
+      typeof linkedProfile.emoji === 'string' && linkedProfile.emoji.trim()
+        ? linkedProfile.emoji.trim()
+        : '';
+    const nodeType = linkedEntity?.type || 'shape';
+
+    const sourceX = viewportIsValid
+      ? sourceOffsetX + node.x * sourceZoom
+      : node.x - worldMinX;
+    const sourceY = viewportIsValid
+      ? sourceOffsetY + node.y * sourceZoom
+      : node.y - worldMinY;
+    const sourceRadius = PROJECT_NODE_BASE_RADIUS * node.scale * (viewportIsValid ? sourceZoom : 1);
+    const previewRadius = Math.max(2, sourceRadius * previewScale);
+
+    return {
+      id: node.id,
+      x: previewOffsetX + sourceX * previewScale,
+      y: previewOffsetY + sourceY * previewScale,
+      r: previewRadius,
+      color: nodeColor,
+      image: nodeImageRaw,
+      emoji: nodeEmoji,
+      glyph: getNodeGlyph(nodeType),
+      clipId: `project-preview-${entity._id}-${node.id}`,
+    };
+  });
   const nodeById = new Map(previewNodes.map((node) => [node.id, node]));
 
   const previewEdges = rawEdges
@@ -415,6 +532,9 @@ watch(activeType, () => {
 });
 
 async function createEntity() {
+  if (isCreateBusy.value) return;
+  isCreateBusy.value = true;
+
   const nextEntityNumber = entitiesStore.countByType(activeType.value) + 1;
   const payload: {
     type: EntityType;
@@ -436,19 +556,27 @@ async function createEntity() {
     payload.canvas_data = { nodes: [], edges: [] };
   }
 
-  await entitiesStore.createEntity(payload);
+  try {
+    await entitiesStore.createEntity(payload);
 
-  // Keep the just-created card visible near "Создать".
-  searchQuery.value = '';
-  await nextTick();
-  collectionViewRef.value?.scrollTo({ top: 0, behavior: 'auto' });
+    // Keep the just-created card visible near "Создать".
+    searchQuery.value = '';
+    await nextTick();
+    collectionViewRef.value?.scrollTo({ top: 0, behavior: 'auto' });
+  } catch (error) {
+    entitiesStore.error = entitiesStore.formatApiError(error);
+  } finally {
+    isCreateBusy.value = false;
+  }
 }
 
-function setProjectInputRef(projectId: string, element: HTMLInputElement | null) {
-  projectInputRefs.value = {
-    ...projectInputRefs.value,
-    [projectId]: element,
-  };
+function getProjectInputElement(projectId: string) {
+  if (typeof document === 'undefined') return null;
+  const escapedId =
+    typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+      ? CSS.escape(projectId)
+      : projectId.replace(/"/g, '\\"');
+  return document.querySelector<HTMLInputElement>(`input[data-project-name-id="${escapedId}"]`);
 }
 
 function openProjectRename(project: Entity) {
@@ -456,7 +584,7 @@ function openProjectRename(project: Entity) {
   projectRenameDraft.value = project.name || '';
 
   void nextTick(() => {
-    const input = projectInputRefs.value[project._id];
+    const input = getProjectInputElement(project._id);
     if (!input) return;
     input.focus();
     input.select();
@@ -560,7 +688,6 @@ async function confirmProjectDelete() {
   isProjectDeleteBusy.value = true;
   try {
     await entitiesStore.deleteEntity(target._id);
-    await entitiesStore.fetchEntities();
     projectDeleteTarget.value = null;
   } finally {
     isProjectDeleteBusy.value = false;
@@ -634,7 +761,7 @@ function closeEntityInfoModal() {
       <div v-if="entitiesStore.loading" class="state">Загрузка...</div>
       <div v-else-if="entitiesStore.error" class="state state-error">{{ entitiesStore.error }}</div>
       <div v-else class="grid-layout">
-        <button class="create-card" @click="createEntity">
+        <button class="create-card" :disabled="isCreateBusy" @click="createEntity">
           <AppIcon name="plus" />
           <span class="create-card-label">Создать</span>
         </button>
@@ -655,9 +782,18 @@ function closeEntityInfoModal() {
                 v-if="projectPreview(firstEntity)"
                 class="project-preview-svg"
                 viewBox="0 0 180 112"
-                preserveAspectRatio="none"
+                preserveAspectRatio="xMidYMid meet"
                 aria-hidden="true"
               >
+                <defs>
+                  <clipPath
+                    v-for="node in projectPreview(firstEntity)?.nodes || []"
+                    :id="node.clipId"
+                    :key="`clip-${node.id}`"
+                  >
+                    <circle :cx="node.x" :cy="node.y" :r="node.r" />
+                  </clipPath>
+                </defs>
                 <line
                   v-for="edge in projectPreview(firstEntity)?.edges || []"
                   :key="edge.id"
@@ -669,21 +805,50 @@ function closeEntityInfoModal() {
                 />
                 <circle
                   v-for="node in projectPreview(firstEntity)?.nodes || []"
-                  :key="node.id"
+                  :key="`bg-${node.id}`"
                   :cx="node.x"
                   :cy="node.y"
-                  r="3.2"
+                  :r="node.r"
                   class="project-preview-node"
+                  :style="{ fill: node.color }"
                 />
+                <template v-for="node in projectPreview(firstEntity)?.nodes || []" :key="`content-${node.id}`">
+                  <image
+                    v-if="node.image"
+                    :href="node.image"
+                    :x="node.x - node.r"
+                    :y="node.y - node.r"
+                    :width="node.r * 2"
+                    :height="node.r * 2"
+                    preserveAspectRatio="xMidYMid slice"
+                    :clip-path="`url(#${node.clipId})`"
+                  />
+                  <text
+                    v-else-if="node.emoji"
+                    :x="node.x"
+                    :y="node.y"
+                    class="project-preview-emoji"
+                  >
+                    {{ node.emoji }}
+                  </text>
+                  <text
+                    v-else
+                    :x="node.x"
+                    :y="node.y"
+                    class="project-preview-glyph"
+                  >
+                    {{ node.glyph }}
+                  </text>
+                </template>
               </svg>
             </div>
             <div class="project-info">
               <input
-                :ref="(el) => setProjectInputRef(firstEntity!._id, el as HTMLInputElement | null)"
                 class="project-name-input"
                 type="text"
                 :value="projectNameValue(firstEntity)"
                 maxlength="64"
+                :data-project-name-id="firstEntity._id"
                 @pointerdown.stop
                 @click="onProjectNameClick($event, firstEntity)"
                 @focus="onProjectNameFocus($event, firstEntity)"
@@ -741,9 +906,18 @@ function closeEntityInfoModal() {
                 v-if="projectPreview(entity)"
                 class="project-preview-svg"
                 viewBox="0 0 180 112"
-                preserveAspectRatio="none"
+                preserveAspectRatio="xMidYMid meet"
                 aria-hidden="true"
               >
+                <defs>
+                  <clipPath
+                    v-for="node in projectPreview(entity)?.nodes || []"
+                    :id="node.clipId"
+                    :key="`clip-${node.id}`"
+                  >
+                    <circle :cx="node.x" :cy="node.y" :r="node.r" />
+                  </clipPath>
+                </defs>
                 <line
                   v-for="edge in projectPreview(entity)?.edges || []"
                   :key="edge.id"
@@ -755,21 +929,50 @@ function closeEntityInfoModal() {
                 />
                 <circle
                   v-for="node in projectPreview(entity)?.nodes || []"
-                  :key="node.id"
+                  :key="`bg-${node.id}`"
                   :cx="node.x"
                   :cy="node.y"
-                  r="3.2"
+                  :r="node.r"
                   class="project-preview-node"
+                  :style="{ fill: node.color }"
                 />
+                <template v-for="node in projectPreview(entity)?.nodes || []" :key="`content-${node.id}`">
+                  <image
+                    v-if="node.image"
+                    :href="node.image"
+                    :x="node.x - node.r"
+                    :y="node.y - node.r"
+                    :width="node.r * 2"
+                    :height="node.r * 2"
+                    preserveAspectRatio="xMidYMid slice"
+                    :clip-path="`url(#${node.clipId})`"
+                  />
+                  <text
+                    v-else-if="node.emoji"
+                    :x="node.x"
+                    :y="node.y"
+                    class="project-preview-emoji"
+                  >
+                    {{ node.emoji }}
+                  </text>
+                  <text
+                    v-else
+                    :x="node.x"
+                    :y="node.y"
+                    class="project-preview-glyph"
+                  >
+                    {{ node.glyph }}
+                  </text>
+                </template>
               </svg>
             </div>
             <div class="project-info">
               <input
-                :ref="(el) => setProjectInputRef(entity._id, el as HTMLInputElement | null)"
                 class="project-name-input"
                 type="text"
                 :value="projectNameValue(entity)"
                 maxlength="64"
+                :data-project-name-id="entity._id"
                 @pointerdown.stop
                 @click="onProjectNameClick($event, entity)"
                 @focus="onProjectNameFocus($event, entity)"
@@ -960,6 +1163,11 @@ function closeEntityInfoModal() {
   background: #fff;
 }
 
+.create-card:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .create-card-label {
   font-weight: 600;
 }
@@ -1062,8 +1270,8 @@ function closeEntityInfoModal() {
 }
 
 .project-thumbnail {
-  flex: 0 0 104px;
-  min-height: 104px;
+  flex: 1 1 auto;
+  min-height: 0;
   background: #e6effc;
   background-image: radial-gradient(rgba(148, 163, 184, 0.45) 1px, transparent 1px);
   background-size: 16px 16px;
@@ -1078,17 +1286,28 @@ function closeEntityInfoModal() {
 .project-preview-svg {
   width: 100%;
   height: 100%;
+  display: block;
 }
 
 .project-preview-edge {
   stroke: rgba(51, 65, 85, 0.3);
-  stroke-width: 1.4;
+  stroke-width: 1.6;
 }
 
 .project-preview-node {
   fill: rgba(16, 88, 255, 0.92);
-  stroke: rgba(255, 255, 255, 0.95);
-  stroke-width: 1;
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 1.4;
+}
+
+.project-preview-glyph,
+.project-preview-emoji {
+  fill: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
 }
 
 .project-progress {
@@ -1106,7 +1325,8 @@ function closeEntityInfoModal() {
 }
 
 .project-info {
-  
+  margin-top: auto;
+  flex: 0 0 auto;
   border-radius: 16px;
   padding: 8px;
   display: flex;
