@@ -11,6 +11,7 @@ const authStore = useAuthStore();
 const entitiesStore = useEntitiesStore();
 
 const googleClientId = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || '').trim();
+const showDevLogin = import.meta.env.DEV;
 
 const redirectTarget = computed(() => {
   const redirect = route.query.redirect;
@@ -35,6 +36,16 @@ function onGoogleError(message: string) {
     authStore.error = message;
   }
 }
+
+async function onDevLogin() {
+  try {
+    await authStore.signInAsDev();
+    await entitiesStore.bootstrap();
+    await router.replace(redirectTarget.value);
+  } catch {
+    // authStore.error already populated
+  }
+}
 </script>
 
 <template>
@@ -51,6 +62,16 @@ function onGoogleError(message: string) {
         @credential="onGoogleCredential"
         @error="onGoogleError"
       />
+
+      <button
+        v-if="showDevLogin"
+        type="button"
+        class="auth-dev-btn"
+        :disabled="authStore.loading"
+        @click="onDevLogin"
+      >
+        Войти локально (dev)
+      </button>
 
       <p v-if="authStore.error" class="auth-error">{{ authStore.error }}</p>
     </div>
@@ -104,5 +125,30 @@ function onGoogleError(message: string) {
   font-weight: 700;
   text-align: center;
   line-height: 1.35;
+}
+
+.auth-dev-btn {
+  height: 36px;
+  min-width: 210px;
+  border-radius: 999px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 14px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.auth-dev-btn:hover:not(:disabled) {
+  border-color: #bfd5ff;
+  background: #eef4ff;
+  color: #1058ff;
+}
+
+.auth-dev-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 </style>

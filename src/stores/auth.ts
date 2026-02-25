@@ -25,6 +25,11 @@ interface GoogleAuthResponse {
   expiresIn: number;
 }
 
+interface DevAuthPayload {
+  name?: string;
+  email?: string;
+}
+
 function readStoredSessionToken() {
   if (typeof window === 'undefined') return '';
   try {
@@ -149,6 +154,29 @@ export const useAuthStore = defineStore('auth', {
       } finally {
         this.user = null;
         this.clearLocalSession();
+        this.loading = false;
+        this.initialized = true;
+      }
+    },
+
+    async signInAsDev(payload?: DevAuthPayload) {
+      this.loading = true;
+      this.error = null;
+
+      try {
+        const { data } = await apiClient.post<GoogleAuthResponse>('/auth/dev-login', {
+          name: payload?.name || 'Local Developer',
+          email: payload?.email || 'local.dev@synapse12.local',
+        });
+        this.user = data.user;
+        writeStoredSessionToken(data.sessionToken || '');
+        return data.user;
+      } catch (error: unknown) {
+        this.user = null;
+        this.clearLocalSession();
+        this.error = formatApiError(error);
+        throw error;
+      } finally {
         this.loading = false;
         this.initialized = true;
       }
