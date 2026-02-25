@@ -82,11 +82,11 @@ async function onGoogleCredential(credential: string) {
     await authStore.signInWithGoogleCredential(credential);
 
     if (!entitiesStore.initialized) {
-      await entitiesStore.bootstrap();
+      void entitiesStore.bootstrap();
       return;
     }
 
-    await entitiesStore.fetchEntities({ silent: true });
+    void entitiesStore.fetchEntities({ silent: true });
   } catch {
     // Error is handled in authStore.
   }

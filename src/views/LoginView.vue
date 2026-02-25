@@ -25,8 +25,12 @@ const redirectTarget = computed(() => {
 async function onGoogleCredential(credential: string) {
   try {
     await authStore.signInWithGoogleCredential(credential);
-    await entitiesStore.bootstrap();
     await router.replace(redirectTarget.value);
+    if (!entitiesStore.initialized) {
+      void entitiesStore.bootstrap();
+    } else {
+      void entitiesStore.fetchEntities({ silent: true });
+    }
   } catch {
     // authStore.error already populated
   }

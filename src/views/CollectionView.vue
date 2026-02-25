@@ -374,6 +374,18 @@ function projectPreview(entity: Entity) {
   return projectPreviewById.value[entity._id] || null;
 }
 
+function projectPreviewNodes(entity: Entity) {
+  const preview = projectPreview(entity);
+  if (!preview || !Array.isArray(preview.nodes)) return [] as ProjectPreviewPoint[];
+  return preview.nodes.filter((node): node is ProjectPreviewPoint => Boolean(node));
+}
+
+function projectPreviewEdges(entity: Entity) {
+  const preview = projectPreview(entity);
+  if (!preview || !Array.isArray(preview.edges)) return [] as ProjectPreviewEdge[];
+  return preview.edges.filter((edge): edge is ProjectPreviewEdge => Boolean(edge));
+}
+
 function toMetadata(entity: Entity) {
   const raw = entity.ai_metadata;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -787,7 +799,7 @@ function closeEntityInfoModal() {
               >
                 <defs>
                   <clipPath
-                    v-for="node in projectPreview(firstEntity)?.nodes || []"
+                    v-for="node in projectPreviewNodes(firstEntity)"
                     :id="node.clipId"
                     :key="`clip-${node.id}`"
                   >
@@ -795,7 +807,7 @@ function closeEntityInfoModal() {
                   </clipPath>
                 </defs>
                 <line
-                  v-for="edge in projectPreview(firstEntity)?.edges || []"
+                  v-for="edge in projectPreviewEdges(firstEntity)"
                   :key="edge.id"
                   :x1="edge.x1"
                   :y1="edge.y1"
@@ -804,7 +816,7 @@ function closeEntityInfoModal() {
                   class="project-preview-edge"
                 />
                 <circle
-                  v-for="node in projectPreview(firstEntity)?.nodes || []"
+                  v-for="node in projectPreviewNodes(firstEntity)"
                   :key="`bg-${node.id}`"
                   :cx="node.x"
                   :cy="node.y"
@@ -812,9 +824,9 @@ function closeEntityInfoModal() {
                   class="project-preview-node"
                   :style="{ fill: node.color }"
                 />
-                <template v-for="node in projectPreview(firstEntity)?.nodes || []" :key="`content-${node.id}`">
+                <template v-for="node in projectPreviewNodes(firstEntity)" :key="`content-${node.id}`">
                   <image
-                    v-if="node.image"
+                    v-if="node && node.image"
                     :href="node.image"
                     :x="node.x - node.r"
                     :y="node.y - node.r"
@@ -824,7 +836,7 @@ function closeEntityInfoModal() {
                     :clip-path="`url(#${node.clipId})`"
                   />
                   <text
-                    v-else-if="node.emoji"
+                    v-else-if="node && node.emoji"
                     :x="node.x"
                     :y="node.y"
                     class="project-preview-emoji"
@@ -911,7 +923,7 @@ function closeEntityInfoModal() {
               >
                 <defs>
                   <clipPath
-                    v-for="node in projectPreview(entity)?.nodes || []"
+                    v-for="node in projectPreviewNodes(entity)"
                     :id="node.clipId"
                     :key="`clip-${node.id}`"
                   >
@@ -919,7 +931,7 @@ function closeEntityInfoModal() {
                   </clipPath>
                 </defs>
                 <line
-                  v-for="edge in projectPreview(entity)?.edges || []"
+                  v-for="edge in projectPreviewEdges(entity)"
                   :key="edge.id"
                   :x1="edge.x1"
                   :y1="edge.y1"
@@ -928,7 +940,7 @@ function closeEntityInfoModal() {
                   class="project-preview-edge"
                 />
                 <circle
-                  v-for="node in projectPreview(entity)?.nodes || []"
+                  v-for="node in projectPreviewNodes(entity)"
                   :key="`bg-${node.id}`"
                   :cx="node.x"
                   :cy="node.y"
@@ -936,9 +948,9 @@ function closeEntityInfoModal() {
                   class="project-preview-node"
                   :style="{ fill: node.color }"
                 />
-                <template v-for="node in projectPreview(entity)?.nodes || []" :key="`content-${node.id}`">
+                <template v-for="node in projectPreviewNodes(entity)" :key="`content-${node.id}`">
                   <image
-                    v-if="node.image"
+                    v-if="node && node.image"
                     :href="node.image"
                     :x="node.x - node.r"
                     :y="node.y - node.r"
@@ -948,7 +960,7 @@ function closeEntityInfoModal() {
                     :clip-path="`url(#${node.clipId})`"
                   />
                   <text
-                    v-else-if="node.emoji"
+                    v-else-if="node && node.emoji"
                     :x="node.x"
                     :y="node.y"
                     class="project-preview-emoji"
