@@ -1503,149 +1503,145 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <div
-        v-if="profileFooterOpen"
-        class="entity-info-footer-backdrop"
-        @pointerdown="closeProfileFooter"
-      />
-
-      <section
-        v-if="profileFooterOpen"
-        class="entity-info-menu-footer"
-        @pointerdown.stop
-      >
-        <button type="button" class="menu-circle-btn" title="Цвет" @click="onFooterColorClick">
-          <input
-            ref="footerColorInputRef"
-            type="color"
-            class="entity-info-hidden-input"
-            @input="onFooterColorInput"
-          />
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 3a9 9 0 1 0 9 9c0-1-.8-1.8-1.8-1.8h-1.6a1.8 1.8 0 0 1 0-3.6h1.2A1.8 1.8 0 0 0 20.6 5 9 9 0 0 0 12 3Z" />
-            <circle cx="7.5" cy="11.5" r="1" />
-            <circle cx="10.5" cy="8.5" r="1" />
-            <circle cx="14.5" cy="8.5" r="1" />
-            <circle cx="16.5" cy="12.5" r="1" />
-          </svg>
-        </button>
-
-        <button type="button" class="menu-circle-btn" title="Фото" @click="onFooterImageClick">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <rect x="3" y="5" width="18" height="14" rx="2" />
-            <circle cx="9" cy="10" r="1.7" />
-            <path d="m21 16-4.5-4.5-4.2 4.2L10 13.4 5 18.4" />
-          </svg>
-        </button>
-        <input
-          ref="footerImageInputRef"
-          type="file"
-          accept="image/*"
-          class="entity-info-hidden-input"
-          @change="onFooterImageInput"
-        />
-
-        <button
-          type="button"
-          class="menu-circle-btn"
-          :class="{ active: footerEmojiOpen }"
-          title="Эмодзи"
-          @click="toggleFooterEmojiPanel"
+      <transition name="entity-side-footer">
+        <section
+          v-if="profileFooterOpen"
+          class="entity-info-menu-footer"
+          @pointerdown.stop
         >
-          <span class="menu-btn-emoji">🙂</span>
-        </button>
-
-        <button
-          type="button"
-          class="menu-circle-btn"
-          :class="{ active: footerLogoOpen }"
-          title="Логотипы"
-          @click="toggleFooterLogoPanel"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="12" cy="12" r="9" />
-            <path d="M7 14c0-2.2 1.8-4 4-4h6v8h-6a4 4 0 0 1-4-4Z" />
-            <path d="M11 10V6h6v4" />
-          </svg>
-        </button>
-
-        <div v-if="footerEmojiOpen" class="entity-footer-panel emoji-panel" @pointerdown.stop>
-          <input
-            v-model="footerEmojiQuery"
-            type="text"
-            class="entity-footer-search"
-            placeholder="Поиск эмодзи..."
-          />
-          <div class="entity-footer-emoji-grid">
-            <button
-              v-for="item in filteredFooterEmoji"
-              :key="`${item.emoji}-${item.label}`"
-              type="button"
-              class="entity-footer-emoji-btn"
-              @click="onFooterEmojiPick(item)"
-            >
-              <span>{{ item.emoji }}</span>
-            </button>
-          </div>
-        </div>
-
-        <div v-if="footerLogoOpen" class="entity-footer-panel logo-panel" @pointerdown.stop>
-          <input
-            v-model="footerLogoQuery"
-            type="text"
-            class="entity-footer-search"
-            placeholder="Поиск логотипа..."
-          />
-
-          <div class="entity-footer-logo-upload">
+          <button type="button" class="menu-circle-btn" title="Цвет" @click="onFooterColorClick">
             <input
-              v-model="footerCustomLogoName"
-              type="text"
-              class="entity-footer-upload-input"
-              maxlength="32"
-              placeholder="Название логотипа"
-            />
-            <button type="button" class="entity-footer-upload-btn" @click="onFooterLogoUploadClick">
-              Загрузить
-            </button>
-            <input
-              ref="footerLogoInputRef"
-              type="file"
-              accept="image/*,.svg"
+              ref="footerColorInputRef"
+              type="color"
               class="entity-info-hidden-input"
-              @change="onFooterLogoUpload"
+              @input="onFooterColorInput"
             />
-          </div>
-          <div v-if="footerLogoUploadError" class="entity-footer-upload-error">{{ footerLogoUploadError }}</div>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3a9 9 0 1 0 9 9c0-1-.8-1.8-1.8-1.8h-1.6a1.8 1.8 0 0 1 0-3.6h1.2A1.8 1.8 0 0 0 20.6 5 9 9 0 0 0 12 3Z" />
+              <circle cx="7.5" cy="11.5" r="1" />
+              <circle cx="10.5" cy="8.5" r="1" />
+              <circle cx="14.5" cy="8.5" r="1" />
+              <circle cx="16.5" cy="12.5" r="1" />
+            </svg>
+          </button>
 
-          <div class="entity-footer-logo-list">
-            <button
-              v-for="logo in filteredFooterSystemLogos"
-              :key="logo.id"
-              type="button"
-              class="entity-footer-logo-item"
-              @click="onFooterLogoPick(logo)"
-            >
-              <span class="entity-footer-logo-preview" :style="{ background: logo.background }">
-                <img :src="logo.image" alt="" />
-              </span>
-              <span class="entity-footer-logo-name">{{ logo.name }}</span>
-            </button>
-            <button
-              v-for="logo in filteredFooterCustomLogos"
-              :key="logo.id"
-              type="button"
-              class="entity-footer-logo-item custom"
-              @click="onFooterLogoPick(logo)"
-            >
-              <span class="entity-footer-logo-preview" :style="{ background: logo.background }">
-                <img :src="logo.image" alt="" />
-              </span>
-              <span class="entity-footer-logo-name">{{ logo.name }}</span>
-            </button>
+          <button type="button" class="menu-circle-btn" title="Фото" @click="onFooterImageClick">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="5" width="18" height="14" rx="2" />
+              <circle cx="9" cy="10" r="1.7" />
+              <path d="m21 16-4.5-4.5-4.2 4.2L10 13.4 5 18.4" />
+            </svg>
+          </button>
+          <input
+            ref="footerImageInputRef"
+            type="file"
+            accept="image/*"
+            class="entity-info-hidden-input"
+            @change="onFooterImageInput"
+          />
+
+          <button
+            type="button"
+            class="menu-circle-btn"
+            :class="{ active: footerEmojiOpen }"
+            title="Эмодзи"
+            @click="toggleFooterEmojiPanel"
+          >
+            <span class="menu-btn-emoji">🙂</span>
+          </button>
+
+          <button
+            type="button"
+            class="menu-circle-btn"
+            :class="{ active: footerLogoOpen }"
+            title="Логотипы"
+            @click="toggleFooterLogoPanel"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M7 14c0-2.2 1.8-4 4-4h6v8h-6a4 4 0 0 1-4-4Z" />
+              <path d="M11 10V6h6v4" />
+            </svg>
+          </button>
+
+          <div v-if="footerEmojiOpen" class="entity-footer-panel emoji-panel" @pointerdown.stop>
+            <input
+              v-model="footerEmojiQuery"
+              type="text"
+              class="entity-footer-search"
+              placeholder="Поиск эмодзи..."
+            />
+            <div class="entity-footer-emoji-grid">
+              <button
+                v-for="item in filteredFooterEmoji"
+                :key="`${item.emoji}-${item.label}`"
+                type="button"
+                class="entity-footer-emoji-btn"
+                @click="onFooterEmojiPick(item)"
+              >
+                <span>{{ item.emoji }}</span>
+              </button>
+            </div>
           </div>
-        </div>
-      </section>
+
+          <div v-if="footerLogoOpen" class="entity-footer-panel logo-panel" @pointerdown.stop>
+            <input
+              v-model="footerLogoQuery"
+              type="text"
+              class="entity-footer-search"
+              placeholder="Поиск логотипа..."
+            />
+
+            <div class="entity-footer-logo-upload">
+              <input
+                v-model="footerCustomLogoName"
+                type="text"
+                class="entity-footer-upload-input"
+                maxlength="32"
+                placeholder="Название логотипа"
+              />
+              <button type="button" class="entity-footer-upload-btn" @click="onFooterLogoUploadClick">
+                Загрузить
+              </button>
+              <input
+                ref="footerLogoInputRef"
+                type="file"
+                accept="image/*,.svg"
+                class="entity-info-hidden-input"
+                @change="onFooterLogoUpload"
+              />
+            </div>
+            <div v-if="footerLogoUploadError" class="entity-footer-upload-error">{{ footerLogoUploadError }}</div>
+
+            <div class="entity-footer-logo-list">
+              <button
+                v-for="logo in filteredFooterSystemLogos"
+                :key="logo.id"
+                type="button"
+                class="entity-footer-logo-item"
+                @click="onFooterLogoPick(logo)"
+              >
+                <span class="entity-footer-logo-preview" :style="{ background: logo.background }">
+                  <img :src="logo.image" alt="" />
+                </span>
+                <span class="entity-footer-logo-name">{{ logo.name }}</span>
+              </button>
+              <button
+                v-for="logo in filteredFooterCustomLogos"
+                :key="logo.id"
+                type="button"
+                class="entity-footer-logo-item custom"
+                @click="onFooterLogoPick(logo)"
+              >
+                <span class="entity-footer-logo-preview" :style="{ background: logo.background }">
+                  <img :src="logo.image" alt="" />
+                </span>
+                <span class="entity-footer-logo-name">{{ logo.name }}</span>
+              </button>
+            </div>
+          </div>
+        </section>
+      </transition>
     </div>
 
     <div
@@ -1699,7 +1695,7 @@ onBeforeUnmount(() => {
   height: min(86vh, 920px);
   max-height: 92vh;
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   border-radius: 18px;
   border: 1px solid #dbe4f3;
   background: #ffffff;
@@ -2204,29 +2200,35 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
-.entity-info-footer-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.28);
-  z-index: 18;
-}
-
 .entity-info-menu-footer {
   position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 12px;
-  min-height: 42px;
+  left: -54px;
+  top: 18px;
+  width: 46px;
   border-radius: 14px;
   border: 1px solid #dbe4f3;
   background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 16px 28px rgba(15, 23, 42, 0.24);
-  padding: 7px;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.22);
+  padding: 7px 6px;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 8px;
-  z-index: 20;
+  z-index: 22;
+}
+
+.entity-side-footer-enter-active,
+.entity-side-footer-leave-active {
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+
+.entity-side-footer-enter-from,
+.entity-side-footer-leave-to {
+  opacity: 0;
+  transform: translateX(-10px);
 }
 
 .menu-circle-btn {
@@ -2270,9 +2272,10 @@ onBeforeUnmount(() => {
 
 .entity-footer-panel {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 48px;
+  left: calc(100% + 10px);
+  top: 0;
+  width: 290px;
+  max-width: min(290px, calc(100vw - 96px));
   border-radius: 12px;
   border: 1px solid #dbe4f3;
   background: #ffffff;
