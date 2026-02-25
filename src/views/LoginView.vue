@@ -57,10 +57,12 @@ onMounted(() => {
 <template>
   <section class="auth-view">
     <div class="auth-card">
-      <h1 class="auth-title">Synapse12</h1>
+      <h1 class="auth-title">Добро пожаловать в Synapse12</h1>
       <p class="auth-subtitle">
-        Войдите через Google, чтобы открыть проекты и сущности.
+        Пройдите регистрацию через Google. После выбора аккаунта система создаст ваш профиль и
+        персональное рабочее пространство.
       </p>
+      <div class="auth-note">Все проекты, настройки и сущности будут привязаны к вашему аккаунту.</div>
 
       <GoogleSignInButton
         v-if="isGoogleButtonReady"
@@ -126,6 +128,18 @@ onMounted(() => {
   font-size: 14px;
   line-height: 1.45;
   max-width: 320px;
+}
+
+.auth-note {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid #dbe4f3;
+  background: #f8fbff;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+  padding: 10px 12px;
 }
 
 .auth-error {

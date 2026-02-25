@@ -10,6 +10,8 @@ export interface AuthUser {
   picture: string;
   givenName: string;
   familyName: string;
+  provider?: string;
+  settings?: Record<string, unknown>;
 }
 
 interface AuthState {

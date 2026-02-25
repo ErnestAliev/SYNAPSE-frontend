@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import AppHeader from './components/layout/AppHeader.vue';
 import AgentChatDock from './components/ui/AgentChatDock.vue';
 import { useEntitiesStore } from './stores/entities';
@@ -9,17 +9,44 @@ import { useAuthStore } from './stores/auth';
 const entitiesStore = useEntitiesStore();
 const authStore = useAuthStore();
 const route = useRoute();
+const router = useRouter();
+const settingsMenuRef = ref<HTMLElement | null>(null);
+const settingsOpen = ref(false);
 
 const showWorkspaceExtras = computed(() => {
   if (!authStore.isAuthenticated) return false;
   return route.name !== 'auth-login';
 });
 
+function onPointerDown(event: PointerEvent) {
+  if (!settingsOpen.value) return;
+  const target = event.target as Node | null;
+  if (!target) return;
+  if (!settingsMenuRef.value?.contains(target)) {
+    settingsOpen.value = false;
+  }
+}
+
+function toggleSettingsMenu() {
+  settingsOpen.value = !settingsOpen.value;
+}
+
+async function signOutFromSettings() {
+  settingsOpen.value = false;
+  await authStore.signOut();
+  await router.replace('/auth');
+}
+
 onMounted(async () => {
   await authStore.bootstrap();
   if (authStore.isAuthenticated) {
     await entitiesStore.bootstrap();
   }
+  document.addEventListener('pointerdown', onPointerDown);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onPointerDown);
 });
 
 watch(
@@ -42,6 +69,13 @@ watch(
     }
   },
 );
+
+watch(
+  () => route.fullPath,
+  () => {
+    settingsOpen.value = false;
+  },
+);
 </script>
 
 <template>
@@ -54,32 +88,41 @@ watch(
 
     <AgentChatDock v-if="showWorkspaceExtras" />
 
-    <button v-if="showWorkspaceExtras" class="settings-btn" aria-label="Настройки">
-      <svg
-        width="22"
-        height="22"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        viewBox="0 0 24 24"
-        aria-hidden="true"
-      >
-        <circle cx="12" cy="12" r="3"></circle>
-        <path
-          d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33
-          1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51
-          1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06
-          a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09
-          a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06
-          a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01
-          a1.65 1.65 0 0 0 1-.33 1.65 1.65 0 0 0 .5-1.18V3a2 2 0 1 1 4 0v.09
-          a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06
-          a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01
-          a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09
-          a1.65 1.65 0 0 0-1.51 1z"
-        ></path>
-      </svg>
-    </button>
+    <div v-if="showWorkspaceExtras" ref="settingsMenuRef" class="settings-wrap">
+      <button class="settings-btn" aria-label="Настройки" @click="toggleSettingsMenu">
+        <svg
+          width="22"
+          height="22"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="3"></circle>
+          <path
+            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33
+            1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51
+            1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06
+            a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09
+            a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06
+            a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01
+            a1.65 1.65 0 0 0 1-.33 1.65 1.65 0 0 0 .5-1.18V3a2 2 0 1 1 4 0v.09
+            a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06
+            a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01
+            a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09
+            a1.65 1.65 0 0 0-1.51 1z"
+          ></path>
+        </svg>
+      </button>
+
+      <div v-if="settingsOpen" class="settings-popover">
+        <div class="settings-user">{{ authStore.user?.email }}</div>
+        <button type="button" class="settings-action danger" @click="signOutFromSettings">
+          Выйти из системы
+        </button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -104,11 +147,14 @@ watch(
   min-height: 0;
 }
 
-.settings-btn {
+.settings-wrap {
   position: absolute;
   left: 18px;
   bottom: 18px;
   z-index: 120;
+}
+
+.settings-btn {
   width: 46px;
   height: 46px;
   border-radius: 999px;
@@ -127,5 +173,57 @@ watch(
   color: var(--text-main);
   box-shadow: var(--shadow-hover);
   transform: translateY(-1px);
+}
+
+.settings-popover {
+  position: absolute;
+  left: 56px;
+  bottom: 0;
+  min-width: 220px;
+  border-radius: 14px;
+  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--shadow-hover);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-user {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+
+.settings-action {
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid #dbe4f3;
+  background: #fff;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.settings-action:hover {
+  border-color: #bfd5ff;
+  background: #eef4ff;
+  color: #1058ff;
+}
+
+.settings-action.danger {
+  border-color: #fecaca;
+  color: #b91c1c;
+  background: #fff7f7;
+}
+
+.settings-action.danger:hover {
+  border-color: #fca5a5;
+  background: #fee2e2;
+  color: #991b1b;
 }
 </style>
