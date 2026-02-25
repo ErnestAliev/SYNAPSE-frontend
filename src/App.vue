@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute } from 'vue-router';
 import AppHeader from './components/layout/AppHeader.vue';
 import AgentChatDock from './components/ui/AgentChatDock.vue';
 import { useEntitiesStore } from './stores/entities';
@@ -9,7 +9,6 @@ import { useAuthStore } from './stores/auth';
 const entitiesStore = useEntitiesStore();
 const authStore = useAuthStore();
 const route = useRoute();
-const router = useRouter();
 const settingsMenuRef = ref<HTMLElement | null>(null);
 const settingsOpen = ref(false);
 
@@ -29,12 +28,6 @@ function onPointerDown(event: PointerEvent) {
 
 function toggleSettingsMenu() {
   settingsOpen.value = !settingsOpen.value;
-}
-
-async function signOutFromSettings() {
-  settingsOpen.value = false;
-  await authStore.signOut();
-  await router.replace('/auth');
 }
 
 onMounted(async () => {
@@ -118,9 +111,7 @@ watch(
 
       <div v-if="settingsOpen" class="settings-popover">
         <div class="settings-user">{{ authStore.user?.email }}</div>
-        <button type="button" class="settings-action danger" @click="signOutFromSettings">
-          Выйти из системы
-        </button>
+        <div class="settings-note">Настройки профиля скоро</div>
       </div>
     </div>
   </div>
@@ -197,33 +188,9 @@ watch(
   word-break: break-word;
 }
 
-.settings-action {
-  height: 34px;
-  border-radius: 10px;
-  border: 1px solid #dbe4f3;
-  background: #fff;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.settings-action:hover {
-  border-color: #bfd5ff;
-  background: #eef4ff;
-  color: #1058ff;
-}
-
-.settings-action.danger {
-  border-color: #fecaca;
-  color: #b91c1c;
-  background: #fff7f7;
-}
-
-.settings-action.danger:hover {
-  border-color: #fca5a5;
-  background: #fee2e2;
-  color: #991b1b;
+.settings-note {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
 }
 </style>

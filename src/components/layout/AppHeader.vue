@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useEntitiesStore } from '../../stores/entities';
 import AppIcon from '../ui/AppIcon.vue';
@@ -29,6 +29,8 @@ const route = useRoute();
 const router = useRouter();
 const entitiesStore = useEntitiesStore();
 const authStore = useAuthStore();
+const authMenuOpen = ref(false);
+const authMenuRef = ref<HTMLElement | null>(null);
 const showTabs = computed(() => authStore.isAuthenticated);
 const isAuthPage = computed(() => route.name === 'auth-login');
 const isGoogleButtonReady = computed(
@@ -97,12 +99,41 @@ function onGoogleError(message: string) {
 }
 
 async function onSignOut() {
+  authMenuOpen.value = false;
   await authStore.signOut();
+  if (route.name !== 'auth-login') {
+    await router.replace('/auth');
+  }
+}
+
+function toggleAuthMenu() {
+  authMenuOpen.value = !authMenuOpen.value;
+}
+
+function onPointerDown(event: PointerEvent) {
+  if (!authMenuOpen.value) return;
+  const target = event.target as Node | null;
+  if (!target) return;
+  if (!authMenuRef.value?.contains(target)) {
+    authMenuOpen.value = false;
+  }
 }
 
 onMounted(() => {
   authStore.loadPublicConfig();
+  document.addEventListener('pointerdown', onPointerDown);
 });
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onPointerDown);
+});
+
+watch(
+  () => route.fullPath,
+  () => {
+    authMenuOpen.value = false;
+  },
+);
 </script>
 
 <template>
@@ -136,20 +167,26 @@ onMounted(() => {
         Загрузка входа...
       </button>
 
-      <div v-else class="auth-user">
-        <img
-          v-if="authStore.user?.picture"
-          class="auth-avatar"
-          :src="authStore.user.picture"
-          alt=""
-        />
-        <span v-else class="auth-avatar auth-avatar-fallback">
-          {{ authDisplayName.charAt(0).toUpperCase() || 'U' }}
-        </span>
-        <span class="auth-name">{{ authDisplayName }}</span>
-        <button type="button" class="auth-logout-btn" @click="onSignOut">
-          Выйти
+      <div v-else ref="authMenuRef" class="auth-user-menu">
+        <button type="button" class="auth-avatar-btn" @click="toggleAuthMenu">
+          <img
+            v-if="authStore.user?.picture"
+            class="auth-avatar"
+            :src="authStore.user.picture"
+            alt=""
+          />
+          <span v-else class="auth-avatar auth-avatar-fallback">
+            {{ authDisplayName.charAt(0).toUpperCase() || 'U' }}
+          </span>
         </button>
+
+        <div v-if="authMenuOpen" class="auth-user-popover">
+          <div class="auth-user-name">{{ authDisplayName }}</div>
+          <div class="auth-user-email">{{ authStore.user?.email }}</div>
+          <button type="button" class="auth-logout-btn" @click="onSignOut">
+            Выйти из системы
+          </button>
+        </div>
       </div>
     </div>
   </header>
@@ -264,11 +301,29 @@ onMounted(() => {
   min-width: 220px;
 }
 
-.auth-user {
+.auth-user-menu {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
+}
+
+.auth-avatar-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: 0.18s ease;
+}
+
+.auth-avatar-btn:hover {
+  border-color: #bfd5ff;
+  box-shadow: 0 4px 10px rgba(16, 88, 255, 0.16);
 }
 
 .auth-avatar {
@@ -288,29 +343,54 @@ onMounted(() => {
   font-size: 12px;
   font-weight: 700;
   background: #e2e8f0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
 }
 
-.auth-name {
-  max-width: 118px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.auth-user-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 220px;
+  border-radius: 12px;
+  border: 1px solid #dbe4f3;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.16);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 130;
+}
+
+.auth-user-name {
+  color: #0f172a;
   font-size: 13px;
   font-weight: 700;
-  color: var(--text-main);
+  line-height: 1.3;
+}
+
+.auth-user-email {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  word-break: break-word;
 }
 
 .auth-logout-btn {
-  height: 32px;
+  height: 34px;
   border: 1px solid #dbe4f3;
-  border-radius: 999px;
+  border-radius: 10px;
   background: #ffffff;
   color: #475569;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
-  padding: 0 11px;
+  padding: 0 12px;
   cursor: pointer;
   transition: all 0.18s ease;
+  margin-top: 2px;
 }
 
 .auth-logout-btn:hover {
@@ -382,8 +462,8 @@ onMounted(() => {
     min-width: 160px;
   }
 
-  .auth-name {
-    max-width: 74px;
+  .auth-user-popover {
+    right: -6px;
   }
 }
 </style>
