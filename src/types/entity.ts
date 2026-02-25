@@ -9,23 +9,37 @@ export type EntityType =
   | 'task'
   | 'shape';
 
-export interface CanvasNode {
+export interface CanvasNodeProjection {
   id: string;
-  label: string;
+  entityId: string;
   x: number;
   y: number;
+  scale?: number;
 }
 
-export interface CanvasEdge {
+export interface CanvasEdgeProjection {
   id: string;
   source: string;
   target: string;
   label?: string;
+  color?: string;
+  arrowLeft?: boolean;
+  arrowRight?: boolean;
+}
+
+export interface ProjectCanvasViewport {
+  x: number;
+  y: number;
+  zoom: number;
+  width: number;
+  height: number;
 }
 
 export interface ProjectCanvasData {
-  nodes: CanvasNode[];
-  edges: CanvasEdge[];
+  nodes: CanvasNodeProjection[];
+  edges: CanvasEdgeProjection[];
+  viewport?: ProjectCanvasViewport;
+  background?: string;
 }
 
 export interface Entity {

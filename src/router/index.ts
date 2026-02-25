@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import CollectionView from '../views/CollectionView.vue';
-import ProjectCanvasView from '../views/ProjectCanvasView.vue';
+import CanvasView from '../views/CanvasView.vue';
 
 const router = createRouter({
   history: createWebHistory(),
@@ -18,10 +18,14 @@ const router = createRouter({
       },
     },
     {
-      path: '/projects/:id/canvas',
+      path: '/canvas/:id',
       name: 'project-canvas',
-      component: ProjectCanvasView,
+      component: CanvasView,
       props: true,
+    },
+    {
+      path: '/projects/:id/canvas',
+      redirect: (to) => `/canvas/${to.params.id}`,
     },
     {
       path: '/entities/:type',

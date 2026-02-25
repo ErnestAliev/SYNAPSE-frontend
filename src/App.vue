@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted } from 'vue';
 import AppHeader from './components/layout/AppHeader.vue';
+import AgentChatDock from './components/ui/AgentChatDock.vue';
 import { useEntitiesStore } from './stores/entities';
 
 const entitiesStore = useEntitiesStore();
@@ -17,6 +18,8 @@ onMounted(async () => {
     <main class="app-content">
       <RouterView />
     </main>
+
+    <AgentChatDock />
 
     <button class="settings-btn" aria-label="Настройки">
       <svg

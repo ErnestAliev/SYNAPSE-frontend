@@ -20,7 +20,7 @@ const tabs: TabConfig[] = [
   { id: 'goal', label: 'Цели', to: '/entities/goal' },
   { id: 'result', label: 'Результаты', to: '/entities/result' },
   { id: 'task', label: 'Задачи', to: '/entities/task' },
-  { id: 'shape', label: 'Пустые', to: '/entities/shape' },
+  { id: 'shape', label: 'Элементы', to: '/entities/shape' },
 ];
 
 const route = useRoute();
@@ -48,7 +48,7 @@ function normalizeType(value: unknown): EntityType {
 }
 
 const activeTab = computed<EntityType>(() => {
-  if (route.path.startsWith('/projects')) {
+  if (route.path.startsWith('/projects') || route.path.startsWith('/canvas')) {
     return 'project';
   }
 

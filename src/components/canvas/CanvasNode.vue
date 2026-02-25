@@ -1,0 +1,475 @@
+<script setup lang="ts">
+import { computed, nextTick, ref, watch } from 'vue';
+import AppIcon from '../ui/AppIcon.vue';
+import ProfileProgressRing from '../ui/ProfileProgressRing.vue';
+import { useEntitiesStore } from '../../stores/entities';
+import type { CanvasNodeProjection, EntityType } from '../../types/entity';
+import { calculateEntityProfileProgress } from '../../utils/profileProgress';
+
+const props = defineProps<{
+  node: CanvasNodeProjection;
+  active?: boolean;
+  selected?: boolean;
+  dragging?: boolean;
+  isNameEditing?: boolean;
+  previewType?: EntityType | null;
+}>();
+
+const emit = defineEmits<{
+  (
+    event: 'start-drag',
+    payload: {
+      nodeId: string;
+      pointerEvent: PointerEvent;
+    },
+  ): void;
+  (
+    event: 'open-menu',
+    payload: {
+      nodeId: string;
+      shiftKey?: boolean;
+    },
+  ): void;
+  (
+    event: 'open-portal',
+    payload: {
+      projectId: string;
+    },
+  ): void;
+  (
+    event: 'name-commit',
+    payload: {
+      entityId: string;
+      name: string;
+    },
+  ): void;
+  (
+    event: 'name-edit-finished',
+    payload: {
+      nodeId: string;
+    },
+  ): void;
+}>();
+
+const entitiesStore = useEntitiesStore();
+const nameInputRef = ref<HTMLInputElement | null>(null);
+const nameDraft = ref('');
+const EMPTY_NAME_PLACEHOLDER = 'Без названия';
+const BASE_NODE_RING_SIZE = 82;
+
+const entity = computed(() => entitiesStore.byId(props.node.entityId));
+const displayName = computed(() => entity.value?.name?.trim() || 'Без названия');
+const entityType = computed<EntityType>(() => entity.value?.type || 'shape');
+const renderedType = computed<EntityType>(() => props.previewType || entityType.value);
+const profile = computed(() => {
+  const raw = entity.value?.profile;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {} as Record<string, unknown>;
+  }
+  return raw as Record<string, unknown>;
+});
+const nodeColor = computed(() => {
+  const raw = profile.value.color;
+  if (typeof raw !== 'string' || !raw.trim()) return '#1058ff';
+  return raw;
+});
+const nodeImage = computed(() => {
+  const raw = profile.value.image;
+  return typeof raw === 'string' ? raw : '';
+});
+
+function logoImageFromProfileRecord(record: Record<string, unknown>) {
+  const raw = record.logo;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return '';
+
+  const logo = raw as Record<string, unknown>;
+  return typeof logo.image === 'string' ? logo.image : '';
+}
+
+const hasLogo = computed(() => {
+  return logoImageFromProfileRecord(profile.value).trim().length > 0;
+});
+const nodeEmoji = computed(() => {
+  const raw = profile.value.emoji;
+  return typeof raw === 'string' ? raw : '';
+});
+const isLocked = computed(() => {
+  const raw = profile.value.locked;
+  if (typeof raw === 'boolean') {
+    return raw;
+  }
+
+  if (typeof raw === 'string') {
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+  }
+
+  return false;
+});
+const nodeScale = computed(() => {
+  const raw = props.node.scale;
+  const parsed =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string'
+        ? Number.parseFloat(raw)
+        : Number.NaN;
+
+  if (Number.isFinite(parsed)) {
+    return Math.min(1.2, Math.max(0.8, parsed));
+  }
+
+  return 1;
+});
+const nameInputSize = computed(() => {
+  const length = nameDraft.value.trim().length;
+  return Math.min(32, Math.max(10, length || 10));
+});
+const nodeStyle = computed(() => ({
+  left: `${props.node.x}px`,
+  top: `${props.node.y}px`,
+}));
+const nodeCircleStyle = computed(() => ({
+  background: nodeColor.value,
+  borderColor: nodeColor.value,
+}));
+const nodeProgress = computed(() => calculateEntityProfileProgress(entity.value));
+const nodeCircleWrapStyle = computed(() => ({
+  width: `${BASE_NODE_RING_SIZE}px`,
+  height: `${BASE_NODE_RING_SIZE}px`,
+  transform: `scale(${nodeScale.value})`,
+  transformOrigin: 'center center',
+}));
+
+watch(
+  displayName,
+  (nextName) => {
+    const trimmedDraft = nameDraft.value.trim();
+    const canHydrateWhileEditing =
+      !trimmedDraft || trimmedDraft === EMPTY_NAME_PLACEHOLDER;
+
+    if (!props.isNameEditing || canHydrateWhileEditing) {
+      nameDraft.value = nextName;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => props.isNameEditing,
+  async (isEditing) => {
+    if (!isEditing) return;
+
+    const trimmedDraft = nameDraft.value.trim();
+    if (!trimmedDraft || trimmedDraft === EMPTY_NAME_PLACEHOLDER) {
+      nameDraft.value = displayName.value;
+    }
+
+    await nextTick();
+    if (!nameInputRef.value) return;
+
+    nameInputRef.value.focus();
+    nameInputRef.value.select();
+  },
+  { immediate: true },
+);
+
+function normalizeName(rawValue: string) {
+  const trimmed = rawValue.trim();
+  if (trimmed.length) return trimmed;
+  return displayName.value;
+}
+
+function commitName() {
+  const nextName = normalizeName(nameDraft.value);
+  nameDraft.value = nextName;
+
+  const entityId = entity.value?._id || props.node.entityId;
+  emit('name-commit', {
+    entityId,
+    name: nextName,
+  });
+}
+
+function finishNameEditing() {
+  emit('name-edit-finished', { nodeId: props.node.id });
+}
+
+function onNodePointerDown(event: PointerEvent) {
+  if (event.button !== 0) return;
+  if (isLocked.value) return;
+
+  const target = event.target as HTMLElement | null;
+  if (target?.closest('.node-name-input')) {
+    return;
+  }
+
+  emit('start-drag', { nodeId: props.node.id, pointerEvent: event });
+}
+
+function onNodeClick(event: MouseEvent) {
+  event.stopPropagation();
+  emit('open-menu', { nodeId: props.node.id, shiftKey: event.shiftKey });
+}
+
+function onNodeDoubleClick(event: MouseEvent) {
+  event.stopPropagation();
+
+  if (entityType.value !== 'project' || !entity.value?._id) {
+    return;
+  }
+
+  emit('open-portal', { projectId: entity.value._id });
+}
+
+function onNameBlur() {
+  commitName();
+  finishNameEditing();
+}
+
+function onNameKeydown(event: KeyboardEvent) {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    (event.target as HTMLInputElement).blur();
+    return;
+  }
+
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    nameDraft.value = displayName.value;
+    finishNameEditing();
+    (event.target as HTMLInputElement).blur();
+  }
+}
+
+function selectAllNameInput(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  if (!input) return;
+
+  input.select();
+}
+
+function onNameInputClick(event: MouseEvent) {
+  event.stopPropagation();
+  const input = event.target as HTMLInputElement | null;
+  if (!input) return;
+
+  requestAnimationFrame(() => {
+    input.select();
+  });
+}
+</script>
+
+<template>
+  <div
+    class="canvas-node"
+    :class="{ active, selected, dragging }"
+    :style="nodeStyle"
+    @pointerdown.stop="onNodePointerDown"
+    @dblclick.stop="onNodeDoubleClick"
+  >
+    <div class="node-circle-wrap" :style="nodeCircleWrapStyle">
+      <span v-if="selected" class="node-selection-frame" />
+      <ProfileProgressRing
+        class="node-progress-ring"
+        :value="nodeProgress"
+        :size="BASE_NODE_RING_SIZE"
+        :stroke-width="4"
+      />
+
+      <button
+        type="button"
+        class="node-circle"
+        :title="renderedType"
+        :style="nodeCircleStyle"
+        @click.stop="onNodeClick"
+        @dragstart.prevent
+      >
+        <img
+          v-if="!previewType && nodeImage && !hasLogo"
+          class="node-image"
+          :src="nodeImage"
+          alt=""
+          draggable="false"
+          @dragstart.prevent
+        />
+        <img
+          v-else-if="!previewType && hasLogo"
+          class="node-logo"
+          :src="nodeImage"
+          alt=""
+          draggable="false"
+          @dragstart.prevent
+        />
+        <span v-else-if="!previewType && nodeEmoji" class="node-emoji">{{ nodeEmoji }}</span>
+        <AppIcon v-else class="node-icon" :name="renderedType" />
+      </button>
+    </div>
+
+    <input
+      ref="nameInputRef"
+      v-model="nameDraft"
+      type="text"
+      class="node-name-input"
+      :size="nameInputSize"
+      maxlength="32"
+      :disabled="isLocked"
+      :aria-label="`Имя узла ${displayName}`"
+      @click="onNameInputClick"
+      @pointerdown.stop
+      @focus="selectAllNameInput"
+      @blur="onNameBlur"
+      @keydown="onNameKeydown"
+    />
+  </div>
+</template>
+
+<style scoped>
+.canvas-node {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  z-index: 1;
+}
+
+.node-circle-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.node-selection-frame {
+  position: absolute;
+  width: 94px;
+  height: 94px;
+  border-radius: 16px;
+  border: 2px solid rgba(16, 88, 255, 0.8);
+  background: rgba(16, 88, 255, 0.08);
+  box-shadow: 0 0 0 2px rgba(16, 88, 255, 0.12);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.node-progress-ring {
+  position: absolute;
+  inset: 0;
+}
+
+.node-circle {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: 1px solid #1058ff;
+  background: #1058ff;
+  box-shadow: var(--shadow-base);
+  color: #ffffff;
+  cursor: pointer;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.18s ease;
+  z-index: 1;
+}
+
+.node-circle:hover {
+  transform: translateY(-1px);
+}
+
+.node-icon {
+  width: 60%;
+  height: 60%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.node-icon :deep(svg) {
+  width: 100%;
+  height: 100%;
+}
+
+.node-image {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.node-logo {
+  width: 60%;
+  height: 60%;
+  object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.node-emoji {
+  font-size: 43px;
+  line-height: 1;
+}
+
+.node-name-input {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 8px);
+  transform: translateX(-50%);
+  width: auto;
+  min-width: 10ch;
+  max-width: 32ch;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-main);
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 700;
+  text-align: center;
+  padding: 0.5em 0.825em;
+  outline: none;
+  user-select: text;
+}
+
+.node-name-input:focus {
+  border-color: var(--border-color);
+  background: #ffffff;
+  box-shadow: 0 0 0 2px var(--primary-soft);
+}
+
+.node-name-input:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.canvas-node.dragging .node-circle {
+  cursor: grabbing;
+}
+
+.canvas-node.active .node-name-input {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.canvas-node.active {
+  z-index: 131;
+}
+
+.canvas-node.selected {
+  z-index: 132;
+}
+
+.canvas-node.selected .node-circle {
+  box-shadow:
+    0 0 0 2px rgba(16, 88, 255, 0.28),
+    var(--shadow-hover);
+}
+</style>
