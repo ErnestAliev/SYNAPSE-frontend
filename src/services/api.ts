@@ -15,7 +15,7 @@ function readSessionToken() {
 
 export const apiClient = axios.create({
   baseURL: apiBaseUrl,
-  timeout: 15000,
+  timeout: 30000,
   withCredentials: true,
 });
 

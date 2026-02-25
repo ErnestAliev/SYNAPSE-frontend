@@ -3468,7 +3468,7 @@ watch(
   async (projectId, previousProjectId) => {
     clearViewportSyncTimer();
     if (previousProjectId && previousProjectId !== projectId) {
-      queueCanvasSync({ immediate: true, projectId: previousProjectId });
+      queueCanvasSync({ immediate: false, projectId: previousProjectId });
     }
 
     if (!projectId) {
@@ -3521,8 +3521,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearViewportSyncTimer();
-  queueCanvasSync({ immediate: true });
-  void entitiesStore.flushAllQueuedUpdates();
+  queueCanvasSync({ immediate: false });
   dismissNodeMenuHint({ persist: false });
   closeEntityInfoModal();
 

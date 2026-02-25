@@ -6,9 +6,12 @@ import type { Entity, EntityPayload, EntityType, ProjectCanvasData } from '../ty
 const bufferedEntityPatches = new Map<string, Partial<Entity>>();
 const bufferedEntityPatchTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const bufferedEntityPatchInFlight = new Set<string>();
+const bufferedEntityPatchRetryCounts = new Map<string, number>();
 const recentlyDeletedEntityIds = new Map<string, number>();
 
 const RECENT_DELETE_TTL_MS = 15000;
+const ENTITIES_FETCH_TIMEOUT_MS = 60000;
+const ENTITY_UPDATE_TIMEOUT_MS = 60000;
 
 const ENTITY_TYPES: EntityType[] = [
   'project',
@@ -106,6 +109,7 @@ export const useEntitiesStore = defineStore('entities', {
 
       bufferedEntityPatches.delete(id);
       bufferedEntityPatchInFlight.delete(id);
+      bufferedEntityPatchRetryCounts.delete(id);
     },
 
     applyLocalEntityPatch(id: string, payload: Partial<Entity>) {
@@ -217,6 +221,7 @@ export const useEntitiesStore = defineStore('entities', {
       try {
         const { data } = await apiClient.get<Entity[]>('/entities', {
           params: { _t: Date.now() },
+          timeout: ENTITIES_FETCH_TIMEOUT_MS,
         });
 
         cleanupExpiredRecentlyDeleted();
@@ -308,19 +313,26 @@ export const useEntitiesStore = defineStore('entities', {
       bufferedEntityPatchInFlight.add(id);
 
       try {
-        const { data } = await apiClient.put<Entity>(`/entities/${id}`, payload);
+        const { data } = await apiClient.put<Entity>(`/entities/${id}`, payload, {
+          timeout: ENTITY_UPDATE_TIMEOUT_MS,
+        });
         this.items = this.items.map((item) => (item._id === id ? data : item));
+        bufferedEntityPatchRetryCounts.delete(id);
       } catch (error: unknown) {
         this.error = this.formatApiError(error);
         const current = bufferedEntityPatches.get(id) || {};
         bufferedEntityPatches.set(id, mergeEntityPatch(payload, current));
+        const nextRetryCount = (bufferedEntityPatchRetryCounts.get(id) || 0) + 1;
+        bufferedEntityPatchRetryCounts.set(id, nextRetryCount);
       } finally {
         bufferedEntityPatchInFlight.delete(id);
 
         if (bufferedEntityPatches.has(id)) {
+          const retryCount = bufferedEntityPatchRetryCounts.get(id) || 0;
+          const retryDelay = Math.min(5000, 300 * Math.max(1, retryCount));
           const retryTimer = setTimeout(() => {
             void this.flushQueuedEntityUpdate(id);
-          }, 40);
+          }, retryDelay);
           bufferedEntityPatchTimers.set(id, retryTimer);
         }
       }
