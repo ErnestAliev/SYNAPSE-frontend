@@ -17,6 +17,9 @@ interface AuthState {
   loading: boolean;
   initialized: boolean;
   error: string | null;
+  runtimeGoogleClientId: string;
+  publicConfigLoaded: boolean;
+  publicConfigLoading: boolean;
 }
 
 interface GoogleAuthResponse {
@@ -28,6 +31,10 @@ interface GoogleAuthResponse {
 interface DevAuthPayload {
   name?: string;
   email?: string;
+}
+
+interface PublicAuthConfigResponse {
+  googleClientId?: string;
 }
 
 function readStoredSessionToken() {
@@ -80,19 +87,47 @@ export const useAuthStore = defineStore('auth', {
     loading: false,
     initialized: false,
     error: null,
+    runtimeGoogleClientId: '',
+    publicConfigLoaded: false,
+    publicConfigLoading: false,
   }),
 
   getters: {
     isAuthenticated: (state) => Boolean(state.user),
+    googleClientId: (state) => {
+      const fromBuildEnv = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || '').trim();
+      return fromBuildEnv || state.runtimeGoogleClientId;
+    },
   },
 
   actions: {
+    async loadPublicConfig(options?: { force?: boolean }) {
+      const force = options?.force === true;
+      if (this.publicConfigLoading) return;
+      if (this.publicConfigLoaded && !force) return;
+
+      this.publicConfigLoading = true;
+
+      try {
+        const { data } = await apiClient.get<PublicAuthConfigResponse>('/auth/config');
+        this.runtimeGoogleClientId =
+          typeof data.googleClientId === 'string' ? data.googleClientId.trim() : '';
+      } catch {
+        this.runtimeGoogleClientId = '';
+      } finally {
+        this.publicConfigLoaded = true;
+        this.publicConfigLoading = false;
+      }
+    },
+
     clearLocalSession() {
       writeStoredSessionToken('');
     },
 
     async bootstrap() {
       if (this.initialized) return;
+
+      await this.loadPublicConfig();
 
       const token = readStoredSessionToken();
       if (!token) {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useEntitiesStore } from '../../stores/entities';
 import AppIcon from '../ui/AppIcon.vue';
@@ -29,8 +29,10 @@ const route = useRoute();
 const router = useRouter();
 const entitiesStore = useEntitiesStore();
 const authStore = useAuthStore();
-const googleClientId = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || '').trim();
 const showTabs = computed(() => authStore.isAuthenticated);
+const isGoogleButtonReady = computed(
+  () => Boolean(authStore.googleClientId) || authStore.publicConfigLoaded,
+);
 
 function normalizeType(value: unknown): EntityType {
   const allowed: EntityType[] = [
@@ -96,6 +98,10 @@ function onGoogleError(message: string) {
 async function onSignOut() {
   await authStore.signOut();
 }
+
+onMounted(() => {
+  authStore.loadPublicConfig();
+});
 </script>
 
 <template>
@@ -119,12 +125,15 @@ async function onSignOut() {
 
     <div class="auth-panel">
       <GoogleSignInButton
-        v-if="!authStore.isAuthenticated"
-        :client-id="googleClientId"
+        v-if="!authStore.isAuthenticated && isGoogleButtonReady"
+        :client-id="authStore.googleClientId"
         :disabled="authStore.loading"
         @credential="onGoogleCredential"
         @error="onGoogleError"
       />
+      <button v-else-if="!authStore.isAuthenticated" type="button" class="auth-google-loading" disabled>
+        Загрузка входа...
+      </button>
 
       <div v-else class="auth-user">
         <img
@@ -307,6 +316,19 @@ async function onSignOut() {
   color: #1058ff;
   border-color: #bfd5ff;
   background: #eef4ff;
+}
+
+.auth-google-loading {
+  height: 36px;
+  min-width: 190px;
+  border-radius: 999px;
+  border: 1px solid #dbe4f3;
+  background: #f8fafc;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 12px;
+  cursor: not-allowed;
 }
 
 .auth-inline-error {

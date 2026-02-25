@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import GoogleSignInButton from '../components/auth/GoogleSignInButton.vue';
 import { useAuthStore } from '../stores/auth';
@@ -10,8 +10,10 @@ const router = useRouter();
 const authStore = useAuthStore();
 const entitiesStore = useEntitiesStore();
 
-const googleClientId = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || '').trim();
 const showDevLogin = import.meta.env.DEV;
+const isGoogleButtonReady = computed(
+  () => Boolean(authStore.googleClientId) || authStore.publicConfigLoaded,
+);
 
 const redirectTarget = computed(() => {
   const redirect = route.query.redirect;
@@ -46,6 +48,10 @@ async function onDevLogin() {
     // authStore.error already populated
   }
 }
+
+onMounted(() => {
+  authStore.loadPublicConfig();
+});
 </script>
 
 <template>
@@ -57,11 +63,15 @@ async function onDevLogin() {
       </p>
 
       <GoogleSignInButton
-        :client-id="googleClientId"
+        v-if="isGoogleButtonReady"
+        :client-id="authStore.googleClientId"
         :disabled="authStore.loading"
         @credential="onGoogleCredential"
         @error="onGoogleError"
       />
+      <button v-else type="button" class="auth-google-loading" disabled>
+        Загрузка входа...
+      </button>
 
       <button
         v-if="showDevLogin"
@@ -149,6 +159,19 @@ async function onDevLogin() {
 
 .auth-dev-btn:disabled {
   opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.auth-google-loading {
+  height: 36px;
+  min-width: 210px;
+  border-radius: 999px;
+  border: 1px solid #dbe4f3;
+  background: #f8fafc;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 14px;
   cursor: not-allowed;
 }
 </style>
