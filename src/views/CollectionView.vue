@@ -6,7 +6,7 @@ import AppIcon from '../components/ui/AppIcon.vue';
 import FilterDropdown from '../components/ui/FilterDropdown.vue';
 import ProfileProgressRing from '../components/ui/ProfileProgressRing.vue';
 import EntityInfoModal from '../components/entity/EntityInfoModal.vue';
-import type { Entity, EntityType, ProjectCanvasData } from '../types/entity';
+import type { Entity, EntityType } from '../types/entity';
 import { calculateEntityProfileProgress } from '../utils/profileProgress';
 
 const props = defineProps<{
@@ -15,7 +15,6 @@ const props = defineProps<{
 
 const entitiesStore = useEntitiesStore();
 const router = useRouter();
-const CANVAS_CACHE_PREFIX = 'synapse12.canvas.v1';
 
 type MetadataFieldKey =
   | 'tags'
@@ -124,7 +123,7 @@ const selectedFieldFilters = ref<Record<string, string>>({});
 const entityInfoEntityId = ref<string | null>(null);
 const activeProjectRenameId = ref<string | null>(null);
 const projectRenameDraft = ref('');
-const projectInputRefs = new Map<string, HTMLInputElement>();
+const projectInputRefs = ref<Record<string, HTMLInputElement | null>>({});
 const projectDeleteTarget = ref<Entity | null>(null);
 const isProjectDeleteBusy = ref(false);
 
@@ -132,13 +131,6 @@ interface ProjectPreviewPoint {
   id: string;
   x: number;
   y: number;
-  r: number;
-  color: string;
-  image: string;
-  logo: boolean;
-  emoji: string;
-  glyph: string;
-  stroke: string;
 }
 
 interface ProjectPreviewEdge {
@@ -152,19 +144,6 @@ interface ProjectPreviewEdge {
 interface ProjectPreview {
   nodes: ProjectPreviewPoint[];
   edges: ProjectPreviewEdge[];
-}
-
-interface ProjectCanvasCacheSnapshot {
-  savedAt: number;
-  canvas_data: ProjectCanvasData;
-}
-
-interface ProjectPreviewViewport {
-  x: number;
-  y: number;
-  zoom: number;
-  width: number;
-  height: number;
 }
 
 function normalizeType(value: unknown): EntityType {
@@ -190,112 +169,9 @@ function normalizeType(value: unknown): EntityType {
 const activeType = computed<EntityType>(() => normalizeType(props.type));
 
 const typedEntities = computed(() => entitiesStore.byType(activeType.value));
-const MIN_NODE_SCALE = 0.8;
-const MAX_NODE_SCALE = 1.2;
-const PREVIEW_WIDTH = 180;
-const PREVIEW_HEIGHT = 112;
-const PREVIEW_NODE_BASE_RADIUS = 36;
-
-function normalizeNodeScaleForPreview(raw: unknown) {
-  const parsed =
-    typeof raw === 'number'
-      ? raw
-      : typeof raw === 'string'
-        ? Number.parseFloat(raw)
-        : Number.NaN;
-
-  if (!Number.isFinite(parsed)) return 1;
-  return Math.min(MAX_NODE_SCALE, Math.max(MIN_NODE_SCALE, parsed));
-}
-
-function previewTypeGlyph(type: EntityType) {
-  const glyphs: Record<EntityType, string> = {
-    project: 'П',
-    person: 'Ч',
-    company: 'К',
-    event: 'С',
-    resource: 'Р',
-    goal: 'Ц',
-    result: 'И',
-    task: 'З',
-    shape: 'Э',
-  };
-
-  return glyphs[type] || 'Э';
-}
-
-function projectPreviewClipId(projectId: string, nodeId: string) {
-  const normalizedProjectId = projectId.replace(/[^a-zA-Z0-9_-]/g, '-');
-  const normalizedNodeId = nodeId.replace(/[^a-zA-Z0-9_-]/g, '-');
-  return `project-preview-clip-${normalizedProjectId}-${normalizedNodeId}`;
-}
-
-function getCanvasCacheKey(projectId: string) {
-  return `${CANVAS_CACHE_PREFIX}:${projectId}`;
-}
-
-function readProjectCanvasCache(projectId: string): ProjectCanvasCacheSnapshot | null {
-  if (typeof window === 'undefined') return null;
-
-  try {
-    const raw = window.localStorage.getItem(getCanvasCacheKey(projectId));
-    if (!raw) return null;
-
-    const parsed = JSON.parse(raw) as Partial<ProjectCanvasCacheSnapshot>;
-    if (!parsed || typeof parsed.savedAt !== 'number') return null;
-    if (!parsed.canvas_data || typeof parsed.canvas_data !== 'object') return null;
-
-    const canvasData = parsed.canvas_data as ProjectCanvasData;
-    const nodes = Array.isArray(canvasData.nodes) ? canvasData.nodes : [];
-    const edges = Array.isArray(canvasData.edges) ? canvasData.edges : [];
-
-    return {
-      savedAt: parsed.savedAt,
-      canvas_data: {
-        ...canvasData,
-        nodes,
-        edges,
-      },
-    };
-  } catch {
-    return null;
-  }
-}
-
-function resolveProjectCanvasData(entity: Entity): ProjectCanvasData | undefined {
-  const serverCanvasData = entity.canvas_data;
-  const cached = readProjectCanvasCache(entity._id);
-
-  if (!cached) return serverCanvasData;
-
-  const serverUpdatedAt = entity.updatedAt ? Date.parse(entity.updatedAt) : 0;
-  if (cached.savedAt >= serverUpdatedAt) {
-    return cached.canvas_data;
-  }
-
-  return serverCanvasData;
-}
-
-function normalizeProjectViewport(value: unknown): ProjectPreviewViewport | null {
-  if (!value || typeof value !== 'object') return null;
-
-  const raw = value as Partial<ProjectPreviewViewport>;
-  const x = typeof raw.x === 'number' && Number.isFinite(raw.x) ? raw.x : null;
-  const y = typeof raw.y === 'number' && Number.isFinite(raw.y) ? raw.y : null;
-  const zoom = typeof raw.zoom === 'number' && Number.isFinite(raw.zoom) ? raw.zoom : null;
-  const width = typeof raw.width === 'number' && Number.isFinite(raw.width) ? raw.width : null;
-  const height = typeof raw.height === 'number' && Number.isFinite(raw.height) ? raw.height : null;
-
-  if (x === null || y === null || zoom === null || width === null || height === null) {
-    return null;
-  }
-
-  if (zoom <= 0 || width <= 0 || height <= 0) return null;
-  return { x, y, zoom, width, height };
-}
 
 function normalizeProjectPreview(entity: Entity): ProjectPreview | null {
-  const rawCanvas = resolveProjectCanvasData(entity);
+  const rawCanvas = entity.canvas_data;
   if (!rawCanvas || typeof rawCanvas !== 'object') return null;
 
   const rawNodes = Array.isArray(rawCanvas.nodes) ? rawCanvas.nodes : [];
@@ -305,91 +181,35 @@ function normalizeProjectPreview(entity: Entity): ProjectPreview | null {
       return (
         !!node &&
         typeof node.id === 'string' &&
-        typeof node.entityId === 'string' &&
         Number.isFinite(node.x) &&
         Number.isFinite(node.y)
       );
     })
     .map((node) => ({
       id: node.id,
-      entityId: node.entityId,
       x: node.x,
       y: node.y,
-      scale: normalizeNodeScaleForPreview(node.scale),
     }));
 
   if (!nodes.length) return null;
 
-  const viewport = normalizeProjectViewport(rawCanvas.viewport);
-  const previewNodes = viewport
-    ? (() => {
-        const viewportScale = Math.min(
-          PREVIEW_WIDTH / viewport.width,
-          PREVIEW_HEIGHT / viewport.height,
-        );
-        const offsetX = (PREVIEW_WIDTH - viewport.width * viewportScale) / 2;
-        const offsetY = (PREVIEW_HEIGHT - viewport.height * viewportScale) / 2;
+  const minX = Math.min(...nodes.map((node) => node.x));
+  const maxX = Math.max(...nodes.map((node) => node.x));
+  const minY = Math.min(...nodes.map((node) => node.y));
+  const maxY = Math.max(...nodes.map((node) => node.y));
+  const spanX = Math.max(1, maxX - minX);
+  const spanY = Math.max(1, maxY - minY);
+  const viewWidth = 180;
+  const viewHeight = 112;
+  const padding = 10;
+  const innerWidth = viewWidth - padding * 2;
+  const innerHeight = viewHeight - padding * 2;
 
-        return nodes.map((node) => {
-          const screenX = viewport.x + node.x * viewport.zoom;
-          const screenY = viewport.y + node.y * viewport.zoom;
-          const entityForNode = entitiesStore.byId(node.entityId);
-          const profile = toProfile(entityForNode);
-          const color = typeof profile.color === 'string' && profile.color.trim() ? profile.color : '#1058ff';
-          const image = typeof profile.image === 'string' ? profile.image : '';
-          const emoji = typeof profile.emoji === 'string' ? profile.emoji : '';
-          const logo = logoImageFromProfile(profile).trim().length > 0;
-          const glyph = previewTypeGlyph(entityForNode?.type || 'shape');
-          const projectedRadius = PREVIEW_NODE_BASE_RADIUS * node.scale * viewport.zoom * viewportScale;
-
-          return {
-            id: node.id,
-            x: offsetX + screenX * viewportScale,
-            y: offsetY + screenY * viewportScale,
-            r: Math.max(3, Math.min(28, projectedRadius)),
-            color,
-            image,
-            logo,
-            emoji,
-            glyph,
-            stroke: 'rgba(255, 255, 255, 0.95)',
-          };
-        });
-      })()
-    : (() => {
-        const minX = Math.min(...nodes.map((node) => node.x));
-        const maxX = Math.max(...nodes.map((node) => node.x));
-        const minY = Math.min(...nodes.map((node) => node.y));
-        const maxY = Math.max(...nodes.map((node) => node.y));
-        const spanX = Math.max(1, maxX - minX);
-        const spanY = Math.max(1, maxY - minY);
-        const padding = 10;
-        const innerWidth = PREVIEW_WIDTH - padding * 2;
-        const innerHeight = PREVIEW_HEIGHT - padding * 2;
-
-        return nodes.map((node) => {
-          const entityForNode = entitiesStore.byId(node.entityId);
-          const profile = toProfile(entityForNode);
-          const color = typeof profile.color === 'string' && profile.color.trim() ? profile.color : '#1058ff';
-          const image = typeof profile.image === 'string' ? profile.image : '';
-          const emoji = typeof profile.emoji === 'string' ? profile.emoji : '';
-          const logo = logoImageFromProfile(profile).trim().length > 0;
-          const glyph = previewTypeGlyph(entityForNode?.type || 'shape');
-
-          return {
-            id: node.id,
-            x: padding + ((node.x - minX) / spanX) * innerWidth,
-            y: padding + ((node.y - minY) / spanY) * innerHeight,
-            r: Math.max(3, Math.min(20, 6 * node.scale)),
-            color,
-            image,
-            logo,
-            emoji,
-            glyph,
-            stroke: 'rgba(255, 255, 255, 0.95)',
-          };
-        });
-      })();
+  const previewNodes = nodes.map((node) => ({
+    id: node.id,
+    x: padding + ((node.x - minX) / spanX) * innerWidth,
+    y: padding + ((node.y - minY) / spanY) * innerHeight,
+  }));
   const nodeById = new Map(previewNodes.map((node) => [node.id, node]));
 
   const previewEdges = rawEdges
@@ -618,15 +438,11 @@ async function createEntity() {
   collectionViewRef.value?.scrollTo({ top: 0, behavior: 'auto' });
 }
 
-function setProjectInputRef(projectId: string | null | undefined, element: HTMLInputElement | null) {
-  if (!projectId) return;
-
-  if (element) {
-    projectInputRefs.set(projectId, element);
-    return;
-  }
-
-  projectInputRefs.delete(projectId);
+function setProjectInputRef(projectId: string, element: HTMLInputElement | null) {
+  projectInputRefs.value = {
+    ...projectInputRefs.value,
+    [projectId]: element,
+  };
 }
 
 function openProjectRename(project: Entity) {
@@ -634,7 +450,7 @@ function openProjectRename(project: Entity) {
   projectRenameDraft.value = project.name || '';
 
   void nextTick(() => {
-    const input = projectInputRefs.get(project._id);
+    const input = projectInputRefs.value[project._id];
     if (!input) return;
     input.focus();
     input.select();
@@ -738,19 +554,19 @@ async function confirmProjectDelete() {
   isProjectDeleteBusy.value = true;
   try {
     await entitiesStore.deleteEntity(target._id);
-  } catch (error) {
-    entitiesStore.error = entitiesStore.formatApiError(error);
-  } finally {
+    await entitiesStore.fetchEntities();
     projectDeleteTarget.value = null;
+  } finally {
     isProjectDeleteBusy.value = false;
   }
 }
 
-function openProjectCanvas(projectId: string) {
-  router.push({ name: 'project-canvas', params: { id: projectId } });
-}
-
 function onCardClick(entity: Entity) {
+  if (entity.type === 'project') {
+    router.push({ name: 'project-canvas', params: { id: entity._id } });
+    return;
+  }
+
   entityInfoEntityId.value = entity._id;
 }
 
@@ -760,14 +576,6 @@ function toProfile(entity: Entity | null | undefined) {
     return {} as Record<string, unknown>;
   }
   return raw as Record<string, unknown>;
-}
-
-function logoImageFromProfile(profile: Record<string, unknown>) {
-  const raw = profile.logo;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return '';
-
-  const logo = raw as Record<string, unknown>;
-  return typeof logo.image === 'string' ? logo.image : '';
 }
 
 function entityColor(entity: Entity) {
@@ -781,10 +589,6 @@ function entityColor(entity: Entity) {
 function entityImage(entity: Entity) {
   const raw = toProfile(entity).image;
   return typeof raw === 'string' ? raw : '';
-}
-
-function entityHasLogo(entity: Entity) {
-  return logoImageFromProfile(toProfile(entity)).trim().length > 0;
 }
 
 function entityEmoji(entity: Entity) {
@@ -821,10 +625,8 @@ function closeEntityInfoModal() {
     </div>
 
     <section ref="collectionViewRef" class="collection-view">
-      <div v-if="entitiesStore.loading && !entitiesStore.items.length" class="state">Загрузка...</div>
-      <div v-else-if="entitiesStore.error && !entitiesStore.items.length" class="state state-error">
-        {{ entitiesStore.error }}
-      </div>
+      <div v-if="entitiesStore.loading" class="state">Загрузка...</div>
+      <div v-else-if="entitiesStore.error" class="state state-error">{{ entitiesStore.error }}</div>
       <div v-else class="grid-layout">
         <button class="create-card" @click="createEntity">
           <AppIcon name="plus" />
@@ -835,33 +637,21 @@ function closeEntityInfoModal() {
           <article
             v-if="activeType === 'project'"
             class="project-card"
+            @click="onCardClick(firstEntity)"
           >
             <span class="project-progress">
               <ProfileProgressRing :value="entityProgress(firstEntity)" :size="28" :stroke-width="2.5">
                 <span class="project-progress-dot" />
               </ProfileProgressRing>
             </span>
-            <button
-              type="button"
-              class="project-thumbnail project-thumbnail-btn"
-              @click="openProjectCanvas(firstEntity._id)"
-            >
+            <div class="project-thumbnail">
               <svg
                 v-if="projectPreview(firstEntity)"
                 class="project-preview-svg"
                 viewBox="0 0 180 112"
-                preserveAspectRatio="xMidYMid meet"
+                preserveAspectRatio="none"
                 aria-hidden="true"
               >
-                <defs>
-                  <clipPath
-                    v-for="node in projectPreview(firstEntity)?.nodes || []"
-                    :id="projectPreviewClipId(firstEntity._id, node.id)"
-                    :key="`clip-${node.id}`"
-                  >
-                    <circle :cx="node.x" :cy="node.y" :r="node.r" />
-                  </clipPath>
-                </defs>
                 <line
                   v-for="edge in projectPreview(firstEntity)?.edges || []"
                   :key="edge.id"
@@ -873,68 +663,17 @@ function closeEntityInfoModal() {
                 />
                 <circle
                   v-for="node in projectPreview(firstEntity)?.nodes || []"
-                  :key="`node-bg-${node.id}`"
+                  :key="node.id"
                   :cx="node.x"
                   :cy="node.y"
-                  :r="node.r"
-                  :fill="node.color"
-                  :stroke="node.stroke"
-                  stroke-width="1"
+                  r="3.2"
+                  class="project-preview-node"
                 />
-                <image
-                  v-for="node in projectPreview(firstEntity)?.nodes || []"
-                  v-show="node.image && !node.logo"
-                  :key="`node-image-${node.id}`"
-                  :href="node.image"
-                  :x="node.x - node.r"
-                  :y="node.y - node.r"
-                  :width="node.r * 2"
-                  :height="node.r * 2"
-                  preserveAspectRatio="xMidYMid slice"
-                  :clip-path="`url(#${projectPreviewClipId(firstEntity._id, node.id)})`"
-                />
-                <image
-                  v-for="node in projectPreview(firstEntity)?.nodes || []"
-                  v-show="node.image && node.logo"
-                  :key="`node-logo-${node.id}`"
-                  :href="node.image"
-                  :x="node.x - node.r * 0.6"
-                  :y="node.y - node.r * 0.6"
-                  :width="node.r * 1.2"
-                  :height="node.r * 1.2"
-                  preserveAspectRatio="xMidYMid meet"
-                />
-                <text
-                  v-for="node in projectPreview(firstEntity)?.nodes || []"
-                  v-show="!node.image && node.emoji"
-                  :key="`node-emoji-${node.id}`"
-                  :x="node.x"
-                  :y="node.y + node.r * 0.12"
-                  text-anchor="middle"
-                  dominant-baseline="middle"
-                  :font-size="Math.max(8, node.r * 0.92)"
-                  class="project-preview-emoji"
-                >
-                  {{ node.emoji }}
-                </text>
-                <text
-                  v-for="node in projectPreview(firstEntity)?.nodes || []"
-                  v-show="!node.image && !node.emoji"
-                  :key="`node-glyph-${node.id}`"
-                  :x="node.x"
-                  :y="node.y + node.r * 0.06"
-                  text-anchor="middle"
-                  dominant-baseline="middle"
-                  :font-size="Math.max(6, node.r * 0.8)"
-                  class="project-preview-glyph"
-                >
-                  {{ node.glyph }}
-                </text>
               </svg>
-            </button>
+            </div>
             <div class="project-info">
               <input
-                :ref="(el) => setProjectInputRef(firstEntity?._id, el as HTMLInputElement | null)"
+                :ref="(el) => setProjectInputRef(firstEntity!._id, el as HTMLInputElement | null)"
                 class="project-name-input"
                 type="text"
                 :value="projectNameValue(firstEntity)"
@@ -971,8 +710,7 @@ function closeEntityInfoModal() {
             <div class="card-cycle-wrap">
               <ProfileProgressRing class="card-progress-ring" :value="entityProgress(firstEntity)" :size="84" :stroke-width="4" />
               <div class="card-cycle" :style="{ background: entityColor(firstEntity), borderColor: entityColor(firstEntity) }">
-                <img v-if="entityImage(firstEntity) && !entityHasLogo(firstEntity)" class="card-image" :src="entityImage(firstEntity)" alt="" />
-                <img v-else-if="entityHasLogo(firstEntity)" class="card-logo" :src="entityImage(firstEntity)" alt="" />
+                <img v-if="entityImage(firstEntity)" class="card-image" :src="entityImage(firstEntity)" alt="" />
                 <span v-else-if="entityEmoji(firstEntity)" class="card-emoji">{{ entityEmoji(firstEntity) }}</span>
                 <AppIcon v-else :name="firstEntity.type" class="card-icon" />
               </div>
@@ -985,33 +723,21 @@ function closeEntityInfoModal() {
           <article
             v-if="activeType === 'project'"
             class="project-card"
+            @click="onCardClick(entity)"
           >
             <span class="project-progress">
               <ProfileProgressRing :value="entityProgress(entity)" :size="28" :stroke-width="2.5">
                 <span class="project-progress-dot" />
               </ProfileProgressRing>
             </span>
-            <button
-              type="button"
-              class="project-thumbnail project-thumbnail-btn"
-              @click="openProjectCanvas(entity._id)"
-            >
+            <div class="project-thumbnail">
               <svg
                 v-if="projectPreview(entity)"
                 class="project-preview-svg"
                 viewBox="0 0 180 112"
-                preserveAspectRatio="xMidYMid meet"
+                preserveAspectRatio="none"
                 aria-hidden="true"
               >
-                <defs>
-                  <clipPath
-                    v-for="node in projectPreview(entity)?.nodes || []"
-                    :id="projectPreviewClipId(entity._id, node.id)"
-                    :key="`clip-${node.id}`"
-                  >
-                    <circle :cx="node.x" :cy="node.y" :r="node.r" />
-                  </clipPath>
-                </defs>
                 <line
                   v-for="edge in projectPreview(entity)?.edges || []"
                   :key="edge.id"
@@ -1023,65 +749,14 @@ function closeEntityInfoModal() {
                 />
                 <circle
                   v-for="node in projectPreview(entity)?.nodes || []"
-                  :key="`node-bg-${node.id}`"
+                  :key="node.id"
                   :cx="node.x"
                   :cy="node.y"
-                  :r="node.r"
-                  :fill="node.color"
-                  :stroke="node.stroke"
-                  stroke-width="1"
+                  r="3.2"
+                  class="project-preview-node"
                 />
-                <image
-                  v-for="node in projectPreview(entity)?.nodes || []"
-                  v-show="node.image && !node.logo"
-                  :key="`node-image-${node.id}`"
-                  :href="node.image"
-                  :x="node.x - node.r"
-                  :y="node.y - node.r"
-                  :width="node.r * 2"
-                  :height="node.r * 2"
-                  preserveAspectRatio="xMidYMid slice"
-                  :clip-path="`url(#${projectPreviewClipId(entity._id, node.id)})`"
-                />
-                <image
-                  v-for="node in projectPreview(entity)?.nodes || []"
-                  v-show="node.image && node.logo"
-                  :key="`node-logo-${node.id}`"
-                  :href="node.image"
-                  :x="node.x - node.r * 0.6"
-                  :y="node.y - node.r * 0.6"
-                  :width="node.r * 1.2"
-                  :height="node.r * 1.2"
-                  preserveAspectRatio="xMidYMid meet"
-                />
-                <text
-                  v-for="node in projectPreview(entity)?.nodes || []"
-                  v-show="!node.image && node.emoji"
-                  :key="`node-emoji-${node.id}`"
-                  :x="node.x"
-                  :y="node.y + node.r * 0.12"
-                  text-anchor="middle"
-                  dominant-baseline="middle"
-                  :font-size="Math.max(8, node.r * 0.92)"
-                  class="project-preview-emoji"
-                >
-                  {{ node.emoji }}
-                </text>
-                <text
-                  v-for="node in projectPreview(entity)?.nodes || []"
-                  v-show="!node.image && !node.emoji"
-                  :key="`node-glyph-${node.id}`"
-                  :x="node.x"
-                  :y="node.y + node.r * 0.06"
-                  text-anchor="middle"
-                  dominant-baseline="middle"
-                  :font-size="Math.max(6, node.r * 0.8)"
-                  class="project-preview-glyph"
-                >
-                  {{ node.glyph }}
-                </text>
               </svg>
-            </button>
+            </div>
             <div class="project-info">
               <input
                 :ref="(el) => setProjectInputRef(entity._id, el as HTMLInputElement | null)"
@@ -1121,8 +796,7 @@ function closeEntityInfoModal() {
             <div class="card-cycle-wrap">
               <ProfileProgressRing class="card-progress-ring" :value="entityProgress(entity)" :size="84" :stroke-width="4" />
               <div class="card-cycle" :style="{ background: entityColor(entity), borderColor: entityColor(entity) }">
-                <img v-if="entityImage(entity) && !entityHasLogo(entity)" class="card-image" :src="entityImage(entity)" alt="" />
-                <img v-else-if="entityHasLogo(entity)" class="card-logo" :src="entityImage(entity)" alt="" />
+                <img v-if="entityImage(entity)" class="card-image" :src="entityImage(entity)" alt="" />
                 <span v-else-if="entityEmoji(entity)" class="card-emoji">{{ entityEmoji(entity) }}</span>
                 <AppIcon v-else :name="entity.type" class="card-icon" />
               </div>
@@ -1131,9 +805,6 @@ function closeEntityInfoModal() {
           </button>
         </template>
       </div>
-      <p v-if="entitiesStore.error && entitiesStore.items.length" class="state state-error state-inline">
-        {{ entitiesStore.error }}
-      </p>
     </section>
 
     <EntityInfoModal
@@ -1353,14 +1024,8 @@ function closeEntityInfoModal() {
   object-fit: cover;
 }
 
-.card-logo {
-  width: 60%;
-  height: 60%;
-  object-fit: contain;
-}
-
 .card-emoji {
-  font-size: 43px;
+  font-size: 36px;
   line-height: 1;
 }
 
@@ -1376,7 +1041,7 @@ function closeEntityInfoModal() {
   border: 1px solid #d2e1fb;
   border-radius: var(--radius-lg);
   overflow: hidden;
-  cursor: default;
+  cursor: pointer;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   display: flex;
   flex-direction: column;
@@ -1391,8 +1056,8 @@ function closeEntityInfoModal() {
 }
 
 .project-thumbnail {
-  flex: 1 1 auto;
-  min-height: 92px;
+  flex: 0 0 104px;
+  min-height: 104px;
   background: #e6effc;
   background-image: radial-gradient(rgba(148, 163, 184, 0.45) 1px, transparent 1px);
   background-size: 16px 16px;
@@ -1404,16 +1069,7 @@ function closeEntityInfoModal() {
   border-bottom: 1px solid var(--border-color);
 }
 
-.project-thumbnail-btn {
-  width: 100%;
-  border: none;
-  margin: 0;
-  padding: 0;
-  cursor: pointer;
-}
-
 .project-preview-svg {
-  display: block;
   width: 100%;
   height: 100%;
 }
@@ -1421,19 +1077,12 @@ function closeEntityInfoModal() {
 .project-preview-edge {
   stroke: rgba(51, 65, 85, 0.3);
   stroke-width: 1.4;
-  stroke-linecap: round;
 }
 
-.project-preview-emoji {
-  user-select: none;
-  pointer-events: none;
-}
-
-.project-preview-glyph {
-  fill: #ffffff;
-  font-weight: 700;
-  user-select: none;
-  pointer-events: none;
+.project-preview-node {
+  fill: rgba(16, 88, 255, 0.92);
+  stroke: rgba(255, 255, 255, 0.95);
+  stroke-width: 1;
 }
 
 .project-progress {
@@ -1451,8 +1100,8 @@ function closeEntityInfoModal() {
 }
 
 .project-info {
-  margin-top: auto;
-  border-radius: 0;
+  
+  border-radius: 16px;
   padding: 8px;
   display: flex;
   align-items: center;
@@ -1612,10 +1261,6 @@ function closeEntityInfoModal() {
 
 .state-error {
   color: #dc2626;
-}
-
-.state-inline {
-  margin-top: 14px;
 }
 
 @media (max-width: 900px) {
