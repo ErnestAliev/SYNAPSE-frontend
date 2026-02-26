@@ -48,6 +48,20 @@ interface MetadataFieldConfig {
   label: string;
 }
 
+type QuickFilterKey = 'onlyWithPhoto' | 'onlyNameOnly' | 'hideWithoutPhoto' | 'hideWithoutName';
+
+interface QuickEntityFilters {
+  onlyWithPhoto: boolean;
+  onlyNameOnly: boolean;
+  hideWithoutPhoto: boolean;
+  hideWithoutName: boolean;
+}
+
+interface StoredCollectionFilterState {
+  selectedFieldFilters?: Record<string, string[]>;
+  quickFilters?: Partial<QuickEntityFilters>;
+}
+
 const ENTITY_FILTER_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   connection: [
     { key: 'tags', label: 'Теги' },
@@ -131,9 +145,22 @@ const ENTITY_FILTER_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   ],
 };
 
+const FILTER_STORAGE_PREFIX = 'synapse12.collection.filters.v2';
+
+function createDefaultQuickFilters(): QuickEntityFilters {
+  return {
+    onlyWithPhoto: false,
+    onlyNameOnly: false,
+    hideWithoutPhoto: false,
+    hideWithoutName: false,
+  };
+}
+
 const searchQuery = ref('');
 const collectionViewRef = ref<HTMLElement | null>(null);
-const selectedFieldFilters = ref<Record<string, string>>({});
+const selectedFieldFilters = ref<Record<string, string[]>>({});
+const quickEntityFilters = ref<QuickEntityFilters>(createDefaultQuickFilters());
+const isHydratingFilterPrefs = ref(false);
 const entityInfoEntityId = ref<string | null>(null);
 const activeProjectRenameId = ref<string | null>(null);
 const projectRenameDraft = ref('');
@@ -497,13 +524,27 @@ function metadataList(entity: Entity, key: MetadataFieldKey) {
   return toStringArray(toMetadata(entity)[key]);
 }
 
+function hasEntityPhoto(entity: Entity) {
+  const image = entityImage(entity);
+  return typeof image === 'string' && image.trim().length > 0;
+}
+
+function hasEntityName(entity: Entity) {
+  return typeof entity.name === 'string' && entity.name.trim().length > 0;
+}
+
+function quickFilterItems() {
+  return [
+    { key: 'onlyWithPhoto' as const, label: 'Только с фото' },
+    { key: 'onlyNameOnly' as const, label: 'Только Имя' },
+    { key: 'hideWithoutPhoto' as const, label: 'Скрыть без фото' },
+    { key: 'hideWithoutName' as const, label: 'Скрыть без имени' },
+  ];
+}
+
 const activeFilterFields = computed<MetadataFieldConfig[]>(() => {
   return ENTITY_FILTER_FIELDS[activeType.value] || [];
 });
-
-function getAllOptionLabel(label: string) {
-  return `Все ${label.toLowerCase()}`;
-}
 
 const filterOptionsByKey = computed<Record<string, string[]>>(() => {
   const map: Record<string, string[]> = {};
@@ -516,10 +557,7 @@ const filterOptionsByKey = computed<Record<string, string[]>>(() => {
       }
     }
 
-    map[field.key] = [
-      getAllOptionLabel(field.label),
-      ...Array.from(values).sort((a, b) => a.localeCompare(b, 'ru')),
-    ];
+    map[field.key] = Array.from(values);
   }
 
   return map;
@@ -529,19 +567,93 @@ function getFilterOptions(fieldKey: string) {
   return filterOptionsByKey.value[fieldKey] || [];
 }
 
-function getSelectedFilterValue(fieldKey: string) {
-  const options = getFilterOptions(fieldKey);
-  const selected = selectedFieldFilters.value[fieldKey];
-  if (selected && options.includes(selected)) {
-    return selected;
-  }
-  return options[0] || '';
+function storageKey() {
+  const userId = (authStore.user?.id || 'guest').trim() || 'guest';
+  return `${FILTER_STORAGE_PREFIX}:${userId}`;
 }
 
-function setSelectedFilterValue(fieldKey: string, value: string) {
+function readStoredFilterState(): Record<string, StoredCollectionFilterState> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(storageKey());
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, StoredCollectionFilterState>;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredFilterState(value: Record<string, StoredCollectionFilterState>) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(storageKey(), JSON.stringify(value));
+  } catch {
+    // Ignore localStorage write failures.
+  }
+}
+
+function normalizeQuickFilters(raw: Partial<QuickEntityFilters> | undefined): QuickEntityFilters {
+  const defaults = createDefaultQuickFilters();
+  if (!raw || typeof raw !== 'object') return defaults;
+  return {
+    onlyWithPhoto: raw.onlyWithPhoto === true,
+    onlyNameOnly: raw.onlyNameOnly === true,
+    hideWithoutPhoto: raw.hideWithoutPhoto === true,
+    hideWithoutName: raw.hideWithoutName === true,
+  };
+}
+
+function applyStoredFiltersForType(type: EntityType) {
+  isHydratingFilterPrefs.value = true;
+  const storedState = readStoredFilterState();
+  const typeState = storedState[type] || {};
+  const rawFilters =
+    typeState.selectedFieldFilters && typeof typeState.selectedFieldFilters === 'object'
+      ? typeState.selectedFieldFilters
+      : {};
+
+  const nextSelected: Record<string, string[]> = {};
+  for (const field of activeFilterFields.value) {
+    const values = rawFilters[field.key];
+    nextSelected[field.key] = Array.isArray(values)
+      ? values.filter((value) => typeof value === 'string' && value.trim().length > 0)
+      : [];
+  }
+
+  selectedFieldFilters.value = nextSelected;
+  quickEntityFilters.value = normalizeQuickFilters(typeState.quickFilters);
+  isHydratingFilterPrefs.value = false;
+}
+
+function persistFiltersForType(type: EntityType) {
+  if (isHydratingFilterPrefs.value) return;
+  const storedState = readStoredFilterState();
+  storedState[type] = {
+    selectedFieldFilters: selectedFieldFilters.value,
+    quickFilters: quickEntityFilters.value,
+  };
+  writeStoredFilterState(storedState);
+}
+
+function getSelectedFilterValues(fieldKey: string) {
+  const options = getFilterOptions(fieldKey);
+  const selected = selectedFieldFilters.value[fieldKey] || [];
+  return selected.filter((value) => options.includes(value));
+}
+
+function setSelectedFilterValues(fieldKey: string, values: string[]) {
   selectedFieldFilters.value = {
     ...selectedFieldFilters.value,
-    [fieldKey]: value,
+    [fieldKey]: values,
+  };
+}
+
+function toggleQuickFilter(key: QuickFilterKey) {
+  quickEntityFilters.value = {
+    ...quickEntityFilters.value,
+    [key]: !quickEntityFilters.value[key],
   };
 }
 
@@ -553,12 +665,34 @@ const filteredEntities = computed(() => {
       return false;
     }
 
-    for (const field of activeFilterFields.value) {
-      const options = getFilterOptions(field.key);
-      const allOption = options[0] || '';
-      const selected = getSelectedFilterValue(field.key);
+    const hasPhoto = hasEntityPhoto(entity);
+    const hasName = hasEntityName(entity);
 
-      if (selected !== allOption && !metadataList(entity, field.key).includes(selected)) {
+    if (quickEntityFilters.value.onlyWithPhoto && !hasPhoto) {
+      return false;
+    }
+
+    if (quickEntityFilters.value.onlyNameOnly && !(hasName && !hasPhoto)) {
+      return false;
+    }
+
+    if (quickEntityFilters.value.hideWithoutPhoto && !hasPhoto) {
+      return false;
+    }
+
+    if (quickEntityFilters.value.hideWithoutName && !hasName) {
+      return false;
+    }
+
+    for (const field of activeFilterFields.value) {
+      const selected = getSelectedFilterValues(field.key);
+      if (!selected.length) {
+        continue;
+      }
+
+      const entityValues = metadataList(entity, field.key);
+      const hasMatch = selected.some((value) => entityValues.includes(value));
+      if (!hasMatch) {
         return false;
       }
     }
@@ -593,12 +727,15 @@ const remainingEntities = computed(() => {
 
 onMounted(async () => {
   if (!authStore.isAuthenticated) {
+    applyStoredFiltersForType(activeType.value);
     return;
   }
 
   if (!entitiesStore.initialized) {
     await entitiesStore.bootstrap();
   }
+
+  applyStoredFiltersForType(activeType.value);
 });
 
 onBeforeUnmount(() => {
@@ -609,9 +746,9 @@ onBeforeUnmount(() => {
 watch(
   activeFilterFields,
   (fields) => {
-    const next: Record<string, string> = {};
+    const next: Record<string, string[]> = {};
     for (const field of fields) {
-      next[field.key] = getSelectedFilterValue(field.key);
+      next[field.key] = getSelectedFilterValues(field.key);
     }
     selectedFieldFilters.value = next;
   },
@@ -619,13 +756,11 @@ watch(
 );
 
 watch(filterOptionsByKey, (nextOptions) => {
-  const nextSelection: Record<string, string> = { ...selectedFieldFilters.value };
+  const nextSelection: Record<string, string[]> = { ...selectedFieldFilters.value };
 
   for (const [fieldKey, options] of Object.entries(nextOptions)) {
-    const currentValue = nextSelection[fieldKey];
-    if (!currentValue || !options.includes(currentValue)) {
-      nextSelection[fieldKey] = options[0] || '';
-    }
+    const currentValues = Array.isArray(nextSelection[fieldKey]) ? nextSelection[fieldKey] : [];
+    nextSelection[fieldKey] = currentValues.filter((value) => options.includes(value));
   }
 
   selectedFieldFilters.value = nextSelection;
@@ -651,7 +786,23 @@ watch(activeType, () => {
   connectionCopyLogsMessage.value = '';
   isDeleteWhatsappConfirmVisible.value = false;
   isConnectionPhotosBusy.value = false;
+  applyStoredFiltersForType(activeType.value);
 });
+
+watch(
+  () => authStore.user?.id,
+  () => {
+    applyStoredFiltersForType(activeType.value);
+  },
+);
+
+watch(
+  [selectedFieldFilters, quickEntityFilters, () => authStore.user?.id, activeType],
+  () => {
+    persistFiltersForType(activeType.value);
+  },
+  { deep: true },
+);
 
 function appendConnectionClientLog(step: string, data?: unknown) {
   connectionClientLogs.value.push({
@@ -1343,10 +1494,24 @@ function closeEntityInfoModal() {
         <FilterDropdown
           v-for="field in activeFilterFields"
           :key="field.key"
-          :model-value="getSelectedFilterValue(field.key)"
+          :label="field.label"
+          :model-value="getSelectedFilterValues(field.key)"
           :options="getFilterOptions(field.key)"
-          @update:model-value="(value) => setSelectedFilterValue(field.key, value)"
+          @update:model-value="(values) => setSelectedFilterValues(field.key, values)"
         />
+      </div>
+
+      <div class="quick-filters-group">
+        <button
+          v-for="item in quickFilterItems()"
+          :key="item.key"
+          type="button"
+          class="quick-filter-btn"
+          :class="{ active: quickEntityFilters[item.key] }"
+          @click="toggleQuickFilter(item.key)"
+        >
+          {{ item.label }}
+        </button>
       </div>
     </div>
 
@@ -1950,6 +2115,43 @@ function closeEntityInfoModal() {
   align-items: center;
   gap: 6px;
   flex-wrap: nowrap;
+}
+
+.quick-filters-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.quick-filters-group::-webkit-scrollbar {
+  display: none;
+}
+
+.quick-filter-btn {
+  height: 30px;
+  border: 1px solid #dbe4f3;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 10px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: 0.18s ease;
+}
+
+.quick-filter-btn:hover {
+  border-color: #a6c4f5;
+}
+
+.quick-filter-btn.active {
+  border-color: #9cc4ff;
+  background: #edf4ff;
+  color: #1d4ed8;
 }
 
 .collection-view {

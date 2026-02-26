@@ -2,37 +2,62 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 const props = defineProps<{
-  modelValue: string;
+  modelValue: string[];
   options: readonly string[];
+  label: string;
 }>();
 
 const emit = defineEmits<{
-  (event: 'update:modelValue', value: string): void;
+  (event: 'update:modelValue', value: string[]): void;
 }>();
 
 const rootRef = ref<HTMLElement | null>(null);
 const triggerRef = ref<HTMLButtonElement | null>(null);
 const menuRef = ref<HTMLElement | null>(null);
+const searchInputRef = ref<HTMLInputElement | null>(null);
 const isOpen = ref(false);
 const menuTop = ref(0);
 const menuLeft = ref(0);
 const menuMinWidth = ref(0);
+const query = ref('');
+const sortMode = ref<'ru' | 'en'>('ru');
 
-const currentValue = computed(() => {
-  if (props.options.includes(props.modelValue)) {
-    return props.modelValue;
-  }
+const allOptions = computed(() => {
+  const uniq = Array.from(new Set(props.options.map((value) => value.trim()).filter(Boolean)));
+  const collator = new Intl.Collator(sortMode.value === 'ru' ? 'ru' : 'en', {
+    sensitivity: 'base',
+    numeric: true,
+  });
+  return uniq.sort((a, b) => collator.compare(a, b));
+});
 
-  return props.options[0] || '';
+const filteredOptions = computed(() => {
+  const q = query.value.trim().toLowerCase();
+  if (!q) return allOptions.value;
+  return allOptions.value.filter((option) => option.toLowerCase().includes(q));
+});
+
+const selectedValues = computed(() => {
+  const selected = Array.isArray(props.modelValue) ? props.modelValue : [];
+  const available = new Set(allOptions.value);
+  return selected.filter((value) => available.has(value));
+});
+
+const selectedSet = computed(() => new Set(selectedValues.value));
+
+const triggerLabel = computed(() => {
+  const selected = selectedValues.value;
+  if (!selected.length) return props.label;
+  if (selected.length === 1) return `${props.label}: ${selected[0]}`;
+  return `${props.label}: ${selected.length}`;
 });
 
 function updateMenuPosition() {
   if (!triggerRef.value) return;
-
   const rect = triggerRef.value.getBoundingClientRect();
   menuTop.value = rect.bottom + 6;
   menuLeft.value = rect.left;
-  menuMinWidth.value = rect.width;
+  menuMinWidth.value = Math.max(rect.width, 220);
 }
 
 function openMenu() {
@@ -47,18 +72,25 @@ function toggleMenu() {
   isOpen.value = !isOpen.value;
 }
 
-function selectOption(option: string) {
-  emit('update:modelValue', option);
-  closeMenu();
+function toggleOption(option: string) {
+  const next = new Set(selectedSet.value);
+  if (next.has(option)) {
+    next.delete(option);
+  } else {
+    next.add(option);
+  }
+  emit('update:modelValue', Array.from(next));
+}
+
+function clearSelection() {
+  emit('update:modelValue', []);
 }
 
 function onDocumentPointerDown(event: PointerEvent) {
   const target = event.target as Node | null;
   if (!target) return;
-
   if (rootRef.value?.contains(target)) return;
   if (menuRef.value?.contains(target)) return;
-
   closeMenu();
 }
 
@@ -75,10 +107,13 @@ function onWindowScroll() {
 }
 
 watch(isOpen, async (open) => {
-  if (!open) return;
-
+  if (!open) {
+    query.value = '';
+    return;
+  }
   await nextTick();
   updateMenuPosition();
+  searchInputRef.value?.focus();
 });
 
 onMounted(() => {
@@ -108,35 +143,76 @@ onBeforeUnmount(() => {
       @click="toggleMenu"
       @keydown.down.prevent="openMenu"
     >
-      <span class="dropdown-label">{{ currentValue }}</span>
+      <span class="dropdown-label">{{ triggerLabel }}</span>
       <svg class="dropdown-arrow" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true">
         <polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
       </svg>
     </button>
 
     <Teleport to="body">
-      <ul
+      <div
         v-if="isOpen"
         ref="menuRef"
         class="dropdown-menu"
-        role="listbox"
         :style="{
           top: `${menuTop}px`,
           left: `${menuLeft}px`,
           minWidth: `${menuMinWidth}px`,
         }"
       >
-        <li v-for="option in options" :key="option">
-          <button
-            type="button"
-            class="dropdown-option"
-            :class="{ selected: option === currentValue }"
-            @click="selectOption(option)"
-          >
-            {{ option }}
-          </button>
-        </li>
-      </ul>
+        <div class="dropdown-controls">
+          <input
+            ref="searchInputRef"
+            v-model="query"
+            type="search"
+            class="dropdown-search"
+            placeholder="Поиск..."
+          />
+          <div class="dropdown-sort-row">
+            <button
+              type="button"
+              class="dropdown-sort-btn"
+              :class="{ active: sortMode === 'ru' }"
+              @click="sortMode = 'ru'"
+            >
+              А-Я
+            </button>
+            <button
+              type="button"
+              class="dropdown-sort-btn"
+              :class="{ active: sortMode === 'en' }"
+              @click="sortMode = 'en'"
+            >
+              A-Z
+            </button>
+            <button
+              type="button"
+              class="dropdown-clear-btn"
+              :disabled="selectedValues.length === 0"
+              @click="clearSelection"
+            >
+              Сброс
+            </button>
+          </div>
+        </div>
+
+        <ul class="dropdown-list" role="listbox">
+          <li v-for="option in filteredOptions" :key="option">
+            <button
+              type="button"
+              class="dropdown-option"
+              :class="{ selected: selectedSet.has(option) }"
+              @click="toggleOption(option)"
+            >
+              <span class="checkbox">
+                <span v-if="selectedSet.has(option)" class="checkbox-dot" />
+              </span>
+              <span class="option-label">{{ option }}</span>
+            </button>
+          </li>
+          <li v-if="filteredOptions.length === 0" class="dropdown-empty">Ничего не найдено</li>
+        </ul>
+      </div>
     </Teleport>
   </div>
 </template>
@@ -175,7 +251,7 @@ onBeforeUnmount(() => {
 }
 
 .dropdown-label {
-  max-width: 132px;
+  max-width: 164px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -195,14 +271,70 @@ onBeforeUnmount(() => {
 .dropdown-menu {
   position: fixed;
   z-index: 220;
-  list-style: none;
   margin: 0;
-  padding: 4px;
+  padding: 6px;
   border-radius: 12px;
   border: 1px solid var(--border-color);
   background: var(--bg-card);
   box-shadow: var(--shadow-hover);
-  max-height: 220px;
+}
+
+.dropdown-controls {
+  display: grid;
+  gap: 6px;
+  padding: 2px 2px 6px;
+}
+
+.dropdown-search {
+  height: 30px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--text-main);
+  background: #fff;
+}
+
+.dropdown-search:focus {
+  outline: none;
+  border-color: #9cc4ff;
+}
+
+.dropdown-sort-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dropdown-sort-btn,
+.dropdown-clear-btn {
+  height: 24px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text-main);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.dropdown-sort-btn.active {
+  border-color: #9cc4ff;
+  background: #edf4ff;
+  color: #1d4ed8;
+}
+
+.dropdown-clear-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.dropdown-list {
+  list-style: none;
+  margin: 0;
+  padding: 2px;
+  max-height: 240px;
   overflow-y: auto;
 }
 
@@ -212,12 +344,14 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   background: transparent;
   text-align: left;
-  padding: 7px 9px;
+  padding: 7px 8px;
   cursor: pointer;
   color: var(--text-main);
   font-size: 12px;
   line-height: 1.2;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .dropdown-option:hover {
@@ -227,5 +361,34 @@ onBeforeUnmount(() => {
 .dropdown-option.selected {
   color: var(--primary);
   background: var(--primary-soft);
+}
+
+.checkbox {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid #9fb4d1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: #fff;
+}
+
+.checkbox-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 3px;
+  background: #1058ff;
+}
+
+.option-label {
+  white-space: nowrap;
+}
+
+.dropdown-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 7px 9px;
 }
 </style>
