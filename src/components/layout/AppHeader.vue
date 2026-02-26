@@ -15,7 +15,6 @@ type TabConfig = {
 
 const tabs: TabConfig[] = [
   { id: 'project', label: 'Проекты', to: '/projects' },
-  { id: 'connection', label: 'Подключение', to: '/entities/connection' },
   { id: 'person', label: 'Персоны', to: '/entities/person' },
   { id: 'company', label: 'Компании', to: '/entities/company' },
   { id: 'event', label: 'События', to: '/entities/event' },
@@ -24,6 +23,7 @@ const tabs: TabConfig[] = [
   { id: 'result', label: 'Результаты', to: '/entities/result' },
   { id: 'task', label: 'Задачи', to: '/entities/task' },
   { id: 'shape', label: 'Элементы', to: '/entities/shape' },
+  { id: 'connection', label: 'Подключение', to: '/entities/connection' },
 ];
 
 const route = useRoute();
@@ -300,7 +300,7 @@ watch(
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
-  min-width: 220px;
+  min-width: 36px;
 }
 
 .auth-user-menu {
@@ -461,7 +461,7 @@ watch(
   }
 
   .auth-panel {
-    min-width: 160px;
+    min-width: 36px;
   }
 
   .auth-user-popover {

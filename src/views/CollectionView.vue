@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useEntitiesStore } from '../stores/entities';
 import { useAuthStore } from '../stores/auth';
@@ -141,6 +141,19 @@ const isConnectionImportBusy = ref(false);
 const connectionImportMessage = ref('');
 const connectionImportError = ref('');
 const connectionMoveBusyById = ref<Record<string, boolean>>({});
+const connectionImportSessionId = ref('');
+const connectionImportQrCode = ref('');
+const connectionImportSessionStatus = ref<
+  'idle' | 'initializing' | 'qr' | 'ready' | 'importing' | 'error' | 'disconnected'
+>('idle');
+const connectionImportPollTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+
+interface WhatsappSessionStatus {
+  sessionId: string;
+  status: 'idle' | 'initializing' | 'qr' | 'ready' | 'importing' | 'error' | 'disconnected';
+  qrCodeDataUrl?: string;
+  error?: string;
+}
 
 interface ProjectPreviewPoint {
   id: string;
@@ -527,6 +540,10 @@ onMounted(async () => {
   }
 });
 
+onBeforeUnmount(() => {
+  clearConnectionImportPoll();
+});
+
 watch(
   activeFilterFields,
   (fields) => {
@@ -556,7 +573,14 @@ watch(activeType, () => {
   activeProjectRenameId.value = null;
   projectRenameDraft.value = '';
   projectDeleteTarget.value = null;
+  if (connectionImportPollTimer.value) {
+    clearTimeout(connectionImportPollTimer.value);
+    connectionImportPollTimer.value = null;
+  }
   isConnectionImportModalOpen.value = false;
+  connectionImportSessionId.value = '';
+  connectionImportQrCode.value = '';
+  connectionImportSessionStatus.value = 'idle';
   connectionImportMessage.value = '';
   connectionImportError.value = '';
 });
@@ -566,6 +590,7 @@ async function createEntity() {
     connectionImportError.value = '';
     connectionImportMessage.value = '';
     isConnectionImportModalOpen.value = true;
+    void startConnectionSession();
     return;
   }
 
@@ -607,20 +632,95 @@ async function createEntity() {
   }
 }
 
-function closeConnectionImportModal() {
-  if (isConnectionImportBusy.value) return;
-  isConnectionImportModalOpen.value = false;
-  connectionImportError.value = '';
-  connectionImportMessage.value = '';
+function clearConnectionImportPoll() {
+  if (connectionImportPollTimer.value) {
+    clearTimeout(connectionImportPollTimer.value);
+    connectionImportPollTimer.value = null;
+  }
 }
 
-function openWhatsAppWeb() {
-  if (typeof window === 'undefined') return;
-  window.open('https://web.whatsapp.com', '_blank', 'noopener,noreferrer');
+function applyConnectionSessionState(session: WhatsappSessionStatus | undefined) {
+  if (!session) return;
+
+  connectionImportSessionId.value = session.sessionId || '';
+  connectionImportSessionStatus.value = session.status || 'idle';
+  connectionImportQrCode.value = session.qrCodeDataUrl || '';
+
+  if (session.error?.trim()) {
+    connectionImportError.value = session.error.trim();
+  } else if (connectionImportError.value && session.status !== 'error') {
+    connectionImportError.value = '';
+  }
+}
+
+function scheduleConnectionImportPoll(delay = 1800) {
+  clearConnectionImportPoll();
+  connectionImportPollTimer.value = setTimeout(() => {
+    void fetchConnectionSessionStatus();
+  }, delay);
+}
+
+async function fetchConnectionSessionStatus() {
+  if (!isConnectionImportModalOpen.value) return;
+  if (!connectionImportSessionId.value) return;
+
+  try {
+    const { data } = await apiClient.get<{ session: WhatsappSessionStatus }>(
+      `/integrations/whatsapp/session/${connectionImportSessionId.value}`,
+    );
+    applyConnectionSessionState(data.session);
+
+    if (
+      data.session &&
+      ['initializing', 'qr', 'importing'].includes(data.session.status)
+    ) {
+      scheduleConnectionImportPoll(1800);
+    }
+  } catch (error) {
+    connectionImportError.value = entitiesStore.formatApiError(error);
+  }
+}
+
+async function startConnectionSession() {
+  if (isConnectionImportBusy.value) return;
+  isConnectionImportBusy.value = true;
+  connectionImportError.value = '';
+  connectionImportMessage.value = '';
+  clearConnectionImportPoll();
+
+  try {
+    const { data } = await apiClient.post<{ session: WhatsappSessionStatus }>(
+      '/integrations/whatsapp/session/start',
+      {},
+    );
+    applyConnectionSessionState(data.session);
+
+    if (data.session && ['initializing', 'qr', 'importing'].includes(data.session.status)) {
+      scheduleConnectionImportPoll(1200);
+    }
+  } catch (error) {
+    connectionImportError.value = entitiesStore.formatApiError(error);
+  } finally {
+    isConnectionImportBusy.value = false;
+  }
+}
+
+function closeConnectionImportModal() {
+  if (isConnectionImportBusy.value) return;
+  clearConnectionImportPoll();
+  isConnectionImportModalOpen.value = false;
 }
 
 async function importWhatsAppContacts() {
   if (isConnectionImportBusy.value) return;
+  if (!connectionImportSessionId.value) {
+    connectionImportError.value = 'Сначала запустите подключение WhatsApp.';
+    return;
+  }
+  if (connectionImportSessionStatus.value !== 'ready') {
+    connectionImportError.value = 'Подключение еще не готово. Сканируйте QR и дождитесь статуса "Подключено".';
+    return;
+  }
 
   isConnectionImportBusy.value = true;
   connectionImportError.value = '';
@@ -631,9 +731,12 @@ async function importWhatsAppContacts() {
       imported: number;
       skipped: number;
       total: number;
-      mode?: string;
-    }>('/integrations/whatsapp/import', {});
+      session?: WhatsappSessionStatus;
+    }>('/integrations/whatsapp/import', {
+      sessionId: connectionImportSessionId.value,
+    });
 
+    applyConnectionSessionState(data.session);
     await entitiesStore.fetchEntities({ silent: true });
     entitiesStore.triggerFlash('connection');
 
@@ -651,6 +754,25 @@ async function importWhatsAppContacts() {
   } finally {
     isConnectionImportBusy.value = false;
   }
+}
+
+function connectionSessionStatusLabel() {
+  const status = connectionImportSessionStatus.value;
+  if (status === 'ready') return 'Подключено';
+  if (status === 'qr') return 'Ожидает сканирования QR';
+  if (status === 'initializing') return 'Инициализация';
+  if (status === 'importing') return 'Импорт контактов';
+  if (status === 'error') return 'Ошибка';
+  if (status === 'disconnected') return 'Отключено';
+  return 'Не подключено';
+}
+
+function connectionSessionActionLabel() {
+  const status = connectionImportSessionStatus.value;
+  if (status === 'ready') return 'Переподключить';
+  if (status === 'qr') return 'Обновить QR';
+  if (status === 'initializing' || status === 'importing') return 'Обновить статус';
+  return 'Подключить WhatsApp';
 }
 
 function connectionPhone(entity: Entity) {
@@ -1276,25 +1398,44 @@ function closeEntityInfoModal() {
       <div class="connection-import-card" @pointerdown.stop>
         <h3 class="connection-import-title">Подключение</h3>
         <p class="connection-import-text">
-          Выберите мессенджер для импорта контактов.
+          Подключите WhatsApp и импортируйте контакты в раздел "Подключение".
         </p>
 
         <div class="connection-provider-item active">
           <div class="connection-provider-icon">W</div>
           <div class="connection-provider-content">
             <div class="connection-provider-name">WhatsApp</div>
-            <div class="connection-provider-hint">Откройте Web, отсканируйте QR и запустите импорт.</div>
+            <div class="connection-provider-hint">
+              Статус: {{ connectionSessionStatusLabel() }}
+            </div>
           </div>
         </div>
 
+        <div
+          class="connection-status-badge"
+          :class="`status-${connectionImportSessionStatus}`"
+        >
+          {{ connectionSessionStatusLabel() }}
+        </div>
+
+        <div v-if="connectionImportQrCode" class="connection-qr-wrap">
+          <img class="connection-qr-image" :src="connectionImportQrCode" alt="WhatsApp QR" />
+          <p class="connection-qr-hint">Сканируйте QR-код в WhatsApp на телефоне.</p>
+        </div>
+
         <div class="connection-import-actions">
-          <button type="button" class="connection-link-btn" @click="openWhatsAppWeb">
-            Открыть WhatsApp Web
+          <button
+            type="button"
+            class="connection-link-btn"
+            :disabled="isConnectionImportBusy"
+            @click="startConnectionSession"
+          >
+            {{ connectionSessionActionLabel() }}
           </button>
           <button
             type="button"
             class="connection-import-btn"
-            :disabled="isConnectionImportBusy"
+            :disabled="isConnectionImportBusy || connectionImportSessionStatus !== 'ready'"
             @click="importWhatsAppContacts"
           >
             {{ isConnectionImportBusy ? 'Импорт...' : 'Импортировать контакты' }}
@@ -1856,10 +1997,71 @@ function closeEntityInfoModal() {
   line-height: 1.3;
 }
 
+.connection-status-badge {
+  align-self: flex-start;
+  border-radius: 999px;
+  border: 1px solid #dbe4f3;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+}
+
+.connection-status-badge.status-ready {
+  border-color: #99f6e4;
+  background: #f0fdfa;
+  color: #0f766e;
+}
+
+.connection-status-badge.status-qr,
+.connection-status-badge.status-initializing,
+.connection-status-badge.status-importing {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.connection-status-badge.status-error,
+.connection-status-badge.status-disconnected {
+  border-color: #fecaca;
+  background: #fff1f2;
+  color: #b91c1c;
+}
+
+.connection-qr-wrap {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px dashed #bfd5ff;
+  background: #f8fbff;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.connection-qr-image {
+  width: min(260px, 100%);
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  border-radius: 10px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+}
+
+.connection-qr-hint {
+  margin: 0;
+  text-align: center;
+  font-size: 12px;
+  color: #64748b;
+}
+
 .connection-import-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .connection-link-btn,

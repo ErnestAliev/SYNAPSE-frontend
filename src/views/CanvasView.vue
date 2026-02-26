@@ -384,7 +384,6 @@ const PROFILE_METADATA_WEIGHTS: Record<EntityType, Partial<Record<MetadataFieldK
 };
 const LIBRARY_CATEGORY_ORDER: EntityType[] = [
   'project',
-  'connection',
   'person',
   'company',
   'event',
@@ -393,6 +392,7 @@ const LIBRARY_CATEGORY_ORDER: EntityType[] = [
   'result',
   'task',
   'shape',
+  'connection',
 ];
 
 const route = useRoute();
