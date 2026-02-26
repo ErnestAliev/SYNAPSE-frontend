@@ -1,5 +1,6 @@
 export type EntityType =
   | 'project'
+  | 'connection'
   | 'person'
   | 'company'
   | 'event'

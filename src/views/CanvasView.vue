@@ -49,6 +49,7 @@ const NODE_MENU_HINT_FIRST_PROJECT_STORAGE_KEY = 'synapse12.hints.nodeMenu.first
 const LIBRARY_DRAG_MIME = 'application/x-synapse12-entity-id';
 const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   project: 'Проект',
+  connection: 'Подключение',
   person: 'Персона',
   company: 'Компания',
   event: 'Событие',
@@ -60,6 +61,7 @@ const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
 };
 const ENTITY_TYPE_CHAT_TARGET: Record<EntityType, string> = {
   project: 'проект',
+  connection: 'контакт',
   person: 'персону',
   company: 'компанию',
   event: 'событие',
@@ -198,6 +200,14 @@ interface MetadataFieldConfig {
 }
 
 const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
+  connection: [
+    { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
+    { key: 'roles', label: 'Роли' },
+    { key: 'status', label: 'Статусы' },
+    { key: 'links', label: 'Ссылки' },
+    { key: 'importance', label: 'Значимость' },
+  ],
   person: [
     { key: 'tags', label: 'Теги' },
     { key: 'markers', label: 'Метки' },
@@ -292,6 +302,14 @@ const PROFILE_METADATA_TARGETS: Record<MetadataFieldKey, number> = {
   metrics: 2,
 };
 const PROFILE_METADATA_WEIGHTS: Record<EntityType, Partial<Record<MetadataFieldKey, number>>> = {
+  connection: {
+    tags: 1.2,
+    markers: 1,
+    roles: 1.1,
+    status: 1.1,
+    links: 0.9,
+    importance: 1.1,
+  },
   person: {
     tags: 1.1,
     markers: 0.8,
@@ -366,6 +384,7 @@ const PROFILE_METADATA_WEIGHTS: Record<EntityType, Partial<Record<MetadataFieldK
 };
 const LIBRARY_CATEGORY_ORDER: EntityType[] = [
   'project',
+  'connection',
   'person',
   'company',
   'event',

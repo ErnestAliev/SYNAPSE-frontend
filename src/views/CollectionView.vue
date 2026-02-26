@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useEntitiesStore } from '../stores/entities';
 import { useAuthStore } from '../stores/auth';
+import { apiClient } from '../services/api';
 import AppIcon from '../components/ui/AppIcon.vue';
 import FilterDropdown from '../components/ui/FilterDropdown.vue';
 import ProfileProgressRing from '../components/ui/ProfileProgressRing.vue';
@@ -46,6 +47,13 @@ interface MetadataFieldConfig {
 }
 
 const ENTITY_FILTER_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
+  connection: [
+    { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
+    { key: 'links', label: 'Ссылки' },
+    { key: 'roles', label: 'Роли' },
+    { key: 'status', label: 'Статусы' },
+  ],
   person: [
     { key: 'tags', label: 'Теги' },
     { key: 'markers', label: 'Метки' },
@@ -128,6 +136,11 @@ const projectRenameDraft = ref('');
 const projectDeleteTarget = ref<Entity | null>(null);
 const isProjectDeleteBusy = ref(false);
 const isCreateBusy = ref(false);
+const isConnectionImportModalOpen = ref(false);
+const isConnectionImportBusy = ref(false);
+const connectionImportMessage = ref('');
+const connectionImportError = ref('');
+const connectionMoveBusyById = ref<Record<string, boolean>>({});
 
 interface ProjectPreviewPoint {
   id: string;
@@ -184,6 +197,7 @@ function parseLogoImage(profile: Record<string, unknown>) {
 function getNodeGlyph(type: EntityType) {
   const glyphMap: Record<EntityType, string> = {
     project: 'П',
+    connection: 'К',
     person: 'Л',
     company: 'К',
     event: 'С',
@@ -199,6 +213,7 @@ function getNodeGlyph(type: EntityType) {
 function normalizeType(value: unknown): EntityType {
   const allowed: EntityType[] = [
     'project',
+    'connection',
     'person',
     'company',
     'event',
@@ -541,9 +556,19 @@ watch(activeType, () => {
   activeProjectRenameId.value = null;
   projectRenameDraft.value = '';
   projectDeleteTarget.value = null;
+  isConnectionImportModalOpen.value = false;
+  connectionImportMessage.value = '';
+  connectionImportError.value = '';
 });
 
 async function createEntity() {
+  if (activeType.value === 'connection') {
+    connectionImportError.value = '';
+    connectionImportMessage.value = '';
+    isConnectionImportModalOpen.value = true;
+    return;
+  }
+
   if (isCreateBusy.value) return;
   isCreateBusy.value = true;
 
@@ -579,6 +604,106 @@ async function createEntity() {
     entitiesStore.error = entitiesStore.formatApiError(error);
   } finally {
     isCreateBusy.value = false;
+  }
+}
+
+function closeConnectionImportModal() {
+  if (isConnectionImportBusy.value) return;
+  isConnectionImportModalOpen.value = false;
+  connectionImportError.value = '';
+  connectionImportMessage.value = '';
+}
+
+function openWhatsAppWeb() {
+  if (typeof window === 'undefined') return;
+  window.open('https://web.whatsapp.com', '_blank', 'noopener,noreferrer');
+}
+
+async function importWhatsAppContacts() {
+  if (isConnectionImportBusy.value) return;
+
+  isConnectionImportBusy.value = true;
+  connectionImportError.value = '';
+  connectionImportMessage.value = '';
+
+  try {
+    const { data } = await apiClient.post<{
+      imported: number;
+      skipped: number;
+      total: number;
+      mode?: string;
+    }>('/integrations/whatsapp/import', {});
+
+    await entitiesStore.fetchEntities({ silent: true });
+    entitiesStore.triggerFlash('connection');
+
+    const imported = Number(data.imported) || 0;
+    const skipped = Number(data.skipped) || 0;
+    connectionImportMessage.value =
+      imported > 0
+        ? `Импортировано: ${imported}. Пропущено дублей: ${skipped}.`
+        : `Новых контактов не найдено. Пропущено дублей: ${skipped}.`;
+
+    await nextTick();
+    collectionViewRef.value?.scrollTo({ top: 0, behavior: 'auto' });
+  } catch (error) {
+    connectionImportError.value = entitiesStore.formatApiError(error);
+  } finally {
+    isConnectionImportBusy.value = false;
+  }
+}
+
+function connectionPhone(entity: Entity) {
+  const profile = toProfile(entity);
+  const phone = profile.phone;
+  if (typeof phone !== 'string') return '';
+  return phone.trim();
+}
+
+function connectionSource(entity: Entity) {
+  const profile = toProfile(entity);
+  const source = profile.source;
+  if (typeof source !== 'string') return '';
+  return source.trim().toLowerCase();
+}
+
+function connectionMeta(entity: Entity) {
+  const source = connectionSource(entity);
+  const phone = connectionPhone(entity);
+  const sourceLabel = source === 'whatsapp' ? 'WhatsApp' : source || 'Источник не указан';
+  if (phone) {
+    return `${sourceLabel} · ${phone}`;
+  }
+  return sourceLabel;
+}
+
+function setConnectionMoveBusy(entityId: string, busy: boolean) {
+  connectionMoveBusyById.value = {
+    ...connectionMoveBusyById.value,
+    [entityId]: busy,
+  };
+}
+
+function isConnectionMoveBusy(entityId: string) {
+  return Boolean(connectionMoveBusyById.value[entityId]);
+}
+
+async function moveConnectionTo(entity: Entity, targetType: 'person' | 'company', event: MouseEvent) {
+  event.stopPropagation();
+
+  if (isConnectionMoveBusy(entity._id)) return;
+  setConnectionMoveBusy(entity._id, true);
+
+  try {
+    await entitiesStore.updateEntity(entity._id, {
+      type: targetType,
+      canvas_data: undefined,
+    });
+    entitiesStore.triggerFlash(targetType);
+  } catch (error) {
+    entitiesStore.error = entitiesStore.formatApiError(error);
+  } finally {
+    setConnectionMoveBusy(entity._id, false);
   }
 }
 
@@ -775,7 +900,7 @@ function closeEntityInfoModal() {
       <div v-else class="grid-layout">
         <button class="create-card" :disabled="isCreateBusy" @click="createEntity">
           <AppIcon name="plus" />
-          <span class="create-card-label">Создать</span>
+          <span class="create-card-label">{{ activeType === 'connection' ? 'Добавить' : 'Создать' }}</span>
         </button>
 
         <template v-if="firstEntity">
@@ -881,6 +1006,43 @@ function closeEntityInfoModal() {
                   <path d="M10 11v6" />
                   <path d="M14 11v6" />
                 </svg>
+              </button>
+            </div>
+          </article>
+
+          <article
+            v-else-if="activeType === 'connection'"
+            class="entity-card connection-card"
+            @click="onCardClick(firstEntity)"
+          >
+            <div class="card-cycle-wrap">
+              <ProfileProgressRing class="card-progress-ring" :value="entityProgress(firstEntity)" :size="84" :stroke-width="4" />
+              <div class="card-cycle" :style="{ background: entityColor(firstEntity), borderColor: entityColor(firstEntity) }">
+                <img v-if="entityImage(firstEntity)" class="card-image" :src="entityImage(firstEntity)" alt="" />
+                <span v-else-if="entityEmoji(firstEntity)" class="card-emoji">{{ entityEmoji(firstEntity) }}</span>
+                <AppIcon v-else :name="firstEntity.type" class="card-icon" />
+              </div>
+            </div>
+            <div class="card-name">{{ firstEntity.name }}</div>
+            <div v-if="activeType === 'connection'" class="connection-meta">
+              {{ connectionMeta(firstEntity) }}
+            </div>
+            <div v-if="activeType === 'connection'" class="connection-actions">
+              <button
+                type="button"
+                class="connection-action-btn"
+                :disabled="isConnectionMoveBusy(firstEntity._id)"
+                @click="moveConnectionTo(firstEntity, 'person', $event)"
+              >
+                В Персоны
+              </button>
+              <button
+                type="button"
+                class="connection-action-btn"
+                :disabled="isConnectionMoveBusy(firstEntity._id)"
+                @click="moveConnectionTo(firstEntity, 'company', $event)"
+              >
+                В Компании
               </button>
             </div>
           </article>
@@ -1009,6 +1171,43 @@ function closeEntityInfoModal() {
             </div>
           </article>
 
+          <article
+            v-else-if="activeType === 'connection'"
+            class="entity-card connection-card"
+            @click="onCardClick(entity)"
+          >
+            <div class="card-cycle-wrap">
+              <ProfileProgressRing class="card-progress-ring" :value="entityProgress(entity)" :size="84" :stroke-width="4" />
+              <div class="card-cycle" :style="{ background: entityColor(entity), borderColor: entityColor(entity) }">
+                <img v-if="entityImage(entity)" class="card-image" :src="entityImage(entity)" alt="" />
+                <span v-else-if="entityEmoji(entity)" class="card-emoji">{{ entityEmoji(entity) }}</span>
+                <AppIcon v-else :name="entity.type" class="card-icon" />
+              </div>
+            </div>
+            <div class="card-name">{{ entity.name }}</div>
+            <div v-if="activeType === 'connection'" class="connection-meta">
+              {{ connectionMeta(entity) }}
+            </div>
+            <div v-if="activeType === 'connection'" class="connection-actions">
+              <button
+                type="button"
+                class="connection-action-btn"
+                :disabled="isConnectionMoveBusy(entity._id)"
+                @click="moveConnectionTo(entity, 'person', $event)"
+              >
+                В Персоны
+              </button>
+              <button
+                type="button"
+                class="connection-action-btn"
+                :disabled="isConnectionMoveBusy(entity._id)"
+                @click="moveConnectionTo(entity, 'company', $event)"
+              >
+                В Компании
+              </button>
+            </div>
+          </article>
+
           <button
             v-else
             class="entity-card"
@@ -1066,6 +1265,48 @@ function closeEntityInfoModal() {
             Удалить
           </button>
         </div>
+      </div>
+    </div>
+
+    <div
+      v-if="isConnectionImportModalOpen"
+      class="connection-import-overlay"
+      @pointerdown.self="closeConnectionImportModal"
+    >
+      <div class="connection-import-card" @pointerdown.stop>
+        <h3 class="connection-import-title">Подключение</h3>
+        <p class="connection-import-text">
+          Выберите мессенджер для импорта контактов.
+        </p>
+
+        <div class="connection-provider-item active">
+          <div class="connection-provider-icon">W</div>
+          <div class="connection-provider-content">
+            <div class="connection-provider-name">WhatsApp</div>
+            <div class="connection-provider-hint">Откройте Web, отсканируйте QR и запустите импорт.</div>
+          </div>
+        </div>
+
+        <div class="connection-import-actions">
+          <button type="button" class="connection-link-btn" @click="openWhatsAppWeb">
+            Открыть WhatsApp Web
+          </button>
+          <button
+            type="button"
+            class="connection-import-btn"
+            :disabled="isConnectionImportBusy"
+            @click="importWhatsAppContacts"
+          >
+            {{ isConnectionImportBusy ? 'Импорт...' : 'Импортировать контакты' }}
+          </button>
+        </div>
+
+        <p v-if="connectionImportMessage" class="connection-import-message">
+          {{ connectionImportMessage }}
+        </p>
+        <p v-if="connectionImportError" class="connection-import-error">
+          {{ connectionImportError }}
+        </p>
       </div>
     </div>
   </main>
@@ -1200,6 +1441,11 @@ function closeEntityInfoModal() {
   box-shadow: var(--shadow-base);
 }
 
+.entity-card.connection-card {
+  padding: 18px 16px 14px;
+  justify-content: flex-start;
+}
+
 .entity-card:hover {
   transform: translateY(-4px);
   box-shadow: var(--shadow-hover);
@@ -1260,6 +1506,47 @@ function closeEntityInfoModal() {
   font-weight: 600;
   color: var(--text-main);
   text-align: center;
+}
+
+.connection-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #4b5f80;
+  text-align: center;
+}
+
+.connection-actions {
+  margin-top: 10px;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.connection-action-btn {
+  height: 30px;
+  border-radius: 9px;
+  border: 1px solid #bfd5ff;
+  background: #ffffff;
+  color: #1058ff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.connection-action-btn:hover:not(:disabled) {
+  background: #edf4ff;
+  border-color: #95b8fb;
+  color: #0b45cc;
+}
+
+.connection-action-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 
 .project-card {
@@ -1487,6 +1774,136 @@ function closeEntityInfoModal() {
 .project-delete-btn-danger:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.connection-import-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 180;
+  background: rgba(15, 23, 42, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.connection-import-card {
+  width: min(460px, 100%);
+  border-radius: 14px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  box-shadow: 0 20px 34px rgba(15, 23, 42, 0.28);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.connection-import-title {
+  margin: 0;
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.connection-import-text {
+  margin: 0;
+  color: #475569;
+  font-size: 13px;
+}
+
+.connection-provider-item {
+  border-radius: 12px;
+  border: 1px solid #dbe7ff;
+  background: #f8fbff;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.connection-provider-item.active {
+  border-color: #98bcff;
+  background: #eff5ff;
+}
+
+.connection-provider-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: #1058ff;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.connection-provider-content {
+  min-width: 0;
+}
+
+.connection-provider-name {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.connection-provider-hint {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.connection-import-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.connection-link-btn,
+.connection-import-btn {
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.connection-import-btn {
+  border-color: #bcd3ff;
+  background: #edf4ff;
+  color: #1058ff;
+}
+
+.connection-link-btn:hover:not(:disabled),
+.connection-import-btn:hover:not(:disabled) {
+  border-color: #97b9ff;
+}
+
+.connection-link-btn:disabled,
+.connection-import-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.connection-import-message {
+  margin: 0;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.connection-import-error {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .state {

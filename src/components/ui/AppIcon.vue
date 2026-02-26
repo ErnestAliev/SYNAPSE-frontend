@@ -26,6 +26,22 @@ defineProps<{
   </svg>
 
   <svg
+    v-else-if="name === 'connection'"
+    width="20"
+    height="20"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+  >
+    <path d="M16 2h3a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2h-3" />
+    <path d="M8 2H5a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h3" />
+    <path d="M12 8a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Z" />
+    <path d="M7.5 18a4.5 4.5 0 0 1 9 0" />
+  </svg>
+
+  <svg
     v-else-if="name === 'person'"
     width="20"
     height="20"

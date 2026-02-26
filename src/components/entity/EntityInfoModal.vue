@@ -35,6 +35,7 @@ const GRID_STEP = 40;
 const PROJECT_INSERT_GAP = GRID_STEP * 3;
 const ENTITY_TYPE_CHAT_TARGET: Record<EntityType, string> = {
   project: 'проект',
+  connection: 'контакт',
   person: 'персону',
   company: 'компанию',
   event: 'событие',
@@ -103,6 +104,14 @@ interface MetadataFieldConfig {
 }
 
 const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
+  connection: [
+    { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
+    { key: 'roles', label: 'Роли' },
+    { key: 'status', label: 'Статусы' },
+    { key: 'links', label: 'Ссылки' },
+    { key: 'importance', label: 'Значимость' },
+  ],
   person: [
     { key: 'tags', label: 'Теги' },
     { key: 'markers', label: 'Метки' },

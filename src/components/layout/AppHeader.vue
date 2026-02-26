@@ -15,6 +15,7 @@ type TabConfig = {
 
 const tabs: TabConfig[] = [
   { id: 'project', label: 'Проекты', to: '/projects' },
+  { id: 'connection', label: 'Подключение', to: '/entities/connection' },
   { id: 'person', label: 'Персоны', to: '/entities/person' },
   { id: 'company', label: 'Компании', to: '/entities/company' },
   { id: 'event', label: 'События', to: '/entities/event' },
@@ -40,6 +41,7 @@ const isGoogleButtonReady = computed(
 function normalizeType(value: unknown): EntityType {
   const allowed: EntityType[] = [
     'project',
+    'connection',
     'person',
     'company',
     'event',

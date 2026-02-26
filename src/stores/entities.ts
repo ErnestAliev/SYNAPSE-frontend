@@ -15,6 +15,7 @@ const ENTITY_UPDATE_TIMEOUT_MS = 60000;
 
 const ENTITY_TYPES: EntityType[] = [
   'project',
+  'connection',
   'person',
   'company',
   'event',

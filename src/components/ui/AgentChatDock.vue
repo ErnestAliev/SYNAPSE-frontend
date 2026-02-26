@@ -38,6 +38,7 @@ interface AgentChatResponse {
 const STORAGE_KEY = 'synapse12.agent-chat.v2';
 const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   project: 'Проекты',
+  connection: 'Подключение',
   person: 'Персоны',
   company: 'Компании',
   event: 'События',
@@ -87,6 +88,7 @@ function getIsoNow() {
 function normalizeType(value: unknown): EntityType {
   const allowed: EntityType[] = [
     'project',
+    'connection',
     'person',
     'company',
     'event',
