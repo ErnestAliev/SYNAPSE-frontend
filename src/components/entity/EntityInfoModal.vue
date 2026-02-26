@@ -35,6 +35,8 @@ const GRID_STEP = 40;
 const PROJECT_INSERT_GAP = GRID_STEP * 3;
 const FOOTER_CROP_VIEW_SIZE = 220;
 const FOOTER_CROP_OUTPUT_SIZE = 512;
+const AI_ATTACHMENT_MAX_INLINE_BYTES = 2_000_000;
+const AI_ATTACHMENT_MAX_INLINE_DATA_URL_LENGTH = 2_800_000;
 const ENTITY_TYPE_CHAT_TARGET: Record<EntityType, string> = {
   project: 'проект',
   connection: 'контакт',
@@ -1066,10 +1068,17 @@ function pushChatMessage(role: EntityChatRole, text: string, attachments: Entity
 }
 
 function toAiAttachmentPayload(attachment: EntityAttachment) {
+  const canInlineData =
+    typeof attachment.data === 'string' &&
+    attachment.data.length > 0 &&
+    attachment.data.length <= AI_ATTACHMENT_MAX_INLINE_DATA_URL_LENGTH &&
+    attachment.size <= AI_ATTACHMENT_MAX_INLINE_BYTES;
+
   return {
     name: attachment.name,
     mime: attachment.mime,
     size: attachment.size,
+    ...(canInlineData ? { data: attachment.data } : {}),
   };
 }
 

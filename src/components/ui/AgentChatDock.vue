@@ -38,6 +38,8 @@ interface AgentChatResponse {
 const STORAGE_KEY = 'synapse12.agent-chat.v2';
 const PANEL_SIZE_STORAGE_KEY = 'synapse12.agent-chat.panel-size.v1';
 const PANEL_TOP_OFFSET_PX = 60;
+const AI_ATTACHMENT_MAX_INLINE_BYTES = 2_000_000;
+const AI_ATTACHMENT_MAX_INLINE_DATA_URL_LENGTH = 2_800_000;
 const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   project: 'Проекты',
   connection: 'Подключение',
@@ -452,11 +454,20 @@ function buildHistoryPayload(messages: ChatMessage[]) {
 }
 
 function buildAttachmentsPayload(attachments: EntityAttachment[]) {
-  return attachments.slice(0, 6).map((attachment) => ({
-    name: attachment.name,
-    mime: attachment.mime,
-    size: attachment.size,
-  }));
+  return attachments.slice(0, 6).map((attachment) => {
+    const canInlineData =
+      typeof attachment.data === 'string' &&
+      attachment.data.length > 0 &&
+      attachment.data.length <= AI_ATTACHMENT_MAX_INLINE_DATA_URL_LENGTH &&
+      attachment.size <= AI_ATTACHMENT_MAX_INLINE_BYTES;
+
+    return {
+      name: attachment.name,
+      mime: attachment.mime,
+      size: attachment.size,
+      ...(canInlineData ? { data: attachment.data } : {}),
+    };
+  });
 }
 
 function buildDebugAttachment(debug: Record<string, unknown>) {

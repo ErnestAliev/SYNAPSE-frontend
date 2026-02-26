@@ -11,6 +11,8 @@ export interface EntityAiAttachmentPayload {
   name: string;
   mime: string;
   size: number;
+  data?: string;
+  text?: string;
 }
 
 export interface EntityAiSuggestion {
