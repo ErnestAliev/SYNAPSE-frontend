@@ -159,12 +159,26 @@ const connectionImportSessionStatus = ref<
   'idle' | 'initializing' | 'qr' | 'ready' | 'importing' | 'error' | 'disconnected'
 >('idle');
 const connectionImportPollTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+const connectionImportProgress = ref<{
+  stage: string;
+  note: string;
+  total: number;
+  processed: number;
+  percent: number;
+} | null>(null);
 
 interface WhatsappSessionStatus {
   sessionId: string;
   status: 'idle' | 'initializing' | 'qr' | 'ready' | 'importing' | 'error' | 'disconnected';
   qrCodeDataUrl?: string;
   error?: string;
+  importProgress?: {
+    stage?: string;
+    note?: string;
+    total?: number;
+    processed?: number;
+    percent?: number;
+  };
 }
 
 interface WhatsappImportResult {
@@ -608,6 +622,7 @@ watch(activeType, () => {
   connectionImportMessage.value = '';
   connectionImportError.value = '';
   connectionImportStats.value = null;
+  connectionImportProgress.value = null;
 });
 
 function formatConnectionImportError(error: unknown) {
@@ -638,6 +653,7 @@ async function createEntity() {
     connectionImportError.value = '';
     connectionImportMessage.value = '';
     connectionImportStats.value = null;
+    connectionImportProgress.value = null;
     connectionImportSessionId.value = '';
     connectionImportQrCode.value = '';
     connectionImportSessionStatus.value = 'idle';
@@ -697,6 +713,17 @@ function applyConnectionSessionState(session: WhatsappSessionStatus | undefined)
   connectionImportSessionId.value = session.sessionId || '';
   connectionImportSessionStatus.value = session.status || 'idle';
   connectionImportQrCode.value = session.qrCodeDataUrl || '';
+  if (session.importProgress && typeof session.importProgress === 'object') {
+    connectionImportProgress.value = {
+      stage: typeof session.importProgress.stage === 'string' ? session.importProgress.stage : '',
+      note: typeof session.importProgress.note === 'string' ? session.importProgress.note : '',
+      total: Number(session.importProgress.total) || 0,
+      processed: Number(session.importProgress.processed) || 0,
+      percent: Math.max(0, Math.min(100, Number(session.importProgress.percent) || 0)),
+    };
+  } else if (session.status !== 'importing') {
+    connectionImportProgress.value = null;
+  }
 
   if (session.error?.trim()) {
     connectionImportError.value = session.error.trim();
@@ -741,6 +768,7 @@ async function startConnectionSession() {
   connectionImportError.value = '';
   connectionImportMessage.value = '';
   connectionImportStats.value = null;
+  connectionImportProgress.value = null;
   clearConnectionImportPoll();
 
   try {
@@ -776,6 +804,7 @@ async function stopConnectionSession(options?: { silent?: boolean }) {
     connectionImportSessionId.value = '';
     connectionImportQrCode.value = '';
     connectionImportSessionStatus.value = 'idle';
+    connectionImportProgress.value = null;
   }
 }
 
@@ -801,6 +830,15 @@ async function importWhatsAppContacts() {
   connectionImportError.value = '';
   connectionImportMessage.value = '';
   connectionImportStats.value = null;
+  connectionImportSessionStatus.value = 'importing';
+  connectionImportProgress.value = {
+    stage: 'prepare',
+    note: 'Подготовка импорта',
+    processed: 0,
+    total: 0,
+    percent: 5,
+  };
+  scheduleConnectionImportPoll(700);
 
   try {
     const { data } = await apiClient.post<WhatsappImportResult>('/integrations/whatsapp/import', {
@@ -1544,6 +1582,22 @@ function closeEntityInfoModal() {
           </button>
         </div>
 
+        <div v-if="connectionImportProgress" class="connection-progress-wrap">
+          <div class="connection-progress-head">
+            <span>{{ connectionImportProgress.note || 'Импорт контактов' }}</span>
+            <span>{{ Math.round(connectionImportProgress.percent) }}%</span>
+          </div>
+          <div class="connection-progress-track">
+            <div class="connection-progress-fill" :style="{ width: `${connectionImportProgress.percent}%` }"></div>
+          </div>
+          <div
+            v-if="connectionImportProgress.total > 0"
+            class="connection-progress-meta"
+          >
+            {{ connectionImportProgress.processed }} / {{ connectionImportProgress.total }}
+          </div>
+        </div>
+
         <p v-if="connectionImportSessionStatus !== 'ready'" class="connection-step-hint">
           1) Сканируйте QR в WhatsApp -> Связанные устройства. 2) Дождитесь статуса «Подключено». 3) Нажмите «Импортировать контакты».
         </p>
@@ -2198,6 +2252,43 @@ function closeEntityInfoModal() {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.connection-progress-wrap {
+  border-radius: 10px;
+  border: 1px solid #dbe4f3;
+  background: #f8fbff;
+  padding: 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.connection-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.connection-progress-track {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #e7eefb;
+}
+
+.connection-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6 0%, #1058ff 100%);
+  transition: width 0.25s ease;
+}
+
+.connection-progress-meta {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .connection-import-stats {
