@@ -106,6 +106,22 @@ interface MetadataFieldConfig {
   label: string;
 }
 
+const DEFAULT_METADATA_FIELD_MAX_LENGTH = 32;
+const LINKS_METADATA_FIELD_MAX_LENGTH = 2048;
+const LINK_CHIP_FALLBACK_LABEL = 'Website';
+const LINK_CHIP_LABELS: Array<{ label: string; domains: string[] }> = [
+  { label: 'Instagram', domains: ['instagram.com'] },
+  { label: 'Facebook', domains: ['facebook.com', 'fb.com'] },
+  { label: 'LinkedIn', domains: ['linkedin.com'] },
+  { label: 'Telegram', domains: ['t.me', 'telegram.me', 'telegram.org'] },
+  { label: 'WhatsApp', domains: ['wa.me', 'whatsapp.com', 'chat.whatsapp.com'] },
+  { label: 'YouTube', domains: ['youtube.com', 'youtu.be'] },
+  { label: 'TikTok', domains: ['tiktok.com'] },
+  { label: 'X', domains: ['x.com', 'twitter.com'] },
+  { label: 'VK', domains: ['vk.com', 'vkontakte.ru'] },
+  { label: 'GitHub', domains: ['github.com'] },
+];
+
 const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   connection: [
     { key: 'tags', label: 'Теги' },
@@ -738,10 +754,14 @@ function getFieldDraft(fieldKey: string) {
   return draft.value.fieldDrafts[fieldKey] || '';
 }
 
+function getMetadataFieldMaxLength(fieldKey: string) {
+  return fieldKey === 'links' ? LINKS_METADATA_FIELD_MAX_LENGTH : DEFAULT_METADATA_FIELD_MAX_LENGTH;
+}
+
 function onFieldDraftInput(fieldKey: string, event: Event) {
   const input = event.target as HTMLInputElement | null;
   if (!input || !draft.value) return;
-  draft.value.fieldDrafts[fieldKey] = input.value.slice(0, 32);
+  draft.value.fieldDrafts[fieldKey] = input.value.slice(0, getMetadataFieldMaxLength(fieldKey));
 }
 
 function setFieldInputRef(fieldKey: string, element: unknown) {
@@ -778,7 +798,7 @@ function onFieldDraftKeydown(fieldKey: string, event: KeyboardEvent) {
 function startEditFieldValue(fieldKey: string, value: string) {
   if (!draft.value) return;
   editingFieldValue.value = { fieldKey, originalValue: value };
-  draft.value.fieldDrafts[fieldKey] = value.slice(0, 32);
+  draft.value.fieldDrafts[fieldKey] = value.slice(0, getMetadataFieldMaxLength(fieldKey));
   focusFieldInput(fieldKey, true);
 }
 
@@ -798,9 +818,26 @@ function openFieldLink(value: string) {
   window.open(url, '_blank', 'noopener,noreferrer');
 }
 
+function getLinkChipLabel(value: string) {
+  const normalized = normalizeLinkForOpen(value);
+  if (!normalized) return LINK_CHIP_FALLBACK_LABEL;
+
+  try {
+    const host = new URL(normalized).hostname.toLowerCase().replace(/^www\./, '');
+    const mapped = LINK_CHIP_LABELS.find(({ domains }) =>
+      domains.some((domain) => host === domain || host.endsWith(`.${domain}`)),
+    );
+    return mapped?.label || LINK_CHIP_FALLBACK_LABEL;
+  } catch {
+    return LINK_CHIP_FALLBACK_LABEL;
+  }
+}
+
 function addFieldValue(fieldKey: string) {
   if (!draft.value) return;
-  const nextValue = (draft.value.fieldDrafts[fieldKey] || '').trim().slice(0, 32);
+  const nextValue = (draft.value.fieldDrafts[fieldKey] || '')
+    .trim()
+    .slice(0, getMetadataFieldMaxLength(fieldKey));
   const values = [...(draft.value.metadataValues[fieldKey] || [])];
   const editing = editingFieldValue.value;
 
@@ -1849,7 +1886,7 @@ onBeforeUnmount(() => {
                   :value="getFieldDraft(field.key)"
                   type="text"
                   class="entity-info-tag-input"
-                  maxlength="32"
+                  :maxlength="getMetadataFieldMaxLength(field.key)"
                   :placeholder="field.label"
                   @input="onFieldDraftInput(field.key, $event)"
                   @keydown.enter.prevent="addFieldValue(field.key)"
@@ -1864,10 +1901,10 @@ onBeforeUnmount(() => {
                     type="button"
                     class="entity-info-tag-main"
                     :class="{ link: field.key === 'links' }"
-                    :title="field.key === 'links' ? 'Открыть ссылку' : 'Редактировать'"
+                    :title="field.key === 'links' ? value : 'Редактировать'"
                     @click="field.key === 'links' ? openFieldLink(value) : startEditFieldValue(field.key, value)"
                   >
-                    {{ value }}
+                    {{ field.key === 'links' ? getLinkChipLabel(value) : value }}
                   </button>
                   <button
                     type="button"
