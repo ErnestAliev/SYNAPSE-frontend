@@ -6,6 +6,7 @@ import ProfileProgressRing from '../ui/ProfileProgressRing.vue';
 import { useEntitiesStore } from '../../stores/entities';
 import { useAuthStore } from '../../stores/auth';
 import { calculateEntityProfileProgress } from '../../utils/profileProgress';
+import { analyzeEntityWithAi } from '../../services/entityAi';
 import {
   SYSTEM_SOCIAL_LOGOS,
   addCustomLogo,
@@ -198,6 +199,7 @@ const chatFeedRef = ref<HTMLElement | null>(null);
 const infoSaveTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const pendingComposerHeightReset = ref(false);
 const isVoiceListening = ref(false);
+const isAiRequestInFlight = ref(false);
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
 const isProjectPickerOpen = ref(false);
 const projectActionMessage = ref('');
@@ -777,8 +779,62 @@ function pushChatMessage(role: EntityChatRole, text: string, attachments: Entity
   ];
 }
 
+function toAiAttachmentPayload(attachment: EntityAttachment) {
+  return {
+    name: attachment.name,
+    mime: attachment.mime,
+    size: attachment.size,
+  };
+}
+
+function buildDebugAttachment(debug: Record<string, unknown>) {
+  const fileName = `llm-debug-${Date.now()}.json`;
+  const json = JSON.stringify(debug, null, 2);
+  const encoded = encodeURIComponent(json);
+  return {
+    id: createLocalAttachmentId(),
+    name: fileName,
+    mime: 'application/json',
+    size: json.length,
+    data: `data:application/json;charset=utf-8,${encoded}`,
+  } satisfies EntityAttachment;
+}
+
+function parseRequestError(error: unknown) {
+  if (typeof error === 'object' && error && 'response' in error) {
+    const axiosError = error as {
+      response?: { status?: number; data?: { message?: string } };
+      message?: string;
+    };
+    const message = axiosError.response?.data?.message || axiosError.message || 'LLM request failed';
+    const status = axiosError.response?.status;
+    return status ? `${message} (HTTP ${status})` : message;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return 'LLM request failed';
+}
+
+function openChatAttachment(attachment: EntityAttachment) {
+  if (typeof window === 'undefined') return;
+  if (!attachment.data) return;
+
+  const anchor = window.document.createElement('a');
+  anchor.href = attachment.data;
+  anchor.download = attachment.name || 'attachment';
+  anchor.rel = 'noopener';
+  anchor.target = '_blank';
+  window.document.body.appendChild(anchor);
+  anchor.click();
+  window.document.body.removeChild(anchor);
+}
+
 async function onSendInput() {
   if (!draft.value) return;
+  if (isAiRequestInFlight.value) return;
 
   const message = normalizeChatText(draft.value.textInput);
   const attachments = [...draft.value.pendingUploads];
@@ -796,6 +852,62 @@ async function onSendInput() {
     scrollEntityChatToBottom('auto');
   });
   scheduleSave();
+
+  const activeDraft = draft.value;
+  if (!activeDraft) return;
+
+  isAiRequestInFlight.value = true;
+  try {
+    const response = await analyzeEntityWithAi({
+      entityId: activeDraft.entityId,
+      message,
+      voiceInput: activeDraft.voiceInput,
+      history: activeDraft.chatHistory
+        .slice(-12)
+        .map((item) => ({
+          role: item.role,
+          text: item.text,
+        })),
+      attachments: attachments.map(toAiAttachmentPayload),
+      documents: activeDraft.documents.slice(-8).map(toAiAttachmentPayload),
+      debug: import.meta.env.DEV,
+    });
+
+    if (!draft.value || draft.value.entityId !== activeDraft.entityId) {
+      return;
+    }
+
+    if (response.suggestion?.status === 'ready') {
+      if (response.suggestion.description) {
+        draft.value.description = response.suggestion.description;
+      }
+
+      const fields = response.suggestion.fields || {};
+      for (const field of getEntityContextFields(draft.value.type)) {
+        const rawValues = fields[field.key];
+        const nextValues = Array.isArray(rawValues)
+          ? rawValues.filter((value): value is string => typeof value === 'string')
+          : [];
+        draft.value.metadataValues[field.key] = nextValues
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0)
+          .slice(0, 16);
+      }
+    }
+
+    const debugAttachments = response.debug ? [buildDebugAttachment(response.debug)] : [];
+    pushChatMessage('assistant', response.reply || 'Готово.', debugAttachments);
+    scheduleSave();
+    await nextTick();
+    scrollEntityChatToBottom('auto');
+  } catch (error: unknown) {
+    pushChatMessage('assistant', `Не удалось получить ответ от LLM. ${parseRequestError(error)}`);
+    await nextTick();
+    scrollEntityChatToBottom('auto');
+    scheduleSave();
+  } finally {
+    isAiRequestInFlight.value = false;
+  }
 }
 
 function onChatComposerKeydown(event: KeyboardEvent) {
@@ -1398,13 +1510,15 @@ onBeforeUnmount(() => {
           <div class="entity-chat-bubble">
             <p class="entity-chat-text">{{ message.text }}</p>
             <div v-if="message.attachments.length" class="entity-chat-attachments">
-              <span
+              <button
                 v-for="attachment in message.attachments"
                 :key="attachment.id"
+                type="button"
                 class="entity-chat-attachment-chip"
+                @click="openChatAttachment(attachment)"
               >
                 {{ attachment.name }}
-              </span>
+              </button>
             </div>
           </div>
           <time class="entity-chat-time">{{ toDisplayTime(message.createdAt) }}</time>
@@ -1435,6 +1549,7 @@ onBeforeUnmount(() => {
             v-model="draft.textInput"
             class="entity-info-chat-input"
             :placeholder="chatPlaceholder"
+            :disabled="isAiRequestInFlight"
             rows="1"
             @input="onTextInput"
             @keydown="onChatComposerKeydown"
@@ -1447,6 +1562,7 @@ onBeforeUnmount(() => {
               type="button"
               class="entity-info-chat-icon-btn"
               title="Загрузка документа"
+              :disabled="isAiRequestInFlight"
               @click="docInputRef?.click()"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1467,6 +1583,7 @@ onBeforeUnmount(() => {
               type="button"
               class="entity-info-chat-icon-btn"
               title="Текстовый чат"
+              :disabled="isAiRequestInFlight"
               @click="focusChatInput"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1479,6 +1596,7 @@ onBeforeUnmount(() => {
               class="entity-info-chat-icon-btn"
               :class="{ active: isVoiceListening }"
               title="Голосовой ввод"
+              :disabled="isAiRequestInFlight"
               @click="onVoiceToggle"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1494,6 +1612,7 @@ onBeforeUnmount(() => {
             type="button"
             class="entity-info-chat-icon-btn send"
             title="Отправить"
+            :disabled="isAiRequestInFlight"
             @click="onSendInput"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -2063,6 +2182,7 @@ onBeforeUnmount(() => {
 }
 
 .entity-chat-attachment-chip {
+  appearance: none;
   border-radius: 999px;
   border: 1px solid rgba(219, 228, 243, 0.9);
   background: rgba(255, 255, 255, 0.9);
@@ -2070,6 +2190,12 @@ onBeforeUnmount(() => {
   font-size: 10px;
   font-weight: 700;
   padding: 3px 8px;
+  cursor: pointer;
+}
+
+.entity-chat-attachment-chip:hover {
+  border-color: #bfd5ff;
+  color: #1058ff;
 }
 
 .entity-info-chat-composer {
@@ -2173,6 +2299,15 @@ onBeforeUnmount(() => {
   border-color: #1058ff;
 }
 
+.entity-info-chat-icon-btn:disabled,
+.entity-info-chat-icon-btn:disabled:hover {
+  cursor: wait;
+  opacity: 0.6;
+  color: #9aa9c2;
+  border-color: #dbe4f3;
+  background: #f5f8ff;
+}
+
 .entity-info-chat-input {
   flex: 1;
   min-width: 0;
@@ -2190,6 +2325,10 @@ onBeforeUnmount(() => {
 
 .entity-info-chat-input::placeholder {
   color: #94a3b8;
+}
+
+.entity-info-chat-input:disabled {
+  cursor: wait;
 }
 
 .entity-info-hidden-input {

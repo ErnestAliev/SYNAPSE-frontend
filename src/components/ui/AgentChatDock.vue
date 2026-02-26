@@ -32,6 +32,7 @@ interface AgentChatRequestScope {
 
 interface AgentChatResponse {
   reply: string;
+  debug?: Record<string, unknown>;
 }
 
 const STORAGE_KEY = 'synapse12.agent-chat.v2';
@@ -305,6 +306,19 @@ function buildAttachmentsPayload(attachments: EntityAttachment[]) {
   }));
 }
 
+function buildDebugAttachment(debug: Record<string, unknown>) {
+  const fileName = `llm-debug-${Date.now()}.json`;
+  const json = JSON.stringify(debug, null, 2);
+  const encoded = encodeURIComponent(json);
+  return {
+    id: createAttachmentId(),
+    name: fileName,
+    mime: 'application/json',
+    size: json.length,
+    data: `data:application/json;charset=utf-8,${encoded}`,
+  } satisfies EntityAttachment;
+}
+
 async function requestAssistantReply(args: {
   scope: AgentChatRequestScope;
   message: string;
@@ -316,9 +330,13 @@ async function requestAssistantReply(args: {
     message: args.message,
     history: args.history,
     attachments: buildAttachmentsPayload(args.attachments),
+    debug: import.meta.env.DEV,
   });
 
-  return typeof data.reply === 'string' ? data.reply.trim() : '';
+  return {
+    reply: typeof data.reply === 'string' ? data.reply.trim() : '',
+    debug: data.debug,
+  };
 }
 
 function pushMessage(role: ChatRole, text: string, attachments: EntityAttachment[] = [], scope?: string) {
@@ -339,6 +357,20 @@ function pushMessage(role: ChatRole, text: string, attachments: EntityAttachment
     [targetScope]: [...(messagesByScope.value[targetScope] || []), nextMessage],
   };
   persistMessages();
+}
+
+function openChatAttachment(attachment: EntityAttachment) {
+  if (typeof window === 'undefined') return;
+  if (!attachment.data) return;
+
+  const anchor = window.document.createElement('a');
+  anchor.href = attachment.data;
+  anchor.download = attachment.name || 'attachment';
+  anchor.rel = 'noopener';
+  anchor.target = '_blank';
+  window.document.body.appendChild(anchor);
+  anchor.click();
+  window.document.body.removeChild(anchor);
 }
 
 function scrollToBottom(behavior: ScrollBehavior = 'smooth') {
@@ -404,16 +436,17 @@ async function sendMessage() {
   });
 
   try {
-    const reply = await requestAssistantReply({
+    const aiResponse = await requestAssistantReply({
       scope: activeScope,
       message: value,
       history: historyPayload,
       attachments,
     });
-    if (reply) {
-      pushMessage('assistant', reply, [], activeScopeKey);
+    const debugAttachments = aiResponse.debug ? [buildDebugAttachment(aiResponse.debug)] : [];
+    if (aiResponse.reply) {
+      pushMessage('assistant', aiResponse.reply, debugAttachments, activeScopeKey);
     } else {
-      pushMessage('assistant', 'Недостаточно данных в текущем контексте.', [], activeScopeKey);
+      pushMessage('assistant', 'Недостаточно данных в текущем контексте.', debugAttachments, activeScopeKey);
     }
   } catch (error) {
     pushMessage(
@@ -641,13 +674,15 @@ onBeforeUnmount(() => {
           <div class="agent-chat-bubble">
             <p class="agent-chat-text">{{ message.text }}</p>
             <div v-if="message.attachments.length" class="agent-chat-attachments">
-              <span
+              <button
                 v-for="attachment in message.attachments"
                 :key="attachment.id"
+                type="button"
                 class="agent-chat-attachment-chip"
+                @click="openChatAttachment(attachment)"
               >
                 {{ attachment.name }}
-              </span>
+              </button>
             </div>
           </div>
           <time class="agent-chat-time">{{ toDisplayTime(message.createdAt) }}</time>
@@ -950,6 +985,7 @@ onBeforeUnmount(() => {
 }
 
 .agent-chat-attachment-chip {
+  appearance: none;
   border-radius: 999px;
   border: 1px solid rgba(219, 228, 243, 0.9);
   background: rgba(255, 255, 255, 0.9);
@@ -957,6 +993,12 @@ onBeforeUnmount(() => {
   font-size: 10px;
   font-weight: 700;
   padding: 3px 8px;
+  cursor: pointer;
+}
+
+.agent-chat-attachment-chip:hover {
+  border-color: #bfd5ff;
+  color: #1058ff;
 }
 
 .agent-chat-time {
