@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import axios from 'axios';
 import { useRouter } from 'vue-router';
 import { useEntitiesStore } from '../stores/entities';
 import { useAuthStore } from '../stores/auth';
@@ -610,6 +611,10 @@ watch(activeType, () => {
 });
 
 function formatConnectionImportError(error: unknown) {
+  if (axios.isAxiosError(error) && !error.response) {
+    return 'Сервис подключения временно недоступен (backend перезапускается или недоступен). Повторите через 1-2 минуты.';
+  }
+
   const baseMessage = entitiesStore.formatApiError(error);
 
   if (/Could not find Chrome/i.test(baseMessage)) {
@@ -625,8 +630,13 @@ function formatConnectionImportError(error: unknown) {
 
 async function createEntity() {
   if (activeType.value === 'connection') {
+    clearConnectionImportPoll();
     connectionImportError.value = '';
     connectionImportMessage.value = '';
+    connectionImportStats.value = null;
+    connectionImportSessionId.value = '';
+    connectionImportQrCode.value = '';
+    connectionImportSessionStatus.value = 'idle';
     isConnectionImportModalOpen.value = true;
     void startConnectionSession();
     return;
@@ -716,6 +726,8 @@ async function fetchConnectionSessionStatus() {
     }
   } catch (error) {
     connectionImportError.value = formatConnectionImportError(error);
+    connectionImportSessionStatus.value = 'error';
+    clearConnectionImportPoll();
   }
 }
 
@@ -739,6 +751,8 @@ async function startConnectionSession() {
     }
   } catch (error) {
     connectionImportError.value = formatConnectionImportError(error);
+    connectionImportSessionStatus.value = 'error';
+    clearConnectionImportPoll();
   } finally {
     isConnectionImportBusy.value = false;
   }
@@ -831,7 +845,7 @@ function connectionSessionStatusLabel() {
   const status = connectionImportSessionStatus.value;
   if (status === 'ready') return 'Подключено';
   if (status === 'qr') return 'Ожидает сканирования QR';
-  if (status === 'initializing') return 'Инициализация';
+  if (status === 'initializing') return 'Генерация QR';
   if (status === 'importing') return 'Импорт контактов';
   if (status === 'error') return 'Ошибка';
   if (status === 'disconnected') return 'Отключено';
@@ -840,18 +854,10 @@ function connectionSessionStatusLabel() {
 
 function connectionSessionActionLabel() {
   const status = connectionImportSessionStatus.value;
-  if (status === 'ready') return 'Перезапустить QR';
+  if (status === 'ready') return 'Обновить QR';
   if (status === 'qr') return 'Обновить QR';
-  return 'Получить QR';
-}
-
-function connectionProgressValue() {
-  const status = connectionImportSessionStatus.value;
-  if (status === 'initializing') return 20;
-  if (status === 'qr') return 45;
-  if (status === 'importing') return 80;
-  if (status === 'ready') return 100;
-  return 0;
+  if (status === 'initializing') return 'Генерация...';
+  return 'Повторить';
 }
 
 function connectionPhone(entity: Entity) {
@@ -1506,26 +1512,19 @@ function closeEntityInfoModal() {
           {{ connectionSessionStatusLabel() }}
         </div>
 
-        <div class="connection-progress-wrap">
-          <div class="connection-progress-track">
-            <div class="connection-progress-fill" :style="{ width: `${connectionProgressValue()}%` }" />
-          </div>
-          <div class="connection-progress-value">{{ connectionProgressValue() }}%</div>
-        </div>
-
         <div v-if="connectionImportQrCode" class="connection-qr-wrap">
           <img class="connection-qr-image" :src="connectionImportQrCode" alt="WhatsApp QR" />
           <p class="connection-qr-hint">Сканируйте QR-код в WhatsApp на телефоне.</p>
         </div>
         <div v-else class="connection-qr-placeholder">
-          QR появится здесь после запуска сессии.
+          QR загружается. Если код не появился, нажмите «{{ connectionSessionActionLabel() }}».
         </div>
 
         <div class="connection-import-actions">
           <button
             type="button"
             class="connection-link-btn"
-            :disabled="isConnectionImportBusy"
+            :disabled="isConnectionImportBusy || connectionImportSessionStatus === 'initializing' || connectionImportSessionStatus === 'importing'"
             @click="startConnectionSession"
           >
             {{ connectionSessionActionLabel() }}
@@ -1533,13 +1532,13 @@ function closeEntityInfoModal() {
           <button
             type="button"
             class="connection-import-btn"
-            :disabled="isConnectionImportBusy"
+            :disabled="isConnectionImportBusy || connectionImportSessionStatus !== 'ready'"
             @click="importWhatsAppContacts"
           >
             {{
               isConnectionImportBusy && connectionImportSessionStatus === 'importing'
                 ? 'Импорт...'
-                : 'Импортировать только новые'
+                : 'Импортировать контакты'
             }}
           </button>
         </div>
@@ -2144,35 +2143,6 @@ function closeEntityInfoModal() {
   border-color: #fecaca;
   background: #fff1f2;
   color: #b91c1c;
-}
-
-.connection-progress-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.connection-progress-track {
-  flex: 1;
-  height: 7px;
-  border-radius: 999px;
-  background: #e2e8f0;
-  overflow: hidden;
-}
-
-.connection-progress-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #3b82f6, #1058ff);
-  transition: width 0.2s ease;
-}
-
-.connection-progress-value {
-  min-width: 40px;
-  text-align: right;
-  color: #475569;
-  font-size: 11px;
-  font-weight: 700;
 }
 
 .connection-qr-wrap {
