@@ -166,6 +166,9 @@ const connectionImportProgress = ref<{
   processed: number;
   percent: number;
 } | null>(null);
+const connectionClientLogs = ref<Array<{ ts: string; step: string; data?: unknown }>>([]);
+const isConnectionCopyLogsBusy = ref(false);
+const connectionCopyLogsMessage = ref('');
 
 interface WhatsappSessionStatus {
   sessionId: string;
@@ -190,6 +193,13 @@ interface WhatsappImportResult {
   matchedByImportKey?: number;
   newAvailable?: number;
   session?: WhatsappSessionStatus;
+}
+
+interface WhatsappSessionLogsResponse {
+  sessionId: string;
+  status: string;
+  connector: string;
+  logs: Array<{ ts?: string; step?: string; data?: unknown }>;
 }
 
 interface ProjectPreviewPoint {
@@ -623,7 +633,20 @@ watch(activeType, () => {
   connectionImportError.value = '';
   connectionImportStats.value = null;
   connectionImportProgress.value = null;
+  connectionClientLogs.value = [];
+  connectionCopyLogsMessage.value = '';
 });
+
+function appendConnectionClientLog(step: string, data?: unknown) {
+  connectionClientLogs.value.push({
+    ts: new Date().toISOString(),
+    step,
+    data,
+  });
+  if (connectionClientLogs.value.length > 200) {
+    connectionClientLogs.value = connectionClientLogs.value.slice(-200);
+  }
+}
 
 function formatConnectionImportError(error: unknown) {
   if (axios.isAxiosError(error) && !error.response) {
@@ -654,9 +677,12 @@ async function createEntity() {
     connectionImportMessage.value = '';
     connectionImportStats.value = null;
     connectionImportProgress.value = null;
+    connectionClientLogs.value = [];
+    connectionCopyLogsMessage.value = '';
     connectionImportSessionId.value = '';
     connectionImportQrCode.value = '';
     connectionImportSessionStatus.value = 'idle';
+    appendConnectionClientLog('modal.open');
     isConnectionImportModalOpen.value = true;
     void startConnectionSession();
     return;
@@ -710,6 +736,7 @@ function clearConnectionImportPoll() {
 function applyConnectionSessionState(session: WhatsappSessionStatus | undefined) {
   if (!session) return;
 
+  const previousStatus = connectionImportSessionStatus.value;
   connectionImportSessionId.value = session.sessionId || '';
   connectionImportSessionStatus.value = session.status || 'idle';
   connectionImportQrCode.value = session.qrCodeDataUrl || '';
@@ -725,8 +752,16 @@ function applyConnectionSessionState(session: WhatsappSessionStatus | undefined)
     connectionImportProgress.value = null;
   }
 
+  if (previousStatus !== connectionImportSessionStatus.value) {
+    appendConnectionClientLog('status.change', {
+      from: previousStatus,
+      to: connectionImportSessionStatus.value,
+    });
+  }
+
   if (session.error?.trim()) {
     connectionImportError.value = session.error.trim();
+    appendConnectionClientLog('status.error', { message: session.error.trim() });
   } else if (connectionImportError.value && session.status !== 'error') {
     connectionImportError.value = '';
   }
@@ -758,6 +793,7 @@ async function fetchConnectionSessionStatus() {
   } catch (error) {
     connectionImportError.value = formatConnectionImportError(error);
     connectionImportSessionStatus.value = 'error';
+    appendConnectionClientLog('session.poll.error', { message: connectionImportError.value });
     clearConnectionImportPoll();
   }
 }
@@ -769,6 +805,8 @@ async function startConnectionSession() {
   connectionImportMessage.value = '';
   connectionImportStats.value = null;
   connectionImportProgress.value = null;
+  connectionCopyLogsMessage.value = '';
+  appendConnectionClientLog('session.start.request');
   clearConnectionImportPoll();
 
   try {
@@ -777,6 +815,10 @@ async function startConnectionSession() {
       {},
     );
     applyConnectionSessionState(data.session);
+    appendConnectionClientLog('session.start.response', {
+      status: data.session?.status,
+      sessionId: data.session?.sessionId,
+    });
 
     if (data.session && ['initializing', 'qr', 'importing'].includes(data.session.status)) {
       scheduleConnectionImportPoll(1200);
@@ -784,6 +826,7 @@ async function startConnectionSession() {
   } catch (error) {
     connectionImportError.value = formatConnectionImportError(error);
     connectionImportSessionStatus.value = 'error';
+    appendConnectionClientLog('session.start.error', { message: connectionImportError.value });
     clearConnectionImportPoll();
   } finally {
     isConnectionImportBusy.value = false;
@@ -796,6 +839,7 @@ async function stopConnectionSession(options?: { silent?: boolean }) {
 
   try {
     await apiClient.delete(`/integrations/whatsapp/session/${sessionId}`);
+    appendConnectionClientLog('session.stop.request', { sessionId });
   } catch (error) {
     if (!options?.silent) {
       connectionImportError.value = formatConnectionImportError(error);
@@ -810,6 +854,7 @@ async function stopConnectionSession(options?: { silent?: boolean }) {
 
 async function closeConnectionImportModal() {
   if (isConnectionImportBusy.value) return;
+  appendConnectionClientLog('modal.close');
   clearConnectionImportPoll();
   await stopConnectionSession({ silent: true });
   isConnectionImportModalOpen.value = false;
@@ -838,6 +883,7 @@ async function importWhatsAppContacts() {
     total: 0,
     percent: 5,
   };
+  appendConnectionClientLog('import.request', { sessionId: connectionImportSessionId.value });
   scheduleConnectionImportPoll(700);
 
   try {
@@ -871,16 +917,23 @@ async function importWhatsAppContacts() {
         : matched > 0
           ? `Найдено совпадений: ${matched}. Новых контактов для импорта нет.`
           : 'Контакты не найдены для импорта.';
+    appendConnectionClientLog('import.response', {
+      total,
+      imported,
+      matched,
+      matchedByPhone,
+      matchedByImportKey,
+      newAvailable,
+    });
 
     await nextTick();
     collectionViewRef.value?.scrollTo({ top: 0, behavior: 'auto' });
   } catch (error) {
     connectionImportError.value = formatConnectionImportError(error);
+    appendConnectionClientLog('import.error', { message: connectionImportError.value });
   } finally {
     isConnectionImportBusy.value = false;
   }
-
-  await stopConnectionSession({ silent: true });
 }
 
 function connectionSessionStatusLabel() {
@@ -900,6 +953,52 @@ function connectionSessionActionLabel() {
   if (status === 'qr') return 'Обновить QR';
   if (status === 'initializing') return 'Генерация...';
   return 'Повторить';
+}
+
+async function copyConnectionLogs() {
+  if (isConnectionCopyLogsBusy.value) return;
+  isConnectionCopyLogsBusy.value = true;
+  connectionCopyLogsMessage.value = '';
+
+  try {
+    let serverLogs: unknown[] = [];
+    if (connectionImportSessionId.value) {
+      try {
+        const { data } = await apiClient.get<WhatsappSessionLogsResponse>(
+          `/integrations/whatsapp/session/${connectionImportSessionId.value}/logs`,
+        );
+        serverLogs = Array.isArray(data.logs) ? data.logs : [];
+      } catch (error) {
+        appendConnectionClientLog('logs.fetch.error', {
+          message: entitiesStore.formatApiError(error),
+        });
+      }
+    }
+
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      sessionId: connectionImportSessionId.value,
+      status: connectionImportSessionStatus.value,
+      progress: connectionImportProgress.value,
+      stats: connectionImportStats.value,
+      message: connectionImportMessage.value,
+      error: connectionImportError.value,
+      clientLogs: connectionClientLogs.value,
+      serverLogs,
+    };
+    const text = JSON.stringify(payload, null, 2);
+    await navigator.clipboard.writeText(text);
+    connectionCopyLogsMessage.value = 'Логи скопированы.';
+    appendConnectionClientLog('logs.copy.success', {
+      clientLogs: connectionClientLogs.value.length,
+      serverLogs: Array.isArray(serverLogs) ? serverLogs.length : 0,
+    });
+  } catch {
+    connectionCopyLogsMessage.value = 'Не удалось скопировать логи.';
+    appendConnectionClientLog('logs.copy.error');
+  } finally {
+    isConnectionCopyLogsBusy.value = false;
+  }
 }
 
 function connectionPhone(entity: Entity) {
@@ -1554,11 +1653,17 @@ function closeEntityInfoModal() {
           {{ connectionSessionStatusLabel() }}
         </div>
 
-        <div v-if="connectionImportQrCode" class="connection-qr-wrap">
+        <div
+          v-if="connectionImportQrCode && connectionImportSessionStatus !== 'importing'"
+          class="connection-qr-wrap"
+        >
           <img class="connection-qr-image" :src="connectionImportQrCode" alt="WhatsApp QR" />
           <p class="connection-qr-hint">Сканируйте QR-код в WhatsApp на телефоне.</p>
         </div>
-        <div v-else class="connection-qr-placeholder">
+        <div
+          v-else-if="connectionImportSessionStatus !== 'importing'"
+          class="connection-qr-placeholder"
+        >
           QR загружается. Если код не появился, нажмите «{{ connectionSessionActionLabel() }}».
         </div>
 
@@ -1598,7 +1703,10 @@ function closeEntityInfoModal() {
           </div>
         </div>
 
-        <p v-if="connectionImportSessionStatus !== 'ready'" class="connection-step-hint">
+        <p v-if="connectionImportSessionStatus === 'importing'" class="connection-step-hint">
+          Идет импорт контактов. QR скрыт до завершения шага.
+        </p>
+        <p v-else-if="connectionImportSessionStatus !== 'ready'" class="connection-step-hint">
           1) Сканируйте QR в WhatsApp -> Связанные устройства. 2) Дождитесь статуса «Подключено». 3) Нажмите «Импортировать контакты».
         </p>
 
@@ -1616,6 +1724,19 @@ function closeEntityInfoModal() {
         <p v-if="connectionImportError" class="connection-import-error">
           {{ connectionImportError }}
         </p>
+        <div class="connection-logs-actions">
+          <button
+            type="button"
+            class="connection-log-btn"
+            :disabled="isConnectionCopyLogsBusy"
+            @click="copyConnectionLogs"
+          >
+            {{ isConnectionCopyLogsBusy ? 'Сбор логов...' : 'Скопировать логи' }}
+          </button>
+          <span v-if="connectionCopyLogsMessage" class="connection-log-copy-message">
+            {{ connectionCopyLogsMessage }}
+          </span>
+        </div>
       </div>
     </div>
   </main>
@@ -2353,6 +2474,40 @@ function closeEntityInfoModal() {
   color: #475569;
   font-size: 12px;
   line-height: 1.4;
+}
+
+.connection-logs-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.connection-log-btn {
+  height: 30px;
+  border-radius: 10px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.connection-log-btn:hover:not(:disabled) {
+  border-color: #97b9ff;
+}
+
+.connection-log-btn:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.connection-log-copy-message {
+  color: #475569;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .entity-phone-meta {
