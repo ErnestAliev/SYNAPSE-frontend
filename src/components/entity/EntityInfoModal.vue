@@ -80,6 +80,7 @@ interface EmojiItem {
 type MetadataFieldKey =
   | 'tags'
   | 'markers'
+  | 'phones'
   | 'skills'
   | 'importance'
   | 'links'
@@ -107,6 +108,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   connection: [
     { key: 'tags', label: 'Теги' },
     { key: 'markers', label: 'Метки' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'roles', label: 'Роли' },
     { key: 'status', label: 'Статусы' },
     { key: 'links', label: 'Ссылки' },
@@ -126,6 +128,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'departments', label: 'Отделы' },
     { key: 'stage', label: 'Стадии' },
     { key: 'risks', label: 'Риски' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   event: [

@@ -22,6 +22,7 @@ const router = useRouter();
 type MetadataFieldKey =
   | 'tags'
   | 'markers'
+  | 'phones'
   | 'skills'
   | 'importance'
   | 'links'
@@ -50,6 +51,7 @@ const ENTITY_FILTER_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   connection: [
     { key: 'tags', label: 'Теги' },
     { key: 'markers', label: 'Метки' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
     { key: 'roles', label: 'Роли' },
     { key: 'status', label: 'Статусы' },
@@ -68,6 +70,7 @@ const ENTITY_FILTER_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'departments', label: 'Отделы' },
     { key: 'stage', label: 'Стадии' },
     { key: 'risks', label: 'Риски' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   event: [
@@ -140,6 +143,14 @@ const isConnectionImportModalOpen = ref(false);
 const isConnectionImportBusy = ref(false);
 const connectionImportMessage = ref('');
 const connectionImportError = ref('');
+const connectionImportStats = ref<{
+  total: number;
+  imported: number;
+  matched: number;
+  matchedByPhone: number;
+  matchedByImportKey: number;
+  newAvailable: number;
+} | null>(null);
 const connectionMoveBusyById = ref<Record<string, boolean>>({});
 const connectionImportSessionId = ref('');
 const connectionImportQrCode = ref('');
@@ -153,6 +164,17 @@ interface WhatsappSessionStatus {
   status: 'idle' | 'initializing' | 'qr' | 'ready' | 'importing' | 'error' | 'disconnected';
   qrCodeDataUrl?: string;
   error?: string;
+}
+
+interface WhatsappImportResult {
+  imported: number;
+  skipped: number;
+  total: number;
+  matched?: number;
+  matchedByPhone?: number;
+  matchedByImportKey?: number;
+  newAvailable?: number;
+  session?: WhatsappSessionStatus;
 }
 
 interface ProjectPreviewPoint {
@@ -583,7 +605,22 @@ watch(activeType, () => {
   connectionImportSessionStatus.value = 'idle';
   connectionImportMessage.value = '';
   connectionImportError.value = '';
+  connectionImportStats.value = null;
 });
+
+function formatConnectionImportError(error: unknown) {
+  const baseMessage = entitiesStore.formatApiError(error);
+
+  if (/Could not find Chrome/i.test(baseMessage)) {
+    return `${baseMessage}. На production-сервере не установлен браузер для Puppeteer. Проверьте postinstall и PUPPETEER_EXECUTABLE_PATH.`;
+  }
+
+  if (/integration is unavailable/i.test(baseMessage)) {
+    return `${baseMessage}. На backend отсутствуют зависимости WhatsApp (whatsapp-web.js / qrcode).`;
+  }
+
+  return baseMessage;
+}
 
 async function createEntity() {
   if (activeType.value === 'connection') {
@@ -677,7 +714,7 @@ async function fetchConnectionSessionStatus() {
       scheduleConnectionImportPoll(1800);
     }
   } catch (error) {
-    connectionImportError.value = entitiesStore.formatApiError(error);
+    connectionImportError.value = formatConnectionImportError(error);
   }
 }
 
@@ -686,6 +723,7 @@ async function startConnectionSession() {
   isConnectionImportBusy.value = true;
   connectionImportError.value = '';
   connectionImportMessage.value = '';
+  connectionImportStats.value = null;
   clearConnectionImportPoll();
 
   try {
@@ -699,7 +737,7 @@ async function startConnectionSession() {
       scheduleConnectionImportPoll(1200);
     }
   } catch (error) {
-    connectionImportError.value = entitiesStore.formatApiError(error);
+    connectionImportError.value = formatConnectionImportError(error);
   } finally {
     isConnectionImportBusy.value = false;
   }
@@ -725,14 +763,10 @@ async function importWhatsAppContacts() {
   isConnectionImportBusy.value = true;
   connectionImportError.value = '';
   connectionImportMessage.value = '';
+  connectionImportStats.value = null;
 
   try {
-    const { data } = await apiClient.post<{
-      imported: number;
-      skipped: number;
-      total: number;
-      session?: WhatsappSessionStatus;
-    }>('/integrations/whatsapp/import', {
+    const { data } = await apiClient.post<WhatsappImportResult>('/integrations/whatsapp/import', {
       sessionId: connectionImportSessionId.value,
     });
 
@@ -741,16 +775,32 @@ async function importWhatsAppContacts() {
     entitiesStore.triggerFlash('connection');
 
     const imported = Number(data.imported) || 0;
-    const skipped = Number(data.skipped) || 0;
+    const matched = Number(data.matched ?? data.skipped) || 0;
+    const total = Number(data.total) || 0;
+    const matchedByPhone = Number(data.matchedByPhone) || 0;
+    const matchedByImportKey = Number(data.matchedByImportKey) || 0;
+    const newAvailable = Number(data.newAvailable ?? imported) || 0;
+
+    connectionImportStats.value = {
+      total,
+      imported,
+      matched,
+      matchedByPhone,
+      matchedByImportKey,
+      newAvailable,
+    };
+
     connectionImportMessage.value =
       imported > 0
-        ? `Импортировано: ${imported}. Пропущено дублей: ${skipped}.`
-        : `Новых контактов не найдено. Пропущено дублей: ${skipped}.`;
+        ? `Найдено совпадений: ${matched}. Импортировано только новых: ${imported}.`
+        : matched > 0
+          ? `Найдено совпадений: ${matched}. Новых контактов для импорта нет.`
+          : 'Контакты не найдены для импорта.';
 
     await nextTick();
     collectionViewRef.value?.scrollTo({ top: 0, behavior: 'auto' });
   } catch (error) {
-    connectionImportError.value = entitiesStore.formatApiError(error);
+    connectionImportError.value = formatConnectionImportError(error);
   } finally {
     isConnectionImportBusy.value = false;
   }
@@ -777,9 +827,15 @@ function connectionSessionActionLabel() {
 
 function connectionPhone(entity: Entity) {
   const profile = toProfile(entity);
-  const phone = profile.phone;
-  if (typeof phone !== 'string') return '';
-  return phone.trim();
+  const direct = typeof profile.phone === 'string' ? profile.phone.trim() : '';
+  if (direct) return direct;
+
+  if (Array.isArray(profile.phones)) {
+    const first = profile.phones.find((value) => typeof value === 'string' && value.trim().length > 0);
+    if (typeof first === 'string') return first.trim();
+  }
+
+  return '';
 }
 
 function connectionSource(entity: Entity) {
@@ -797,6 +853,10 @@ function connectionMeta(entity: Entity) {
     return `${sourceLabel} · ${phone}`;
   }
   return sourceLabel;
+}
+
+function companyPhone(entity: Entity) {
+  return connectionPhone(entity);
 }
 
 function setConnectionMoveBusy(entityId: string, busy: boolean) {
@@ -1183,6 +1243,9 @@ function closeEntityInfoModal() {
               </div>
             </div>
             <div class="card-name">{{ firstEntity.name }}</div>
+            <div v-if="activeType === 'company' && companyPhone(firstEntity)" class="entity-phone-meta">
+              {{ companyPhone(firstEntity) }}
+            </div>
           </button>
         </template>
 
@@ -1344,6 +1407,9 @@ function closeEntityInfoModal() {
               </div>
             </div>
             <div class="card-name">{{ entity.name }}</div>
+            <div v-if="activeType === 'company' && companyPhone(entity)" class="entity-phone-meta">
+              {{ companyPhone(entity) }}
+            </div>
           </button>
         </template>
       </div>
@@ -1396,9 +1462,12 @@ function closeEntityInfoModal() {
       @pointerdown.self="closeConnectionImportModal"
     >
       <div class="connection-import-card" @pointerdown.stop>
-        <h3 class="connection-import-title">Подключение</h3>
+        <h3 class="connection-import-title">Подключение WhatsApp</h3>
         <p class="connection-import-text">
-          Подключите WhatsApp и импортируйте контакты в раздел "Подключение".
+          Сканируйте QR-код и импортируйте контакты один раз. Мы не получаем постоянный доступ к вашей адресной книге.
+        </p>
+        <p class="connection-import-note">
+          Разовое подключение: если в WhatsApp появятся новые контакты, запустите импорт повторно.
         </p>
 
         <div class="connection-provider-item active">
@@ -1435,11 +1504,23 @@ function closeEntityInfoModal() {
           <button
             type="button"
             class="connection-import-btn"
-            :disabled="isConnectionImportBusy || connectionImportSessionStatus !== 'ready'"
+            :disabled="isConnectionImportBusy"
             @click="importWhatsAppContacts"
           >
-            {{ isConnectionImportBusy ? 'Импорт...' : 'Импортировать контакты' }}
+            {{
+              isConnectionImportBusy && connectionImportSessionStatus === 'importing'
+                ? 'Импорт...'
+                : 'Импортировать только новые'
+            }}
           </button>
+        </div>
+
+        <div v-if="connectionImportStats" class="connection-import-stats">
+          <span>Всего найдено: {{ connectionImportStats.total }}</span>
+          <span>Совпадения: {{ connectionImportStats.matched }}</span>
+          <span>Новых доступно: {{ connectionImportStats.newAvailable }}</span>
+          <span>Совпадений по телефону: {{ connectionImportStats.matchedByPhone }}</span>
+          <span>Совпадений по ключу: {{ connectionImportStats.matchedByImportKey }}</span>
         </div>
 
         <p v-if="connectionImportMessage" class="connection-import-message">
@@ -1953,6 +2034,13 @@ function closeEntityInfoModal() {
   font-size: 13px;
 }
 
+.connection-import-note {
+  margin: -2px 0 2px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .connection-provider-item {
   border-radius: 12px;
   border: 1px solid #dbe7ff;
@@ -2064,6 +2152,19 @@ function closeEntityInfoModal() {
   flex-wrap: wrap;
 }
 
+.connection-import-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid #dbe4f3;
+  background: #f8fbff;
+  padding: 10px;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 600;
+}
+
 .connection-link-btn,
 .connection-import-btn {
   height: 34px;
@@ -2104,6 +2205,13 @@ function closeEntityInfoModal() {
 .connection-import-error {
   margin: 0;
   color: #b91c1c;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.entity-phone-meta {
+  margin-top: 4px;
+  color: #64748b;
   font-size: 12px;
   font-weight: 600;
 }
