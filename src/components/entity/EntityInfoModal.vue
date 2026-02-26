@@ -749,6 +749,13 @@ function autoResizeChatInput() {
   input.style.height = `${Math.min(176, input.scrollHeight)}px`;
 }
 
+function resetChatInputSize() {
+  pendingComposerHeightReset.value = true;
+  void nextTick(() => {
+    autoResizeChatInput();
+  });
+}
+
 function scrollEntityChatToBottom(behavior: ScrollBehavior = 'smooth') {
   const feed = chatFeedRef.value;
   if (!feed) return;
@@ -847,7 +854,7 @@ async function onSendInput() {
   );
   draft.value.textInput = '';
 
-  autoResizeChatInput();
+  resetChatInputSize();
   void nextTick(() => {
     scrollEntityChatToBottom('auto');
   });
@@ -1523,6 +1530,11 @@ onBeforeUnmount(() => {
           </div>
           <time class="entity-chat-time">{{ toDisplayTime(message.createdAt) }}</time>
         </article>
+        <article v-if="isAiRequestInFlight" class="entity-chat-message assistant">
+          <div class="entity-chat-bubble thinking">
+            <span class="entity-chat-thinking-text">Думаю...</span>
+          </div>
+        </article>
       </section>
 
       <section class="entity-info-chat-composer">
@@ -2196,6 +2208,29 @@ onBeforeUnmount(() => {
 .entity-chat-attachment-chip:hover {
   border-color: #bfd5ff;
   color: #1058ff;
+}
+
+.entity-chat-bubble.thinking {
+  display: inline-flex;
+  align-items: center;
+}
+
+.entity-chat-thinking-text {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1px;
+  animation: entityThinkingPulse 1.1s ease-in-out infinite;
+}
+
+@keyframes entityThinkingPulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .entity-info-chat-composer {

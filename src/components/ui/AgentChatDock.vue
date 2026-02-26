@@ -689,10 +689,8 @@ onBeforeUnmount(() => {
         </article>
 
         <article v-if="isSending" class="agent-chat-message assistant">
-          <div class="agent-chat-bubble typing">
-            <span class="agent-chat-typing-dot"></span>
-            <span class="agent-chat-typing-dot"></span>
-            <span class="agent-chat-typing-dot"></span>
+          <div class="agent-chat-bubble thinking">
+            <span class="agent-chat-thinking-text">Думаю...</span>
           </div>
         </article>
       </section>
@@ -947,27 +945,18 @@ onBeforeUnmount(() => {
   color: #ffffff;
 }
 
-.agent-chat-bubble.typing {
+.agent-chat-bubble.thinking {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
   padding: 10px 12px;
 }
 
-.agent-chat-typing-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #8aa3cf;
-  animation: agentTypingPulse 1s ease-in-out infinite;
-}
-
-.agent-chat-typing-dot:nth-child(2) {
-  animation-delay: 0.18s;
-}
-
-.agent-chat-typing-dot:nth-child(3) {
-  animation-delay: 0.36s;
+.agent-chat-thinking-text {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1px;
+  animation: agentThinkingPulse 1.1s ease-in-out infinite;
 }
 
 .agent-chat-text {
@@ -1161,14 +1150,12 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
-@keyframes agentTypingPulse {
+@keyframes agentThinkingPulse {
   0%,
   100% {
-    transform: translateY(0);
-    opacity: 0.4;
+    opacity: 0.45;
   }
   50% {
-    transform: translateY(-2px);
     opacity: 1;
   }
 }

@@ -1821,6 +1821,13 @@ function autoResizeChatInput() {
   input.style.height = `${nextHeight}px`;
 }
 
+function resetEntityInfoChatInputSize() {
+  pendingComposerHeightReset.value = true;
+  void nextTick(() => {
+    autoResizeChatInput();
+  });
+}
+
 function scrollEntityChatToBottom(behavior: ScrollBehavior = 'smooth') {
   const feed = entityInfoChatFeedRef.value;
   if (!feed) return;
@@ -1935,7 +1942,7 @@ async function onInfoSendInput() {
   );
 
   draft.textInput = '';
-  autoResizeChatInput();
+  resetEntityInfoChatInputSize();
   void nextTick(() => {
     scrollEntityChatToBottom('auto');
   });
@@ -4276,6 +4283,11 @@ onBeforeUnmount(() => {
             </div>
             <time class="entity-chat-time">{{ toDisplayTime(message.createdAt) }}</time>
           </article>
+          <article v-if="isEntityInfoAiRequestInFlight" class="entity-chat-message assistant">
+            <div class="entity-chat-bubble thinking">
+              <span class="entity-chat-thinking-text">Думаю...</span>
+            </div>
+          </article>
         </section>
 
         <section class="entity-info-chat-composer">
@@ -5581,37 +5593,25 @@ onBeforeUnmount(() => {
   color: #1058ff;
 }
 
-.entity-chat-bubble.typing {
+.entity-chat-bubble.thinking {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
 }
 
-.entity-chat-typing-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #94a3b8;
-  animation: entityTypingDot 0.9s infinite ease-in-out;
+.entity-chat-thinking-text {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1px;
+  animation: entityThinkingPulse 1.1s ease-in-out infinite;
 }
 
-.entity-chat-typing-dot:nth-child(2) {
-  animation-delay: 0.12s;
-}
-
-.entity-chat-typing-dot:nth-child(3) {
-  animation-delay: 0.24s;
-}
-
-@keyframes entityTypingDot {
+@keyframes entityThinkingPulse {
   0%,
-  80%,
   100% {
-    transform: translateY(0);
-    opacity: 0.6;
+    opacity: 0.45;
   }
-  40% {
-    transform: translateY(-2px);
+  50% {
     opacity: 1;
   }
 }
