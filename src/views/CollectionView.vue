@@ -211,11 +211,6 @@ const connectionCopyLogsMessage = ref('');
 const isConnectionPhotosBusy = ref(false);
 const isDeleteWhatsappConfirmVisible = ref(false);
 const connectionBackgroundSyncActive = ref(false);
-const connectionBackgroundStats = ref<{
-  scanned: number;
-  updated: number;
-  remaining: number;
-} | null>(null);
 const connectionGlobalMessage = ref('');
 const connectionGlobalError = ref('');
 const connectionGlobalMessageTimer = ref<ReturnType<typeof setTimeout> | null>(null);
@@ -242,6 +237,11 @@ interface WhatsappImportResult {
   imported: number;
   skipped: number;
   total: number;
+  cursor?: number;
+  nextCursor?: number;
+  hasMore?: boolean;
+  batchSize?: number;
+  batchCount?: number;
   matched?: number;
   matchedByPhone?: number;
   matchedByImportKey?: number;
@@ -260,17 +260,6 @@ interface WhatsappSessionLogsResponse {
   status: string;
   connector: string;
   logs: Array<{ ts?: string; step?: string; data?: unknown }>;
-}
-
-interface WhatsappPhotoBackfillResult {
-  scanned: number;
-  updated: number;
-  skippedNoIdentity: number;
-  failed: number;
-  remaining?: number;
-  hasMore?: boolean;
-  limit?: number;
-  session?: WhatsappSessionStatus;
 }
 
 interface WhatsappDeleteImportedResult {
@@ -1029,6 +1018,8 @@ async function startConnectionSession() {
   isConnectionImportBusy.value = true;
   connectionImportError.value = '';
   connectionImportMessage.value = '';
+  connectionGlobalError.value = '';
+  connectionGlobalMessage.value = '';
   connectionImportStats.value = null;
   connectionImportProgress.value = null;
   connectionCopyLogsMessage.value = '';
@@ -1116,13 +1107,6 @@ function setConnectionGlobalMessage(message: string, autoClearMs = 0) {
   }, autoClearMs);
 }
 
-function isRetryableConnectionSyncError(error: unknown) {
-  if (!axios.isAxiosError(error)) return false;
-  if (!error.response) return true;
-  const status = Number(error.response.status) || 0;
-  return status === 409 || status === 429 || status >= 500;
-}
-
 function waitFor(ms: number) {
   return new Promise<void>((resolve) => {
     window.setTimeout(() => resolve(), ms);
@@ -1151,103 +1135,6 @@ async function ensureConnectionSessionForBackgroundSync() {
   }
 }
 
-async function runConnectionBackgroundPhotoSync(sessionId: string) {
-  if (!sessionId || connectionBackgroundSyncActive.value) return;
-
-  connectionBackgroundSyncActive.value = true;
-  connectionGlobalError.value = '';
-  connectionBackgroundStats.value = null;
-
-  const batchLimit = 80;
-  const maxBatches = 80;
-  let scannedTotal = 0;
-  let updatedTotal = 0;
-  let remaining = 0;
-  let hasMore = true;
-  let batch = 0;
-
-  connectionGlobalMessage.value = 'Контакты импортированы. Догружаем фото в фоне...';
-
-  try {
-    while (hasMore && batch < maxBatches) {
-      const cleanupRoles = batch === 0;
-      let data: WhatsappPhotoBackfillResult | null = null;
-      let attempt = 0;
-
-      while (!data && attempt < 4) {
-        attempt += 1;
-        try {
-          const response = await apiClient.post<WhatsappPhotoBackfillResult>(
-            '/integrations/whatsapp/photos/backfill',
-            {
-              sessionId: connectionImportSessionId.value || sessionId,
-              onlyMissing: true,
-              limit: batchLimit,
-              cleanupRoles,
-            },
-            {
-              timeout: 120_000,
-            },
-          );
-          data = response.data;
-        } catch (error) {
-          if (!isRetryableConnectionSyncError(error) || attempt >= 4) {
-            throw error;
-          }
-          connectionGlobalMessage.value = `Восстанавливаем сессию WhatsApp (${attempt}/4)...`;
-          appendConnectionClientLog('photos.backfill.retry', {
-            attempt,
-            message: formatConnectionImportError(error),
-          });
-          await ensureConnectionSessionForBackgroundSync();
-          await waitFor(900 * attempt);
-        }
-      }
-
-      if (!data) {
-        break;
-      }
-
-      const scanned = Number(data.scanned) || 0;
-      const updated = Number(data.updated) || 0;
-      remaining = Math.max(0, Number(data.remaining) || 0);
-
-      scannedTotal += scanned;
-      updatedTotal += updated;
-      hasMore = Boolean(data.hasMore) && scanned > 0;
-      batch += 1;
-
-      connectionBackgroundStats.value = {
-        scanned: scannedTotal,
-        updated: updatedTotal,
-        remaining,
-      };
-      connectionGlobalMessage.value = `Догрузка фото: ${updatedTotal}/${scannedTotal}. Осталось без фото: ${remaining}.`;
-
-      if (batch % 2 === 0 || !hasMore) {
-        await entitiesStore.fetchEntities({ silent: true });
-      }
-    }
-
-    await entitiesStore.fetchEntities({ silent: true });
-
-    if (hasMore) {
-      connectionGlobalError.value = `Догрузка фото остановлена по лимиту батчей. Осталось без фото: ${remaining}.`;
-    } else {
-      connectionGlobalMessage.value = `Импорт и догрузка фото завершены. Обновлено фото: ${updatedTotal}.`;
-    }
-  } catch (error) {
-    connectionGlobalError.value = `Фоновая догрузка фото остановлена: ${formatConnectionImportError(error)}`;
-  } finally {
-    connectionBackgroundSyncActive.value = false;
-    connectionImportSessionStatus.value = 'ready';
-    connectionImportProgress.value = null;
-    if (connectionImportSessionId.value) {
-      await stopConnectionSession({ silent: true });
-    }
-  }
-}
-
 async function importWhatsAppContacts() {
   if (isConnectionImportBusy.value) return;
   if (!connectionImportSessionId.value) {
@@ -1266,98 +1153,192 @@ async function importWhatsAppContacts() {
   connectionImportSessionStatus.value = 'importing';
   connectionImportProgress.value = {
     stage: 'prepare',
-    note: 'Подготовка импорта',
+    note: 'Подготовка импорта с фото',
     processed: 0,
     total: 0,
     percent: 5,
   };
   appendConnectionClientLog('import.request', { sessionId: connectionImportSessionId.value });
-  scheduleConnectionImportPoll(700);
 
   try {
-    const { data } = await apiClient.post<WhatsappImportResult>('/integrations/whatsapp/import', {
-      sessionId: connectionImportSessionId.value,
-      includeImages: false,
-    });
+    const batchSize = 80;
+    let cursor = 0;
+    let total = 0;
+    let hasMore = true;
+    let batchNumber = 0;
 
-    applyConnectionSessionState(data.session);
+    let importedTotal = 0;
+    let matchedTotal = 0;
+    let matchedByPhoneTotal = 0;
+    let matchedByImportKeyTotal = 0;
+    let matchedByJidTotal = 0;
+    let matchedByNameTotal = 0;
+    let newAvailableTotal = 0;
+    let newWithNameTotal = 0;
+    let newWithoutNameTotal = 0;
+    let importedWithImageTotal = 0;
 
-    const imported = Number(data.imported) || 0;
-    const matched = Number(data.matched ?? data.skipped) || 0;
-    const total = Number(data.total) || 0;
-    const matchedByPhone = Number(data.matchedByPhone) || 0;
-    const matchedByImportKey = Number(data.matchedByImportKey) || 0;
-    const matchedByJid = Number(data.matchedByJid) || 0;
-    const matchedByName = Number(data.matchedByName) || 0;
-    const newAvailable = Number(data.newAvailable ?? imported) || 0;
-    const newWithName = Number(data.newWithName) || 0;
-    const newWithoutName = Number(data.newWithoutName) || 0;
-    const importedWithImage = Number(data.importedWithImage) || 0;
+    while (hasMore) {
+      batchNumber += 1;
+      let data: WhatsappImportResult | null = null;
+      let attempt = 0;
 
-    connectionImportStats.value = {
-      total,
-      imported,
-      matched,
-      matchedByPhone,
-      matchedByImportKey,
-      matchedByJid,
-      matchedByName,
-      newAvailable,
-      newWithName,
-      newWithoutName,
-      importedWithImage,
-    };
+      while (!data && attempt < 3) {
+        attempt += 1;
+        try {
+          const response = await apiClient.post<WhatsappImportResult>('/integrations/whatsapp/import', {
+            sessionId: connectionImportSessionId.value,
+            includeImages: true,
+            cursor,
+            batchSize,
+          });
+          data = response.data;
+        } catch (error) {
+          const status = axios.isAxiosError(error) ? Number(error.response?.status) || 0 : 0;
+          const canRetry = status === 404 || status === 409 || status === 429 || status >= 500 || status === 0;
+          if (!canRetry || attempt >= 3) {
+            throw error;
+          }
+          appendConnectionClientLog('import.batch.retry', {
+            batchNumber,
+            attempt,
+            status,
+            message: formatConnectionImportError(error),
+          });
+          const session = await ensureConnectionSessionForBackgroundSync();
+          if (!session || session.status !== 'ready') {
+            throw error;
+          }
+          connectionImportSessionId.value = session.sessionId || connectionImportSessionId.value;
+          await waitFor(700 * attempt);
+        }
+      }
 
-    const importedEntities = Array.isArray(data.entities) ? data.entities : [];
-    if (importedEntities.length) {
-      const existingIds = new Set(entitiesStore.items.map((item) => item._id));
-      const newItems = importedEntities.filter((item) => item && !existingIds.has(item._id));
-      if (newItems.length) {
-        entitiesStore.items = [...newItems, ...entitiesStore.items];
+      if (!data) {
+        break;
+      }
+
+      applyConnectionSessionState(data.session);
+
+      const batchImported = Number(data.imported) || 0;
+      const batchMatched = Number(data.matched ?? data.skipped) || 0;
+      const batchMatchedByPhone = Number(data.matchedByPhone) || 0;
+      const batchMatchedByImportKey = Number(data.matchedByImportKey) || 0;
+      const batchMatchedByJid = Number(data.matchedByJid) || 0;
+      const batchMatchedByName = Number(data.matchedByName) || 0;
+      const batchNewAvailable = Number(data.newAvailable ?? batchImported) || 0;
+      const batchNewWithName = Number(data.newWithName) || 0;
+      const batchNewWithoutName = Number(data.newWithoutName) || 0;
+      const batchImportedWithImage = Number(data.importedWithImage) || 0;
+      const nextCursor = Math.max(0, Number(data.nextCursor ?? cursor + (Number(data.batchCount) || 0)));
+
+      total = Math.max(total, Number(data.total) || 0);
+      importedTotal += batchImported;
+      matchedTotal += batchMatched;
+      matchedByPhoneTotal += batchMatchedByPhone;
+      matchedByImportKeyTotal += batchMatchedByImportKey;
+      matchedByJidTotal += batchMatchedByJid;
+      matchedByNameTotal += batchMatchedByName;
+      newAvailableTotal += batchNewAvailable;
+      newWithNameTotal += batchNewWithName;
+      newWithoutNameTotal += batchNewWithoutName;
+      importedWithImageTotal += batchImportedWithImage;
+
+      connectionImportStats.value = {
+        total,
+        imported: importedTotal,
+        matched: matchedTotal,
+        matchedByPhone: matchedByPhoneTotal,
+        matchedByImportKey: matchedByImportKeyTotal,
+        matchedByJid: matchedByJidTotal,
+        matchedByName: matchedByNameTotal,
+        newAvailable: newAvailableTotal,
+        newWithName: newWithNameTotal,
+        newWithoutName: newWithoutNameTotal,
+        importedWithImage: importedWithImageTotal,
+      };
+
+      const importedEntities = Array.isArray(data.entities) ? data.entities : [];
+      if (importedEntities.length) {
+        const existingIds = new Set(entitiesStore.items.map((item) => item._id));
+        const newItems = importedEntities.filter((item) => item && !existingIds.has(item._id));
+        if (newItems.length) {
+          entitiesStore.items = [...newItems, ...entitiesStore.items];
+        }
+      }
+
+      if (batchImported > 0) {
+        entitiesStore.triggerFlash('connection');
+      }
+
+      const processed = total > 0 ? Math.min(total, nextCursor) : nextCursor;
+      const percent = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 100;
+      connectionImportProgress.value = {
+        stage: 'import',
+        note: `Импорт контактов с фото (пакет ${batchNumber})`,
+        processed,
+        total,
+        percent,
+      };
+      connectionImportMessage.value = `Пакет ${batchNumber}: +${batchImported} новых, ${batchMatched} совпадений.`;
+
+      appendConnectionClientLog('import.batch.response', {
+        batchNumber,
+        cursor,
+        nextCursor,
+        total,
+        imported: batchImported,
+        matched: batchMatched,
+        importedWithImage: batchImportedWithImage,
+      });
+
+      cursor = nextCursor;
+      hasMore = Boolean(data.hasMore) && nextCursor > 0 && (total === 0 || nextCursor < total);
+      if (total > 0 && nextCursor >= total) {
+        hasMore = false;
       }
     }
 
-    void entitiesStore.fetchEntities({ silent: true });
-
-    if (imported > 0) {
-      entitiesStore.triggerFlash('connection');
-    }
+    await entitiesStore.fetchEntities({ silent: true });
 
     const successMessage =
-      imported > 0
-        ? `Новых: ${imported} (с фото: ${importedWithImage}, с именем: ${newWithName}, без имени: ${newWithoutName}). Совпадений: ${matched}.`
-        : matched > 0
-          ? `Новых контактов нет. Совпадений: ${matched}.`
+      importedTotal > 0
+        ? `Новых: ${importedTotal} (с фото: ${importedWithImageTotal}, с именем: ${newWithNameTotal}, без имени: ${newWithoutNameTotal}). Совпадений: ${matchedTotal}.`
+        : matchedTotal > 0
+          ? `Новых контактов нет. Совпадений: ${matchedTotal}.`
           : 'Контакты не найдены для импорта.';
 
     connectionImportMessage.value = successMessage;
     appendConnectionClientLog('import.response', {
       total,
-      imported,
-      matched,
-      matchedByPhone,
-      matchedByImportKey,
-      matchedByJid,
-      matchedByName,
-      newAvailable,
-      newWithName,
-      newWithoutName,
-      importedWithImage,
+      imported: importedTotal,
+      matched: matchedTotal,
+      matchedByPhone: matchedByPhoneTotal,
+      matchedByImportKey: matchedByImportKeyTotal,
+      matchedByJid: matchedByJidTotal,
+      matchedByName: matchedByNameTotal,
+      newAvailable: newAvailableTotal,
+      newWithName: newWithNameTotal,
+      newWithoutName: newWithoutNameTotal,
+      importedWithImage: importedWithImageTotal,
     });
+
+    connectionImportProgress.value = {
+      stage: 'done',
+      note: 'Импорт завершен',
+      processed: total,
+      total,
+      percent: 100,
+    };
 
     connectionSuccessAlert.value = {
       title: 'Импорт завершен',
-      message: `${successMessage} Фото догружаются автоматически в фоне.`,
+      message: successMessage,
     };
 
     isConnectionImportModalOpen.value = false;
     clearConnectionImportPoll();
-
-    if ((imported > 0 || matched > 0) && connectionImportSessionId.value) {
-      void runConnectionBackgroundPhotoSync(connectionImportSessionId.value);
-    } else {
-      await stopConnectionSession({ silent: true });
-    }
+    await stopConnectionSession({ silent: true });
 
     await nextTick();
     collectionViewRef.value?.scrollTo({ top: 0, behavior: 'auto' });
