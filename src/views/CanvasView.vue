@@ -88,6 +88,16 @@ const DEFAULT_CONNECTION_RELATION_OPTIONS = [
   'Социальные связи',
 ];
 type CanvasArrangePreset = 'line' | 'circle' | 'square' | 'rectangle';
+type CanvasAlignMode = 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom';
+
+const MOBILE_ALIGN_OPTIONS: Array<{ value: CanvasAlignMode; label: string }> = [
+  { value: 'left', label: 'По левому краю' },
+  { value: 'center', label: 'По центру по горизонтали' },
+  { value: 'right', label: 'По правому краю' },
+  { value: 'top', label: 'По верхнему краю' },
+  { value: 'middle', label: 'По центру по вертикали' },
+  { value: 'bottom', label: 'По нижнему краю' },
+];
 
 interface CanvasBackgroundPreset {
   id: string;
@@ -471,6 +481,9 @@ const isLibraryOpen = ref(false);
 const activeLibraryType = ref<EntityType>('shape');
 const hoveredLibraryType = ref<EntityType | null>(null);
 const libraryQuery = ref('');
+const selectedMobileLibraryEntityId = ref('');
+const libraryActionMessage = ref('');
+const libraryActionMessageTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const isCanvasDropActive = ref(false);
 const viewportDragDepth = ref(0);
 const entityInfoModal = ref<{
@@ -917,6 +930,11 @@ const filteredLibraryItems = computed<MenuSearchItem[]>(() => {
   return libraryItems.value.filter((item) => item.name.toLowerCase().includes(query));
 });
 
+const selectedMobileLibraryItem = computed<MenuSearchItem | null>(() => {
+  if (!selectedMobileLibraryEntityId.value) return null;
+  return libraryItems.value.find((item) => item.id === selectedMobileLibraryEntityId.value) || null;
+});
+
 const nodeSearchItems = computed<CanvasNodeSearchItem[]>(() => {
   return nodes.value
     .map((node) => {
@@ -1080,6 +1098,26 @@ function clearSelectedNodes() {
   selectedNodeIds.value = [];
 }
 
+function clearLibraryActionMessageTimer() {
+  if (!libraryActionMessageTimer.value) return;
+  clearTimeout(libraryActionMessageTimer.value);
+  libraryActionMessageTimer.value = null;
+}
+
+function setLibraryActionMessage(message: string, ttlMs = 2400) {
+  clearLibraryActionMessageTimer();
+  libraryActionMessage.value = message;
+  if (ttlMs <= 0) return;
+  libraryActionMessageTimer.value = setTimeout(() => {
+    libraryActionMessage.value = '';
+    libraryActionMessageTimer.value = null;
+  }, ttlMs);
+}
+
+function isEntityAlreadyOnCanvas(entityId: string) {
+  return nodes.value.some((node) => node.entityId === entityId);
+}
+
 function isNodeSelected(nodeId: string) {
   return selectedNodeIdSet.value.has(nodeId);
 }
@@ -1172,7 +1210,7 @@ function getSelectedNodesForTransform() {
   return ordered;
 }
 
-function onAlignSelected(mode: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') {
+function onAlignSelected(mode: CanvasAlignMode) {
   const targetNodes = getSelectedNodesForTransform();
   if (!targetNodes.length) return;
   const alignMinGapWorld = ALIGN_MIN_NODE_GAP_PX / Math.max(camera.value.zoom, 0.0001);
@@ -2508,7 +2546,8 @@ function addEntityNodeToCanvas(
   options?: { autoConnect?: boolean },
 ) {
   const entity = entitiesStore.byId(entityId);
-  if (!entity) return;
+  if (!entity) return false;
+  if (isEntityAlreadyOnCanvas(entity._id)) return false;
 
   const localNodeId = createLocalNodeId();
   nodes.value.push({
@@ -2524,16 +2563,65 @@ function addEntityNodeToCanvas(
     connectNodeToNearest(localNodeId);
   }
   queueCanvasSync();
+  return true;
 }
 
 function onLibraryItemAddToCanvas(item: MenuSearchItem) {
+  if (isEntityAlreadyOnCanvas(item.id)) {
+    setLibraryActionMessage('Уже на холсте');
+    return;
+  }
+
   closeContextMenu();
   closeEdgeMenu();
   nameEditingNodeId.value = null;
   const placement = findSafeViewportPlacement();
-  addEntityNodeToCanvas(item.id, placement.x, placement.y, {
+  const added = addEntityNodeToCanvas(item.id, placement.x, placement.y, {
     autoConnect: false,
   });
+  if (!added) {
+    setLibraryActionMessage('Не удалось добавить');
+    return;
+  }
+
+  setLibraryActionMessage('Добавлено на холст');
+}
+
+function onLibraryItemMainClick(item: MenuSearchItem) {
+  if (!isMobileLikeDevice.value) return;
+
+  libraryActionMessage.value = '';
+  if (selectedMobileLibraryEntityId.value === item.id) {
+    selectedMobileLibraryEntityId.value = '';
+    return;
+  }
+  selectedMobileLibraryEntityId.value = item.id;
+}
+
+function onMobileLibraryAddSelected() {
+  const selected = selectedMobileLibraryItem.value;
+  if (!selected) {
+    setLibraryActionMessage('Выберите запись');
+    return;
+  }
+
+  if (isEntityAlreadyOnCanvas(selected.id)) {
+    setLibraryActionMessage('Уже на холсте');
+    return;
+  }
+
+  onLibraryItemAddToCanvas(selected);
+  selectedMobileLibraryEntityId.value = '';
+  isLibraryOpen.value = false;
+}
+
+function onMobileAlignSelect(event: Event) {
+  const target = event.target as HTMLSelectElement | null;
+  const mode = target?.value as CanvasAlignMode | '';
+  if (!target || !mode) return;
+
+  onAlignSelected(mode);
+  target.value = '';
 }
 
 function centerViewportOn(worldX: number, worldY: number) {
@@ -3436,6 +3524,9 @@ function onLibraryCategoryClick(type: EntityType) {
   }
 
   libraryQuery.value = '';
+  selectedMobileLibraryEntityId.value = '';
+  clearLibraryActionMessageTimer();
+  libraryActionMessage.value = '';
   closeContextMenu();
   closeEdgeMenu();
   nameEditingNodeId.value = null;
@@ -3508,9 +3599,12 @@ function onViewportDrop(event: DragEvent) {
   closeContextMenu();
   closeEdgeMenu();
   nameEditingNodeId.value = null;
-  addEntityNodeToCanvas(draggedEntity._id, world.x, world.y, {
+  const added = addEntityNodeToCanvas(draggedEntity._id, world.x, world.y, {
     autoConnect: true,
   });
+  if (!added) {
+    setLibraryActionMessage('Уже на холсте');
+  }
 }
 
 function onNodeDragStart(payload: {
@@ -4035,6 +4129,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearViewportSyncTimer();
+  clearLibraryActionMessageTimer();
   queueCanvasSync({ immediate: false });
   dismissNodeMenuHint({ persist: false });
   closeEntityInfoModal();
@@ -4102,6 +4197,19 @@ onBeforeUnmount(() => {
             />
           </div>
 
+          <div v-if="isMobileLikeDevice" class="library-mobile-add-row">
+            <button
+              type="button"
+              class="library-mobile-add-btn"
+              :class="{ active: Boolean(selectedMobileLibraryItem) }"
+              :disabled="!selectedMobileLibraryItem"
+              @click="onMobileLibraryAddSelected"
+            >
+              Добавить в проект
+            </button>
+            <p v-if="libraryActionMessage" class="library-mobile-message">{{ libraryActionMessage }}</p>
+          </div>
+
           <div class="library-list">
             <div v-if="!filteredLibraryItems.length" class="library-empty">
               Сущности не найдены
@@ -4116,7 +4224,10 @@ onBeforeUnmount(() => {
                 <button
                   type="button"
                   class="library-item-main"
+                  :class="{ selected: isMobileLikeDevice && selectedMobileLibraryEntityId === item.id }"
                   :draggable="!isMobileLikeDevice"
+                  :aria-pressed="isMobileLikeDevice ? selectedMobileLibraryEntityId === item.id : undefined"
+                  @click="onLibraryItemMainClick(item)"
                   @dragstart="onLibraryItemDragStart($event, item)"
                 >
                   <span class="library-item-node-wrap">
@@ -4132,14 +4243,6 @@ onBeforeUnmount(() => {
                     </span>
                   </span>
                   <span class="library-item-name">{{ item.name }}</span>
-                </button>
-                <button
-                  v-if="isMobileLikeDevice"
-                  type="button"
-                  class="library-item-add-btn"
-                  @click="onLibraryItemAddToCanvas(item)"
-                >
-                  Добавить на холст
                 </button>
               </div>
             </template>
@@ -4324,7 +4427,19 @@ onBeforeUnmount(() => {
             </svg>
           </button>
           <div v-if="isAlignMenuOpen" class="canvas-control-dropdown">
-            <div class="canvas-align-grid">
+            <div v-if="isMobileLikeDevice" class="canvas-align-mobile">
+              <select class="canvas-control-select" @change="onMobileAlignSelect">
+                <option value="">Выравнивание</option>
+                <option
+                  v-for="option in MOBILE_ALIGN_OPTIONS"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </div>
+            <div v-else class="canvas-align-grid">
               <button
                 type="button"
                 class="canvas-control-dropdown-btn compact"
@@ -4448,9 +4563,10 @@ onBeforeUnmount(() => {
           </svg>
         </button>
 
-        <span class="canvas-controls-divider" />
+        <span v-if="!isMobileLikeDevice" class="canvas-controls-divider" />
 
         <button
+          v-if="!isMobileLikeDevice"
           type="button"
           class="canvas-control-btn zoom-btn"
           :disabled="camera.zoom <= MIN_ZOOM"
@@ -4468,6 +4584,7 @@ onBeforeUnmount(() => {
           {{ zoomPercent }}%
         </button>
         <button
+          v-if="!isMobileLikeDevice"
           type="button"
           class="canvas-control-btn zoom-btn"
           :disabled="camera.zoom >= MAX_ZOOM"
@@ -4727,6 +4844,58 @@ onBeforeUnmount(() => {
   color: #94a3b8;
 }
 
+.library-mobile-add-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.library-mobile-add-btn {
+  width: 100%;
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    color 0.16s ease;
+}
+
+.library-mobile-add-btn:hover:not(:disabled) {
+  border-color: #bfd5ff;
+  background: #eef4ff;
+  color: #1058ff;
+}
+
+.library-mobile-add-btn.active {
+  border-color: #1058ff;
+  background: #1058ff;
+  color: #ffffff;
+}
+
+.library-mobile-add-btn.active:hover:not(:disabled) {
+  border-color: #0c46cc;
+  background: #0c46cc;
+  color: #ffffff;
+}
+
+.library-mobile-add-btn:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
+.library-mobile-message {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+}
+
 .library-list {
   min-height: 0;
   overflow: auto;
@@ -4774,6 +4943,12 @@ onBeforeUnmount(() => {
   border-color: #cfe0ff;
   transform: translateY(-1px);
   box-shadow: 0 8px 18px rgba(112, 144, 176, 0.17);
+}
+
+.library-item-main.selected {
+  border-color: #bfd5ff;
+  background: #eef4ff;
+  box-shadow: 0 8px 18px rgba(112, 144, 176, 0.2);
 }
 
 .library-item-main:active {
@@ -5364,6 +5539,28 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
+}
+
+.canvas-align-mobile {
+  display: flex;
+}
+
+.canvas-control-select {
+  width: 100%;
+  height: 32px;
+  border-radius: 9px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0 10px;
+  outline: none;
+}
+
+.canvas-control-select:focus {
+  border-color: #bfd5ff;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.12);
 }
 
 .canvas-bg-dot {
@@ -5969,6 +6166,45 @@ onBeforeUnmount(() => {
   height: 0;
   opacity: 0;
   pointer-events: none;
+}
+
+@media (max-width: 1024px) {
+  .library-panel {
+    width: min(84vw, 320px);
+    max-height: min(62dvh, 560px);
+  }
+
+  .library-item-main {
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(112, 144, 176, 0.12);
+  }
+
+  .library-item-main:hover {
+    transform: none;
+    box-shadow: 0 2px 8px rgba(112, 144, 176, 0.12);
+  }
+
+  .canvas-controls {
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    gap: 6px;
+    padding: 6px;
+    max-width: calc(100% - 20px);
+  }
+
+  .canvas-control-btn {
+    height: 34px;
+    min-width: 34px;
+    padding: 0 10px;
+  }
+
+  .canvas-control-btn.zoom-value {
+    min-width: 64px;
+    font-size: 12px;
+  }
+
+  .canvas-control-dropdown {
+    min-width: 178px;
+  }
 }
 
 </style>

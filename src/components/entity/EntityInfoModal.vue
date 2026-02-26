@@ -3050,16 +3050,82 @@ onBeforeUnmount(() => {
 
 @media (max-width: 900px) {
   .entity-info-overlay {
-    padding: 12px;
+    align-items: flex-start;
+    padding-top: max(8px, env(safe-area-inset-top, 0px));
+    padding-right: 10px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+    padding-left: 10px;
   }
 
   .entity-info-modal {
-    max-width: 96vw;
+    width: min(560px, 100%);
+    height: calc(
+      100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 16px
+    );
+    max-height: calc(
+      100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 16px
+    );
+    border-radius: 14px;
+    padding: 12px;
+    gap: 8px;
     transition: transform 0.16s ease;
   }
 
   .entity-info-modal.mobile-footer-open {
     transform: translateX(min(44px, 12vw));
+  }
+
+  .entity-info-header {
+    gap: 9px;
+  }
+
+  .entity-info-progress-avatar,
+  .profile-progress-content {
+    width: 66px;
+    height: 66px;
+  }
+
+  .entity-info-name-input {
+    font-size: 14px;
+    padding: 7px 9px;
+  }
+
+  .entity-info-progress-level {
+    font-size: 10px;
+  }
+
+  .entity-info-progress-percent {
+    font-size: 11px;
+  }
+
+  .entity-info-action-btn,
+  .entity-info-project-select {
+    height: 30px;
+    font-size: 11px;
+  }
+
+  .entity-info-textarea,
+  .entity-info-chat-input {
+    font-size: 12px;
+  }
+
+  .entity-info-field-scroll {
+    padding: 5px 7px;
+  }
+
+  .entity-info-tag-input {
+    flex-basis: 128px;
+    min-width: 108px;
+    font-size: 11px;
+  }
+
+  .entity-info-tag-main {
+    font-size: 10px;
+  }
+
+  .entity-info-chat-feed {
+    padding: 8px;
+    gap: 7px;
   }
 
   .entity-info-close-btn-desktop {
