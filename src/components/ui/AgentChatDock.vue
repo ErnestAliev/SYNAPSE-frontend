@@ -1051,10 +1051,10 @@ onBeforeUnmount(() => {
 
 .agent-chat-resize-handle {
   position: absolute;
-  top: 6px;
-  left: 6px;
-  width: 22px;
-  height: 22px;
+  top: 1px;
+  left: 1px;
+  width: 16px;
+  height: 16px;
   border: none;
   border-radius: 8px;
   background: transparent;
@@ -1068,10 +1068,10 @@ onBeforeUnmount(() => {
 }
 
 .agent-chat-resize-handle span {
-  width: 10px;
-  height: 10px;
-  border-left: 2px solid currentColor;
-  border-top: 2px solid currentColor;
+  width: 7px;
+  height: 7px;
+  border-left: 1.5px solid currentColor;
+  border-top: 1.5px solid currentColor;
   transform: rotate(-45deg);
 }
 
