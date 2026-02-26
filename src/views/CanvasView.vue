@@ -1509,14 +1509,18 @@ function isEntityLocked(entity: Entity | null | undefined) {
 function isCategoryLocked(entity: Entity | null | undefined) {
   if (!entity) return false;
 
+  // Любая не-shape сущность считается категоризированной и не должна открывать выбор категорий.
+  if (entity.type !== 'shape') {
+    return true;
+  }
+
   const profile = toProfile(entity.profile);
   const explicit = profile.categoryLocked;
   if (typeof explicit === 'boolean') {
     return explicit;
   }
 
-  // Backward compatibility: non-shape entities are considered already categorized.
-  return entity.type !== 'shape';
+  return false;
 }
 
 function withCategoryLock(profileValue: unknown, locked: boolean) {

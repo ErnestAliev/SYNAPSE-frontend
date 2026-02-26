@@ -1530,8 +1530,16 @@ async function moveConnectionTo(entity: Entity, targetType: 'person' | 'company'
   setConnectionMoveBusy(entity._id, true);
 
   try {
+    const currentProfile = toProfile(entity);
+    const nextProfile = {
+      ...currentProfile,
+      // После переноса из "Подключение" в категорию сущность должна считаться категоризированной.
+      categoryLocked: true,
+    };
+
     await entitiesStore.updateEntity(entity._id, {
       type: targetType,
+      profile: nextProfile,
       canvas_data: undefined,
     });
     entitiesStore.triggerFlash(targetType);
