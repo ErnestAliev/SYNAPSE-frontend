@@ -336,6 +336,18 @@ function toggleProfileFooter() {
   }
 }
 
+function onModalPointerDown(event: PointerEvent) {
+  if (!profileFooterOpen.value) return;
+
+  const target = event.target as HTMLElement | null;
+  if (!target) return;
+
+  if (target.closest('.profile-progress-content')) return;
+  if (target.closest('.entity-info-menu-footer')) return;
+
+  closeProfileFooter();
+}
+
 function toStringArray(value: unknown) {
   if (!Array.isArray(value)) return [] as string[];
   return value
@@ -1868,7 +1880,12 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="entity-info-overlay" @pointerdown.self="closeModal">
-    <div v-if="draft" class="entity-info-modal" @pointerdown.stop>
+    <div
+      v-if="draft"
+      class="entity-info-modal"
+      :class="{ 'mobile-footer-open': profileFooterOpen }"
+      @pointerdown.stop="onModalPointerDown"
+    >
       <button
         type="button"
         class="entity-info-close-btn entity-info-close-btn-desktop"
@@ -3032,6 +3049,19 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 900px) {
+  .entity-info-overlay {
+    padding: 12px;
+  }
+
+  .entity-info-modal {
+    max-width: 96vw;
+    transition: transform 0.16s ease;
+  }
+
+  .entity-info-modal.mobile-footer-open {
+    transform: translateX(min(44px, 12vw));
+  }
+
   .entity-info-close-btn-desktop {
     display: none;
   }
@@ -3043,6 +3073,10 @@ onBeforeUnmount(() => {
     top: 7px;
     transform: translateX(-50%);
     z-index: 2;
+  }
+
+  .entity-info-menu-footer {
+    left: -52px;
   }
 }
 
