@@ -625,6 +625,10 @@ function formatConnectionImportError(error: unknown) {
     return `${baseMessage}. На backend отсутствуют зависимости WhatsApp (whatsapp-web.js / qrcode).`;
   }
 
+  if (/connector is disabled on this backend instance/i.test(baseMessage)) {
+    return 'На этом сервере локальный WhatsApp-коннектор отключен для защиты от падений памяти. Нужен remote browser (PUPPETEER_BROWSER_WS_ENDPOINT) или отдельный high-memory worker.';
+  }
+
   return baseMessage;
 }
 
