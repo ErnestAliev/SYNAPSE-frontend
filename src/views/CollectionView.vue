@@ -169,6 +169,8 @@ const connectionImportProgress = ref<{
 const connectionClientLogs = ref<Array<{ ts: string; step: string; data?: unknown }>>([]);
 const isConnectionCopyLogsBusy = ref(false);
 const connectionCopyLogsMessage = ref('');
+const isConnectionPhotosBusy = ref(false);
+const isDeleteWhatsappConfirmVisible = ref(false);
 
 interface WhatsappSessionStatus {
   sessionId: string;
@@ -200,6 +202,18 @@ interface WhatsappSessionLogsResponse {
   status: string;
   connector: string;
   logs: Array<{ ts?: string; step?: string; data?: unknown }>;
+}
+
+interface WhatsappPhotoBackfillResult {
+  scanned: number;
+  updated: number;
+  skippedNoIdentity: number;
+  failed: number;
+  session?: WhatsappSessionStatus;
+}
+
+interface WhatsappDeleteImportedResult {
+  deleted: number;
 }
 
 interface ProjectPreviewPoint {
@@ -635,6 +649,8 @@ watch(activeType, () => {
   connectionImportProgress.value = null;
   connectionClientLogs.value = [];
   connectionCopyLogsMessage.value = '';
+  isDeleteWhatsappConfirmVisible.value = false;
+  isConnectionPhotosBusy.value = false;
 });
 
 function appendConnectionClientLog(step: string, data?: unknown) {
@@ -679,6 +695,8 @@ async function createEntity() {
     connectionImportProgress.value = null;
     connectionClientLogs.value = [];
     connectionCopyLogsMessage.value = '';
+    isDeleteWhatsappConfirmVisible.value = false;
+    isConnectionPhotosBusy.value = false;
     connectionImportSessionId.value = '';
     connectionImportQrCode.value = '';
     connectionImportSessionStatus.value = 'idle';
@@ -849,11 +867,12 @@ async function stopConnectionSession(options?: { silent?: boolean }) {
     connectionImportQrCode.value = '';
     connectionImportSessionStatus.value = 'idle';
     connectionImportProgress.value = null;
+    isDeleteWhatsappConfirmVisible.value = false;
   }
 }
 
 async function closeConnectionImportModal() {
-  if (isConnectionImportBusy.value) return;
+  if (isConnectionImportBusy.value || isConnectionPhotosBusy.value) return;
   appendConnectionClientLog('modal.close');
   clearConnectionImportPoll();
   await stopConnectionSession({ silent: true });
@@ -931,6 +950,85 @@ async function importWhatsAppContacts() {
   } catch (error) {
     connectionImportError.value = formatConnectionImportError(error);
     appendConnectionClientLog('import.error', { message: connectionImportError.value });
+  } finally {
+    isConnectionImportBusy.value = false;
+  }
+}
+
+async function backfillWhatsAppPhotos() {
+  if (isConnectionPhotosBusy.value) return;
+  if (!connectionImportSessionId.value) {
+    connectionImportError.value = 'Сначала запустите подключение WhatsApp.';
+    return;
+  }
+  if (connectionImportSessionStatus.value !== 'ready') {
+    connectionImportError.value = 'Сессия должна быть в статусе "Подключено".';
+    return;
+  }
+
+  isConnectionPhotosBusy.value = true;
+  isDeleteWhatsappConfirmVisible.value = false;
+  connectionImportError.value = '';
+  connectionImportMessage.value = '';
+  connectionImportSessionStatus.value = 'importing';
+  connectionImportProgress.value = {
+    stage: 'photos',
+    note: 'Подготовка догрузки фото',
+    processed: 0,
+    total: 0,
+    percent: 5,
+  };
+  appendConnectionClientLog('photos.backfill.request', {
+    sessionId: connectionImportSessionId.value,
+  });
+  scheduleConnectionImportPoll(700);
+
+  try {
+    const { data } = await apiClient.post<WhatsappPhotoBackfillResult>(
+      '/integrations/whatsapp/photos/backfill',
+      {
+        sessionId: connectionImportSessionId.value,
+        onlyMissing: true,
+      },
+    );
+    applyConnectionSessionState(data.session);
+    await entitiesStore.fetchEntities({ silent: true });
+    connectionImportMessage.value = `Фото обновлены: ${data.updated} из ${data.scanned}. Без идентификатора: ${data.skippedNoIdentity}.`;
+    appendConnectionClientLog('photos.backfill.response', data);
+  } catch (error) {
+    connectionImportError.value = formatConnectionImportError(error);
+    appendConnectionClientLog('photos.backfill.error', { message: connectionImportError.value });
+  } finally {
+    isConnectionPhotosBusy.value = false;
+  }
+}
+
+function requestDeleteImportedWhatsApp() {
+  isDeleteWhatsappConfirmVisible.value = true;
+  connectionImportMessage.value =
+    'Подтвердите удаление импортированных WhatsApp-контактов. Они будут удалены из коллекции и из всех проектов.';
+}
+
+function cancelDeleteImportedWhatsApp() {
+  isDeleteWhatsappConfirmVisible.value = false;
+}
+
+async function confirmDeleteImportedWhatsApp() {
+  if (isConnectionImportBusy.value || isConnectionPhotosBusy.value) return;
+  isConnectionImportBusy.value = true;
+  connectionImportError.value = '';
+  appendConnectionClientLog('imported.delete.request');
+
+  try {
+    const { data } = await apiClient.delete<WhatsappDeleteImportedResult>('/integrations/whatsapp/imported');
+    isDeleteWhatsappConfirmVisible.value = false;
+    connectionImportStats.value = null;
+    connectionImportMessage.value = `Удалено импортированных контактов: ${Number(data.deleted) || 0}.`;
+    await entitiesStore.fetchEntities({ silent: true });
+    appendConnectionClientLog('imported.delete.response', data);
+  } catch (error) {
+    connectionImportError.value = formatConnectionImportError(error);
+    appendConnectionClientLog('imported.delete.error', { message: connectionImportError.value });
   } finally {
     isConnectionImportBusy.value = false;
   }
@@ -1671,7 +1769,7 @@ function closeEntityInfoModal() {
           <button
             type="button"
             class="connection-link-btn"
-            :disabled="isConnectionImportBusy || connectionImportSessionStatus === 'initializing' || connectionImportSessionStatus === 'importing'"
+            :disabled="isConnectionImportBusy || isConnectionPhotosBusy || connectionImportSessionStatus === 'initializing' || connectionImportSessionStatus === 'importing'"
             @click="startConnectionSession"
           >
             {{ connectionSessionActionLabel() }}
@@ -1680,7 +1778,7 @@ function closeEntityInfoModal() {
             v-if="connectionImportSessionStatus === 'ready'"
             type="button"
             class="connection-import-btn"
-            :disabled="isConnectionImportBusy"
+            :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
             @click="importWhatsAppContacts"
           >
             {{ isConnectionImportBusy ? 'Импорт...' : 'Импортировать контакты' }}
@@ -1716,6 +1814,48 @@ function closeEntityInfoModal() {
           <span>Новых доступно: {{ connectionImportStats.newAvailable }}</span>
           <span>Совпадений по телефону: {{ connectionImportStats.matchedByPhone }}</span>
           <span>Совпадений по ключу: {{ connectionImportStats.matchedByImportKey }}</span>
+        </div>
+
+        <div
+          v-if="connectionImportSessionStatus === 'ready' || connectionImportStats"
+          class="connection-maintenance-actions"
+        >
+          <button
+            type="button"
+            class="connection-maint-btn"
+            :disabled="isConnectionPhotosBusy || isConnectionImportBusy"
+            @click="backfillWhatsAppPhotos"
+          >
+            {{ isConnectionPhotosBusy ? 'Догрузка фото...' : 'Догрузить фото' }}
+          </button>
+
+          <button
+            v-if="!isDeleteWhatsappConfirmVisible"
+            type="button"
+            class="connection-maint-btn danger"
+            :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
+            @click="requestDeleteImportedWhatsApp"
+          >
+            Удалить импорт WhatsApp
+          </button>
+          <template v-else>
+            <button
+              type="button"
+              class="connection-maint-btn danger"
+              :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
+              @click="confirmDeleteImportedWhatsApp"
+            >
+              Подтвердить удаление
+            </button>
+            <button
+              type="button"
+              class="connection-maint-btn"
+              :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
+              @click="cancelDeleteImportedWhatsApp"
+            >
+              Отмена
+            </button>
+          </template>
         </div>
 
         <p v-if="connectionImportMessage" class="connection-import-message">
@@ -2410,6 +2550,40 @@ function closeEntityInfoModal() {
   color: #64748b;
   font-size: 11px;
   font-weight: 600;
+}
+
+.connection-maintenance-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.connection-maint-btn {
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 11px;
+  cursor: pointer;
+}
+
+.connection-maint-btn:hover:not(:disabled) {
+  border-color: #97b9ff;
+}
+
+.connection-maint-btn:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.connection-maint-btn.danger {
+  border-color: #fecaca;
+  background: #fff5f5;
+  color: #b91c1c;
 }
 
 .connection-import-stats {
