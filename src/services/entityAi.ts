@@ -16,7 +16,11 @@ export interface EntityAiAttachmentPayload {
 export interface EntityAiSuggestion {
   status: 'ready' | 'need_clarification';
   description: string;
+  changeType?: 'initial' | 'addition' | 'update';
+  changeReason?: string;
   fields: Record<string, string[]>;
+  importanceSignal?: 'increase' | 'decrease' | 'neutral';
+  importanceReason?: string;
   clarifyingQuestions: string[];
   ignoredNoise: string[];
   confidence: Record<string, number>;
