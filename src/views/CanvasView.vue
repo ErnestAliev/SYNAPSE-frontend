@@ -977,10 +977,34 @@ const nodeSearchResults = computed<CanvasNodeSearchItem[]>(() => {
 });
 
 let loadVersion = 0;
+const lastAppliedProjectCanvasVersion = ref('');
+const pendingRemoteCanvasSnapshot = ref<{
+  projectId: string;
+  projectVersion: string;
+  canvasData: ProjectCanvasData;
+} | null>(null);
+let pendingRemoteCanvasApplyTimer: ReturnType<typeof setTimeout> | null = null;
 
 interface CanvasCacheSnapshot {
   savedAt: number;
   canvas_data: ProjectCanvasData;
+}
+
+function resolveProjectCanvasVersion(project: Entity | null | undefined) {
+  if (!project || project.type !== 'project') return '';
+
+  const updatedAt = typeof project.updatedAt === 'string' ? project.updatedAt : '';
+  const createdAt = typeof project.createdAt === 'string' ? project.createdAt : '';
+  const canvas = normalizeCanvasData(project.canvas_data);
+  const nodesCount = Array.isArray(canvas.nodes) ? canvas.nodes.length : 0;
+  const edgesCount = Array.isArray(canvas.edges) ? canvas.edges.length : 0;
+  const viewportKey = canvas.viewport
+    ? `${canvas.viewport.x}:${canvas.viewport.y}:${canvas.viewport.zoom}:${canvas.viewport.width}:${canvas.viewport.height}`
+    : 'no-viewport';
+
+  return [updatedAt || createdAt || project._id, nodesCount, edgesCount, viewportKey, canvas.background || ''].join(
+    '|',
+  );
 }
 
 function normalizeCanvasViewport(value: unknown): ProjectCanvasViewport | undefined {
@@ -2309,6 +2333,70 @@ function normalizeCanvasData(canvasData: ProjectCanvasData | undefined): Project
   };
 }
 
+function isCanvasInteractionActive() {
+  return Boolean(
+    isLoading.value ||
+      isPanning.value ||
+      selectionRect.value ||
+      draggingNode.value ||
+      draggingGroup.value ||
+      touchGesture.value,
+  );
+}
+
+function clearPendingRemoteCanvasApplyTimer() {
+  if (!pendingRemoteCanvasApplyTimer) return;
+  clearTimeout(pendingRemoteCanvasApplyTimer);
+  pendingRemoteCanvasApplyTimer = null;
+}
+
+function applyIncomingCanvasSnapshot(snapshot: {
+  projectId: string;
+  projectVersion: string;
+  canvasData: ProjectCanvasData;
+}) {
+  if (!snapshot.projectId || snapshot.projectId !== routeProjectId.value) return;
+
+  const normalized = normalizeCanvasData(snapshot.canvasData);
+  nodes.value = normalized.nodes;
+  edges.value = normalized.edges;
+  canvasBackgroundId.value =
+    typeof normalized.background === 'string' && normalized.background.trim()
+      ? normalized.background
+      : DEFAULT_CANVAS_BACKGROUND;
+
+  writeCanvasCache(snapshot.projectId, normalized);
+  lastAppliedProjectCanvasVersion.value = snapshot.projectVersion;
+}
+
+function tryApplyPendingRemoteCanvasSnapshot() {
+  const snapshot = pendingRemoteCanvasSnapshot.value;
+  if (!snapshot) return;
+
+  if (snapshot.projectId !== routeProjectId.value) {
+    pendingRemoteCanvasSnapshot.value = null;
+    return;
+  }
+
+  if (isCanvasInteractionActive()) return;
+
+  pendingRemoteCanvasSnapshot.value = null;
+  applyIncomingCanvasSnapshot(snapshot);
+}
+
+function schedulePendingRemoteCanvasApply() {
+  if (pendingRemoteCanvasApplyTimer) return;
+
+  pendingRemoteCanvasApplyTimer = setTimeout(() => {
+    pendingRemoteCanvasApplyTimer = null;
+    tryApplyPendingRemoteCanvasSnapshot();
+
+    if (pendingRemoteCanvasSnapshot.value) {
+      schedulePendingRemoteCanvasApply();
+    }
+  }, 140);
+}
+
 function clearViewportSyncTimer() {
   if (!viewportSyncTimer.value) return;
   clearTimeout(viewportSyncTimer.value);
@@ -3017,6 +3105,9 @@ async function addNodeAtWorldPosition(worldX: number, worldY: number, name = get
 
 async function loadProjectCanvas(projectId: string) {
   clearViewportSyncTimer();
+  clearPendingRemoteCanvasApplyTimer();
+  pendingRemoteCanvasSnapshot.value = null;
+  lastAppliedProjectCanvasVersion.value = '';
   const currentVersion = ++loadVersion;
   isLoading.value = true;
   loadError.value = null;
@@ -3044,6 +3135,7 @@ async function loadProjectCanvas(projectId: string) {
     if (!project || project.type !== 'project') {
       throw new Error('Проект не найден');
     }
+    const projectCanvasVersion = resolveProjectCanvasVersion(project);
 
     const serverCanvasData = normalizeCanvasData(project.canvas_data);
     const cached = readCanvasCache(projectId);
@@ -3060,6 +3152,7 @@ async function loadProjectCanvas(projectId: string) {
       typeof canvasData.background === 'string' && canvasData.background.trim()
         ? canvasData.background
         : DEFAULT_CANVAS_BACKGROUND;
+    lastAppliedProjectCanvasVersion.value = projectCanvasVersion;
 
     await nextTick();
 
@@ -4089,6 +4182,52 @@ watch(
 );
 
 watch(
+  () => {
+    const projectId = routeProjectId.value;
+    if (!projectId) return null;
+
+    const project = entitiesStore.byId(projectId);
+    if (!project || project.type !== 'project') return null;
+
+    return {
+      projectId,
+      projectVersion: resolveProjectCanvasVersion(project),
+      canvasData: normalizeCanvasData(project.canvas_data),
+    };
+  },
+  (snapshot) => {
+    if (!snapshot || !snapshot.projectVersion) return;
+    if (snapshot.projectVersion === lastAppliedProjectCanvasVersion.value) return;
+    if (snapshot.projectId !== routeProjectId.value) return;
+    if (isLoading.value) return;
+
+    if (isCanvasInteractionActive()) {
+      pendingRemoteCanvasSnapshot.value = snapshot;
+      schedulePendingRemoteCanvasApply();
+      return;
+    }
+
+    applyIncomingCanvasSnapshot(snapshot);
+  },
+);
+
+watch(
+  () => [
+    isLoading.value,
+    isPanning.value,
+    Boolean(selectionRect.value),
+    Boolean(draggingNode.value),
+    Boolean(draggingGroup.value),
+    Boolean(touchGesture.value),
+  ],
+  () => {
+    if (!isCanvasInteractionActive()) {
+      tryApplyPendingRemoteCanvasSnapshot();
+    }
+  },
+);
+
+watch(
   activeEdgeNodes,
   (pair) => {
     if (!pair && edgeMenu.value) {
@@ -4156,6 +4295,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearViewportSyncTimer();
+  clearPendingRemoteCanvasApplyTimer();
+  pendingRemoteCanvasSnapshot.value = null;
   clearLibraryActionMessageTimer();
   queueCanvasSync({ immediate: false });
   dismissNodeMenuHint({ persist: false });
