@@ -62,6 +62,13 @@ interface StoredCollectionFilterState {
   quickFilters?: Partial<QuickEntityFilters>;
 }
 
+const QUICK_FILTER_ITEMS: ReadonlyArray<{ key: QuickFilterKey; label: string }> = [
+  { key: 'onlyWithPhoto', label: 'Только с фото' },
+  { key: 'onlyNameOnly', label: 'Только Имя' },
+  { key: 'hideWithoutPhoto', label: 'Скрыть без фото' },
+  { key: 'hideWithoutName', label: 'Скрыть без имени' },
+];
+
 const ENTITY_FILTER_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   connection: [
     { key: 'tags', label: 'Теги' },
@@ -536,13 +543,30 @@ function hasEntityName(entity: Entity) {
   return typeof entity.name === 'string' && entity.name.trim().length > 0;
 }
 
-function quickFilterItems() {
-  return [
-    { key: 'onlyWithPhoto' as const, label: 'Только с фото' },
-    { key: 'onlyNameOnly' as const, label: 'Только Имя' },
-    { key: 'hideWithoutPhoto' as const, label: 'Скрыть без фото' },
-    { key: 'hideWithoutName' as const, label: 'Скрыть без имени' },
-  ];
+function quickFilterOptions() {
+  return QUICK_FILTER_ITEMS.map((item) => item.label);
+}
+
+function getSelectedQuickFilterValues() {
+  return QUICK_FILTER_ITEMS.filter((item) => quickEntityFilters.value[item.key]).map((item) => item.label);
+}
+
+function setSelectedQuickFilterValues(values: string[]) {
+  const selected = new Set(
+    values
+      .filter((value) => typeof value === 'string')
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
+
+  const nextState = createDefaultQuickFilters();
+  for (const item of QUICK_FILTER_ITEMS) {
+    if (selected.has(item.label)) {
+      nextState[item.key] = true;
+    }
+  }
+
+  quickEntityFilters.value = nextState;
 }
 
 const activeFilterFields = computed<MetadataFieldConfig[]>(() => {
@@ -653,13 +677,6 @@ function setSelectedFilterValues(fieldKey: string, values: string[]) {
   };
 }
 
-function toggleQuickFilter(key: QuickFilterKey) {
-  quickEntityFilters.value = {
-    ...quickEntityFilters.value,
-    [key]: !quickEntityFilters.value[key],
-  };
-}
-
 const filteredEntities = computed(() => {
   const q = searchQuery.value.trim().toLowerCase();
 
@@ -703,6 +720,10 @@ const filteredEntities = computed(() => {
     return true;
   });
 });
+
+const filteredEntitiesCount = computed(() => filteredEntities.value.length);
+const totalEntitiesCount = computed(() => typedEntities.value.length);
+const filtersCounterLabel = computed(() => (activeType.value === 'connection' ? 'контактов' : 'элементов'));
 
 const firstEntity = computed<Entity | null>(() => {
   const entities = filteredEntities.value;
@@ -1564,19 +1585,16 @@ function closeEntityInfoModal() {
           :options="getFilterOptions(field.key)"
           @update:model-value="(values) => setSelectedFilterValues(field.key, values)"
         />
+        <FilterDropdown
+          label="Фото/Имя"
+          :model-value="getSelectedQuickFilterValues()"
+          :options="quickFilterOptions()"
+          @update:model-value="setSelectedQuickFilterValues"
+        />
       </div>
 
-      <div class="quick-filters-group">
-        <button
-          v-for="item in quickFilterItems()"
-          :key="item.key"
-          type="button"
-          class="quick-filter-btn"
-          :class="{ active: quickEntityFilters[item.key] }"
-          @click="toggleQuickFilter(item.key)"
-        >
-          {{ item.label }}
-        </button>
+      <div class="filters-counter">
+        Показано {{ filteredEntitiesCount }} из {{ totalEntitiesCount }} {{ filtersCounterLabel }}
       </div>
     </div>
 
@@ -2180,43 +2198,25 @@ function closeEntityInfoModal() {
   align-items: center;
   gap: 6px;
   flex-wrap: nowrap;
+  flex-shrink: 0;
 }
 
-.quick-filters-group {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  padding-bottom: 2px;
-}
-
-.quick-filters-group::-webkit-scrollbar {
-  display: none;
-}
-
-.quick-filter-btn {
+.filters-counter {
+  margin-left: auto;
   height: 30px;
-  border: 1px solid #dbe4f3;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
   border-radius: 12px;
   background: #ffffff;
-  color: #334155;
+  border: 1px solid #dbe4f3;
+  color: #475569;
   font-size: 11px;
   font-weight: 700;
-  padding: 0 10px;
+  line-height: 1;
   white-space: nowrap;
-  cursor: pointer;
-  transition: 0.18s ease;
-}
-
-.quick-filter-btn:hover {
-  border-color: #a6c4f5;
-}
-
-.quick-filter-btn.active {
-  border-color: #9cc4ff;
-  background: #edf4ff;
-  color: #1d4ed8;
+  box-shadow: var(--shadow-base);
+  flex-shrink: 0;
 }
 
 .collection-view {
