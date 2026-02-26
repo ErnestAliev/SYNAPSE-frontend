@@ -5,6 +5,7 @@ import CanvasContextMenu from '../components/canvas/CanvasContextMenu.vue';
 import ConnectionContextMenu from '../components/canvas/ConnectionContextMenu.vue';
 import EdgeLayerCanvas from '../components/canvas/EdgeLayerCanvas.vue';
 import CanvasNode from '../components/canvas/CanvasNode.vue';
+import EntityInfoModal from '../components/entity/EntityInfoModal.vue';
 import AppIcon from '../components/ui/AppIcon.vue';
 import ProfileProgressRing from '../components/ui/ProfileProgressRing.vue';
 import { useEntitiesStore } from '../stores/entities';
@@ -1839,10 +1840,6 @@ function openEntityInfoModal(entityId: string) {
 }
 
 function closeEntityInfoModal() {
-  if (entityInfoModal.value) {
-    persistEntityInfoDraft(entityInfoModal.value.entityId);
-  }
-
   if (infoSaveTimer.value) {
     clearTimeout(infoSaveTimer.value);
     infoSaveTimer.value = null;
@@ -3999,6 +3996,33 @@ watch(
   },
 );
 
+// Legacy inline entity-info modal handlers are kept temporarily for backward compatibility.
+// The UI now uses shared `EntityInfoModal`, so these symbols must stay referenced
+// until we remove the old implementation completely.
+const _legacyEntityInfoBindings = [
+  entityInfoDocInputRef,
+  entityInfoModalIcon,
+  entityInfoChatPlaceholder,
+  entityInfoActiveFields,
+  entityInfoProfileProgressDashoffset,
+  entityInfoProfileProgressLevel,
+  getModalFieldValues,
+  getModalFieldDraft,
+  onModalFieldDraftInput,
+  addModalFieldValue,
+  removeModalFieldValue,
+  onInfoNameInput,
+  onInfoDescriptionInput,
+  onInfoTextInput,
+  toDisplayTime,
+  openEntityInfoAttachment,
+  onChatComposerKeydown,
+  onInfoDocumentsChange,
+  removePendingUpload,
+  onVoiceToggle,
+] as const;
+void _legacyEntityInfoBindings;
+
 onMounted(() => {
   updateMobileLikeDeviceFlag();
   window.addEventListener('pointermove', onWindowPointerMove);
@@ -4527,243 +4551,11 @@ onBeforeUnmount(() => {
       @create-option="onEdgeCreateRelationOption"
     />
 
-    <div
+    <EntityInfoModal
       v-if="entityInfoModal"
-      class="entity-info-overlay"
-      @pointerdown.self="closeEntityInfoModal"
-    >
-      <div class="entity-info-modal" @pointerdown.stop>
-        <header class="entity-info-header">
-          <div v-if="entityInfoModalIcon" class="entity-info-progress-avatar">
-            <svg
-              class="entity-info-progress-ring"
-              :width="PROFILE_PROGRESS_RING_SIZE"
-              :height="PROFILE_PROGRESS_RING_SIZE"
-              :viewBox="`0 0 ${PROFILE_PROGRESS_RING_SIZE} ${PROFILE_PROGRESS_RING_SIZE}`"
-            >
-              <circle
-                class="entity-info-progress-track"
-                :cx="PROFILE_PROGRESS_RING_SIZE / 2"
-                :cy="PROFILE_PROGRESS_RING_SIZE / 2"
-                :r="PROFILE_PROGRESS_RADIUS"
-                :stroke-width="PROFILE_PROGRESS_STROKE_WIDTH"
-              />
-              <circle
-                class="entity-info-progress-value"
-                :cx="PROFILE_PROGRESS_RING_SIZE / 2"
-                :cy="PROFILE_PROGRESS_RING_SIZE / 2"
-                :r="PROFILE_PROGRESS_RADIUS"
-                :stroke-width="PROFILE_PROGRESS_STROKE_WIDTH"
-                :stroke-dasharray="PROFILE_PROGRESS_CIRCUMFERENCE"
-                :stroke-dashoffset="entityInfoProfileProgressDashoffset"
-                :transform="`rotate(-90 ${PROFILE_PROGRESS_RING_SIZE / 2} ${PROFILE_PROGRESS_RING_SIZE / 2})`"
-              />
-            </svg>
-
-            <span
-              class="entity-info-icon"
-              :style="{ background: entityInfoModalIcon.color, borderColor: entityInfoModalIcon.color }"
-            >
-              <img
-                v-if="entityInfoModalIcon.image && !entityInfoModalIcon.hasLogo"
-                class="entity-info-icon-image"
-                :src="entityInfoModalIcon.image"
-                alt=""
-              />
-              <img
-                v-else-if="entityInfoModalIcon.hasLogo"
-                class="entity-info-icon-logo"
-                :src="entityInfoModalIcon.image"
-                alt=""
-              />
-              <span
-                v-else-if="entityInfoModalIcon.emoji"
-                class="entity-info-icon-emoji"
-              >
-                {{ entityInfoModalIcon.emoji }}
-              </span>
-              <AppIcon
-                v-else
-                :name="entityInfoModalIcon.type"
-                class="entity-info-icon-symbol"
-              />
-            </span>
-          </div>
-
-          <div class="entity-info-title">
-            <input
-              v-model="entityInfoModal.name"
-              type="text"
-              maxlength="64"
-              class="entity-info-name-input"
-              @input="onInfoNameInput"
-            />
-            <div class="entity-info-progress-meta">
-              <span class="entity-info-progress-level">{{ entityInfoProfileProgressLevel }}</span>
-              <span class="entity-info-progress-percent">{{ entityInfoProfileProgress }}%</span>
-            </div>
-          </div>
-        </header>
-
-        <div class="entity-info-fixed">
-          <section class="entity-info-section">
-            <textarea
-              id="entity-description"
-              v-model="entityInfoModal.description"
-              class="entity-info-textarea entity-info-description"
-              rows="2"
-              placeholder="Описание"
-              @input="onInfoDescriptionInput"
-            />
-
-            <div class="entity-info-fields-list">
-              <div
-                v-for="field in entityInfoActiveFields"
-                :key="field.key"
-                class="entity-info-field-row"
-              >
-                <div class="entity-info-field-scroll">
-                  <input
-                    :value="getModalFieldDraft(field.key)"
-                    type="text"
-                    class="entity-info-tag-input"
-                    maxlength="32"
-                    :placeholder="field.label"
-                    @input="onModalFieldDraftInput(field.key, $event)"
-                    @keydown.enter.prevent="addModalFieldValue(field.key)"
-                  />
-                  <button
-                    v-for="value in getModalFieldValues(field.key)"
-                    :key="`${field.key}:${value}`"
-                    type="button"
-                    class="entity-info-tag"
-                    @click="removeModalFieldValue(field.key, value)"
-                  >
-                    {{ value }}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </section>
-        </div>
-
-        <section ref="entityInfoChatFeedRef" class="entity-info-chat-feed">
-          <article
-            v-for="message in entityInfoModal.chatHistory"
-            :key="message.id"
-            class="entity-chat-message"
-            :class="{ user: message.role === 'user', assistant: message.role === 'assistant' }"
-          >
-            <div class="entity-chat-bubble">
-              <p class="entity-chat-text">{{ message.text }}</p>
-              <div v-if="message.attachments.length" class="entity-chat-attachments">
-                <button
-                  v-for="attachment in message.attachments"
-                  :key="attachment.id"
-                  type="button"
-                  class="entity-chat-attachment-chip"
-                  @click="openEntityInfoAttachment(attachment)"
-                >
-                  {{ attachment.name }}
-                </button>
-              </div>
-            </div>
-            <time class="entity-chat-time">{{ toDisplayTime(message.createdAt) }}</time>
-          </article>
-          <article v-if="isEntityInfoAiRequestInFlight" class="entity-chat-message assistant">
-            <div class="entity-chat-bubble thinking">
-              <span class="entity-chat-thinking-text">Думаю...</span>
-            </div>
-          </article>
-        </section>
-
-        <section class="entity-info-chat-composer">
-          <div v-if="entityInfoModal.pendingUploads.length" class="entity-info-pending-uploads">
-            <span
-              v-for="attachment in entityInfoModal.pendingUploads"
-              :key="attachment.id"
-              class="entity-info-upload-chip"
-            >
-              {{ attachment.name }}
-              <button
-                type="button"
-                class="entity-info-upload-chip-remove"
-                @click="removePendingUpload(attachment.id)"
-              >
-                ×
-              </button>
-            </span>
-          </div>
-
-          <div class="entity-info-chat-bar">
-            <textarea
-              ref="entityInfoChatInputRef"
-              v-model="entityInfoModal.textInput"
-              class="entity-info-chat-input"
-              :placeholder="entityInfoChatPlaceholder"
-              :disabled="isEntityInfoAiRequestInFlight"
-              rows="1"
-              @input="onInfoTextInput"
-              @keydown="onChatComposerKeydown"
-            />
-          </div>
-
-          <div class="entity-info-chat-tools">
-            <div class="entity-info-chat-tools-left">
-            <button
-              type="button"
-              class="entity-info-chat-icon-btn"
-              title="Загрузка документа"
-              :disabled="isEntityInfoAiRequestInFlight"
-              @click="entityInfoDocInputRef?.click()"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M21 11.5V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h8.5" />
-                <path d="M15 3h6v6" />
-                <path d="M10 14 21 3" />
-              </svg>
-            </button>
-            <input
-              ref="entityInfoDocInputRef"
-              type="file"
-              class="entity-info-hidden-input"
-              multiple
-              @change="onInfoDocumentsChange"
-            />
-
-            <button
-              type="button"
-              class="entity-info-chat-icon-btn"
-              :class="{ active: isVoiceListening }"
-              title="Голосовой ввод"
-              :disabled="isEntityInfoAiRequestInFlight"
-              @click="onVoiceToggle"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <rect x="9" y="3" width="6" height="11" rx="3" />
-                <path d="M5 11a7 7 0 0 0 14 0" />
-                <path d="M12 18v3" />
-                <path d="M8 21h8" />
-              </svg>
-            </button>
-            </div>
-
-            <button
-              type="button"
-              class="entity-info-chat-icon-btn send"
-              title="Ввод"
-              :disabled="isEntityInfoAiRequestInFlight"
-              @click="onInfoSendInput"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M3 11.5 21 3l-7.5 18-2.6-7.1L3 11.5Z" />
-              </svg>
-            </button>
-          </div>
-        </section>
-
-      </div>
-    </div>
+      :entity-id="entityInfoModal.entityId"
+      @close="closeEntityInfoModal"
+    />
   </section>
 </template>
 
