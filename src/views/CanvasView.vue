@@ -2616,12 +2616,20 @@ function updateMobileLikeDeviceFlag() {
 
   const wasMobile = isMobileLikeDevice.value;
   const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
+  const tabletLandscape = coarsePointer && window.innerWidth > 1024;
   isMobileLikeDevice.value = coarsePointer || window.innerWidth <= 1024;
   if (isMobileLikeDevice.value && !wasMobile) {
-    mobileLibraryExpanded.value = false;
+    mobileLibraryExpanded.value = tabletLandscape;
   } else if (!isMobileLikeDevice.value && wasMobile) {
     mobileLibraryExpanded.value = true;
   }
+}
+
+function syncDeviceLayoutMetrics() {
+  updateMobileLikeDeviceFlag();
+  window.requestAnimationFrame(() => {
+    updateMobileLikeDeviceFlag();
+  });
 }
 
 function beginTouchGesture() {
@@ -4383,12 +4391,16 @@ const _legacyEntityInfoBindings = [
 void _legacyEntityInfoBindings;
 
 onMounted(() => {
-  updateMobileLikeDeviceFlag();
+  syncDeviceLayoutMetrics();
+  window.setTimeout(syncDeviceLayoutMetrics, 120);
   window.addEventListener('pointermove', onWindowPointerMove);
   window.addEventListener('pointerup', onWindowPointerUp);
   window.addEventListener('pointercancel', onWindowPointerUp);
   window.addEventListener('keydown', onWindowKeyDown);
-  window.addEventListener('resize', updateMobileLikeDeviceFlag);
+  window.addEventListener('resize', syncDeviceLayoutMetrics);
+  window.addEventListener('orientationchange', syncDeviceLayoutMetrics);
+  window.visualViewport?.addEventListener('resize', syncDeviceLayoutMetrics);
+  window.visualViewport?.addEventListener('scroll', syncDeviceLayoutMetrics);
   window.addEventListener('blur', resetTransientStates);
 });
 
@@ -4405,7 +4417,10 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerup', onWindowPointerUp);
   window.removeEventListener('pointercancel', onWindowPointerUp);
   window.removeEventListener('keydown', onWindowKeyDown);
-  window.removeEventListener('resize', updateMobileLikeDeviceFlag);
+  window.removeEventListener('resize', syncDeviceLayoutMetrics);
+  window.removeEventListener('orientationchange', syncDeviceLayoutMetrics);
+  window.visualViewport?.removeEventListener('resize', syncDeviceLayoutMetrics);
+  window.visualViewport?.removeEventListener('scroll', syncDeviceLayoutMetrics);
   window.removeEventListener('blur', resetTransientStates);
 });
 </script>
@@ -4436,6 +4451,7 @@ onBeforeUnmount(() => {
       <aside
         class="canvas-library"
         :class="{
+          'mobile-device': isMobileLikeDevice,
           'mobile-collapsed': isMobileLikeDevice && !mobileLibraryExpanded,
           'mobile-expanded': isMobileLikeDevice && mobileLibraryExpanded,
         }"
@@ -5016,9 +5032,9 @@ onBeforeUnmount(() => {
 }
 
 .canvas-library {
-  position: fixed;
+  position: absolute;
   left: 14px;
-  top: calc(50vh - 18px);
+  top: 50%;
   transform: translateY(-50%);
   z-index: 40;
   display: flex;
@@ -5028,6 +5044,82 @@ onBeforeUnmount(() => {
 
 .library-mobile-toggle {
   display: none;
+}
+
+.canvas-library.mobile-device {
+  left: 0;
+  top: 50%;
+  gap: 8px;
+  max-width: calc(100% - 8px);
+}
+
+.canvas-library.mobile-device.mobile-collapsed {
+  gap: 0;
+}
+
+.canvas-library.mobile-device.mobile-collapsed .library-rail,
+.canvas-library.mobile-device.mobile-collapsed .library-panel {
+  display: none;
+}
+
+.canvas-library.mobile-device .library-mobile-toggle {
+  display: inline-flex;
+  width: 30px;
+  height: 74px;
+  border-radius: 0 12px 12px 0;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-left: none;
+  background: rgba(255, 255, 255, 0.95);
+  color: #64748b;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 10px 22px rgba(112, 144, 176, 0.2);
+}
+
+.canvas-library.mobile-device .library-mobile-toggle svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.canvas-library.mobile-device .library-mobile-toggle:hover {
+  color: #1058ff;
+  background: #eef4ff;
+}
+
+.canvas-library.mobile-device .library-rail {
+  padding: 7px;
+  gap: 6px;
+}
+
+.canvas-library.mobile-device .library-rail-btn {
+  width: 34px;
+  height: 34px;
+}
+
+.canvas-library.mobile-device .library-rail-btn :deep(svg) {
+  width: 16px;
+  height: 16px;
+}
+
+.canvas-library.mobile-device .library-panel {
+  width: min(84vw, 320px);
+  max-height: min(62dvh, 560px);
+}
+
+.canvas-library.mobile-device .library-item-main {
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(112, 144, 176, 0.12);
+}
+
+.canvas-library.mobile-device .library-item-main:hover {
+  transform: none;
+  box-shadow: 0 2px 8px rgba(112, 144, 176, 0.12);
 }
 
 .library-rail {
@@ -6469,7 +6561,7 @@ onBeforeUnmount(() => {
 @media (max-width: 1024px) {
   .canvas-library {
     left: 0;
-    top: calc(50vh - 24px);
+    top: 50%;
     gap: 8px;
     max-width: calc(100vw - 8px);
   }
