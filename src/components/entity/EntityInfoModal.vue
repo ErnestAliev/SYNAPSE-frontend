@@ -1810,9 +1810,9 @@ onBeforeUnmount(() => {
 }
 
 .entity-info-modal {
-  width: min(456px, 96vw);
-  height: min(86vh, 920px);
-  max-height: 92vh;
+  width: min(560px, 96vw);
+  height: min(90vh, 980px);
+  max-height: 94vh;
   position: relative;
   overflow: visible;
   border-radius: 18px;
@@ -2049,14 +2049,14 @@ onBeforeUnmount(() => {
 
 .entity-info-description {
   min-height: 48px;
-  max-height: 132px;
+  max-height: 156px;
 }
 
 .entity-info-fields-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 128px;
+  max-height: 170px;
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 2px;
