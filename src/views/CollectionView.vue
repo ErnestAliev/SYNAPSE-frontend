@@ -205,6 +205,18 @@ const isConnectionCopyLogsBusy = ref(false);
 const connectionCopyLogsMessage = ref('');
 const isConnectionPhotosBusy = ref(false);
 const isDeleteWhatsappConfirmVisible = ref(false);
+const connectionBackgroundSyncActive = ref(false);
+const connectionBackgroundStats = ref<{
+  scanned: number;
+  updated: number;
+  remaining: number;
+} | null>(null);
+const connectionGlobalMessage = ref('');
+const connectionGlobalError = ref('');
+const connectionSuccessAlert = ref<{
+  title: string;
+  message: string;
+} | null>(null);
 
 interface WhatsappSessionStatus {
   sessionId: string;
@@ -228,6 +240,7 @@ interface WhatsappImportResult {
   matchedByPhone?: number;
   matchedByImportKey?: number;
   newAvailable?: number;
+  entities?: Entity[];
   session?: WhatsappSessionStatus;
 }
 
@@ -724,6 +737,11 @@ const filteredEntities = computed(() => {
 const filteredEntitiesCount = computed(() => filteredEntities.value.length);
 const totalEntitiesCount = computed(() => typedEntities.value.length);
 const filtersCounterLabel = computed(() => (activeType.value === 'connection' ? 'контактов' : 'элементов'));
+const showConnectionSyncBanner = computed(
+  () =>
+    activeType.value === 'connection' &&
+    (connectionBackgroundSyncActive.value || Boolean(connectionGlobalMessage.value) || Boolean(connectionGlobalError.value)),
+);
 
 const firstEntity = computed<Entity | null>(() => {
   const entities = filteredEntities.value;
@@ -1054,6 +1072,83 @@ async function closeConnectionImportModal() {
   isConnectionImportModalOpen.value = false;
 }
 
+function closeConnectionSuccessAlert() {
+  connectionSuccessAlert.value = null;
+}
+
+async function runConnectionBackgroundPhotoSync(sessionId: string) {
+  if (!sessionId || connectionBackgroundSyncActive.value) return;
+
+  connectionBackgroundSyncActive.value = true;
+  connectionGlobalError.value = '';
+  connectionBackgroundStats.value = null;
+
+  const batchLimit = 80;
+  const maxBatches = 80;
+  let scannedTotal = 0;
+  let updatedTotal = 0;
+  let remaining = 0;
+  let hasMore = true;
+  let batch = 0;
+
+  connectionGlobalMessage.value = 'Контакты импортированы. Догружаем фото в фоне...';
+
+  try {
+    while (hasMore && batch < maxBatches) {
+      const cleanupRoles = batch === 0;
+      const { data } = await apiClient.post<WhatsappPhotoBackfillResult>(
+        '/integrations/whatsapp/photos/backfill',
+        {
+          sessionId,
+          onlyMissing: true,
+          limit: batchLimit,
+          cleanupRoles,
+        },
+        {
+          timeout: 120_000,
+        },
+      );
+
+      const scanned = Number(data.scanned) || 0;
+      const updated = Number(data.updated) || 0;
+      remaining = Math.max(0, Number(data.remaining) || 0);
+
+      scannedTotal += scanned;
+      updatedTotal += updated;
+      hasMore = Boolean(data.hasMore) && scanned > 0;
+      batch += 1;
+
+      connectionBackgroundStats.value = {
+        scanned: scannedTotal,
+        updated: updatedTotal,
+        remaining,
+      };
+      connectionGlobalMessage.value = `Догрузка фото: ${updatedTotal}/${scannedTotal}. Осталось без фото: ${remaining}.`;
+
+      if (batch % 2 === 0 || !hasMore) {
+        await entitiesStore.fetchEntities({ silent: true });
+      }
+    }
+
+    await entitiesStore.fetchEntities({ silent: true });
+
+    if (hasMore) {
+      connectionGlobalError.value = `Догрузка фото остановлена по лимиту батчей. Осталось без фото: ${remaining}.`;
+    } else {
+      connectionGlobalMessage.value = `Импорт и догрузка фото завершены. Обновлено фото: ${updatedTotal}.`;
+    }
+  } catch (error) {
+    connectionGlobalError.value = `Фоновая догрузка фото остановлена: ${formatConnectionImportError(error)}`;
+  } finally {
+    connectionBackgroundSyncActive.value = false;
+    connectionImportSessionStatus.value = 'ready';
+    connectionImportProgress.value = null;
+    if (connectionImportSessionId.value === sessionId) {
+      await stopConnectionSession({ silent: true });
+    }
+  }
+}
+
 async function importWhatsAppContacts() {
   if (isConnectionImportBusy.value) return;
   if (!connectionImportSessionId.value) {
@@ -1083,11 +1178,10 @@ async function importWhatsAppContacts() {
   try {
     const { data } = await apiClient.post<WhatsappImportResult>('/integrations/whatsapp/import', {
       sessionId: connectionImportSessionId.value,
+      includeImages: false,
     });
 
     applyConnectionSessionState(data.session);
-    await entitiesStore.fetchEntities({ silent: true });
-    entitiesStore.triggerFlash('connection');
 
     const imported = Number(data.imported) || 0;
     const matched = Number(data.matched ?? data.skipped) || 0;
@@ -1105,12 +1199,29 @@ async function importWhatsAppContacts() {
       newAvailable,
     };
 
-    connectionImportMessage.value =
+    const importedEntities = Array.isArray(data.entities) ? data.entities : [];
+    if (importedEntities.length) {
+      const existingIds = new Set(entitiesStore.items.map((item) => item._id));
+      const newItems = importedEntities.filter((item) => item && !existingIds.has(item._id));
+      if (newItems.length) {
+        entitiesStore.items = [...newItems, ...entitiesStore.items];
+      }
+    }
+
+    void entitiesStore.fetchEntities({ silent: true });
+
+    if (imported > 0) {
+      entitiesStore.triggerFlash('connection');
+    }
+
+    const successMessage =
       imported > 0
-        ? `Найдено совпадений: ${matched}. Импортировано только новых: ${imported}.`
+        ? `Успешно импортировано ${imported} контактов.`
         : matched > 0
-          ? `Найдено совпадений: ${matched}. Новых контактов для импорта нет.`
+          ? `Новых контактов нет. Совпадений: ${matched}.`
           : 'Контакты не найдены для импорта.';
+
+    connectionImportMessage.value = successMessage;
     appendConnectionClientLog('import.response', {
       total,
       imported,
@@ -1119,6 +1230,20 @@ async function importWhatsAppContacts() {
       matchedByImportKey,
       newAvailable,
     });
+
+    connectionSuccessAlert.value = {
+      title: 'Импорт завершен',
+      message: successMessage,
+    };
+
+    isConnectionImportModalOpen.value = false;
+    clearConnectionImportPoll();
+
+    if (imported > 0 && connectionImportSessionId.value) {
+      void runConnectionBackgroundPhotoSync(connectionImportSessionId.value);
+    } else {
+      await stopConnectionSession({ silent: true });
+    }
 
     await nextTick();
     collectionViewRef.value?.scrollTo({ top: 0, behavior: 'auto' });
@@ -1596,6 +1721,13 @@ function closeEntityInfoModal() {
       <div class="filters-counter">
         Показано {{ filteredEntitiesCount }} из {{ totalEntitiesCount }} {{ filtersCounterLabel }}
       </div>
+    </div>
+
+    <div v-if="showConnectionSyncBanner" class="connection-sync-banner" :class="{ error: Boolean(connectionGlobalError) }">
+      <span class="connection-sync-text">
+        {{ connectionGlobalError || connectionGlobalMessage }}
+      </span>
+      <span v-if="connectionBackgroundSyncActive" class="connection-sync-badge">Фоновая загрузка</span>
     </div>
 
     <section ref="collectionViewRef" class="collection-view">
@@ -2127,6 +2259,22 @@ function closeEntityInfoModal() {
         </div>
       </div>
     </div>
+
+    <div
+      v-if="connectionSuccessAlert"
+      class="connection-success-overlay"
+      @pointerdown.self="closeConnectionSuccessAlert"
+    >
+      <div class="connection-success-card" @pointerdown.stop>
+        <h3 class="connection-success-title">{{ connectionSuccessAlert.title }}</h3>
+        <p class="connection-success-text">{{ connectionSuccessAlert.message }}</p>
+        <div class="connection-success-actions">
+          <button type="button" class="connection-success-btn" @click="closeConnectionSuccessAlert">
+            OK
+          </button>
+        </div>
+      </div>
+    </div>
   </main>
 </template>
 
@@ -2158,6 +2306,44 @@ function closeEntityInfoModal() {
 
 .tools-header::-webkit-scrollbar {
   display: none;
+}
+
+.connection-sync-banner {
+  margin: 8px 32px 0;
+  border: 1px solid #dbe4f3;
+  border-radius: 12px;
+  background: #f8fbff;
+  min-height: 34px;
+  padding: 7px 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.connection-sync-banner.error {
+  border-color: #fecaca;
+  background: #fff5f5;
+  color: #b91c1c;
+}
+
+.connection-sync-text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.connection-sync-badge {
+  flex-shrink: 0;
+  border: 1px solid #bcd3ff;
+  background: #edf4ff;
+  color: #1058ff;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 8px;
 }
 
 .search-bar {
@@ -2951,6 +3137,64 @@ function closeEntityInfoModal() {
   font-weight: 600;
 }
 
+.connection-success-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 142;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.36);
+}
+
+.connection-success-card {
+  width: min(380px, calc(100% - 28px));
+  border-radius: 14px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  box-shadow: 0 22px 44px rgba(15, 23, 42, 0.3);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.connection-success-title {
+  margin: 0;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.connection-success-text {
+  margin: 0;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.connection-success-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.connection-success-btn {
+  height: 34px;
+  min-width: 84px;
+  border-radius: 10px;
+  border: 1px solid #bcd3ff;
+  background: #edf4ff;
+  color: #1058ff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.connection-success-btn:hover {
+  border-color: #97b9ff;
+}
+
 .entity-phone-meta {
   margin-top: 4px;
   color: #64748b;
@@ -2974,6 +3218,10 @@ function closeEntityInfoModal() {
   .tools-header {
     padding: 12px;
     gap: 10px;
+  }
+
+  .connection-sync-banner {
+    margin: 8px 12px 0;
   }
 
   .collection-view {
