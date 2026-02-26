@@ -45,7 +45,9 @@
   <circle cx="416" cy="419" r="34" fill="#FFFFFF"/>
   <circle cx="208" cy="419" r="34" fill="#FFFFFF"/>
 
-  <text x="600" y="258" fill="#0F172A" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="90" font-weight="800">Synapse12</text>
-  <text x="600" y="332" fill="#334155" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="38" font-weight="600">Next-Gen Visual Knowledge Graph</text>
-  <text x="600" y="390" fill="#475569" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="31" font-weight="500">AI analytics workspace for entities, projects and connections</text>
+  <text x="600" y="214" fill="#0F172A" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="84" font-weight="800">Synapse12</text>
+  <text x="600" y="298" fill="#334155" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="42" font-weight="700">Погрузитесь в ваши связи,</text>
+  <text x="600" y="354" fill="#334155" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="42" font-weight="700">чтобы раскрыть их потенциал на 1000%</text>
+  <text x="600" y="432" fill="#475569" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="30" font-weight="600">Ищите скрытые возможности в контактах, компаниях и событиях.</text>
+  <text x="600" y="482" fill="#475569" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="30" font-weight="600">Ставьте цели, привлекайте ресурсы и добивайтесь результатов.</text>
 </svg>
