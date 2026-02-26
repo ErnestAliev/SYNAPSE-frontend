@@ -218,6 +218,7 @@ const connectionBackgroundStats = ref<{
 } | null>(null);
 const connectionGlobalMessage = ref('');
 const connectionGlobalError = ref('');
+const connectionGlobalMessageTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const connectionSuccessAlert = ref<{
   title: string;
   message: string;
@@ -792,6 +793,10 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   clearConnectionImportPoll();
+  if (connectionGlobalMessageTimer.value) {
+    clearTimeout(connectionGlobalMessageTimer.value);
+    connectionGlobalMessageTimer.value = null;
+  }
   void stopConnectionSession({ silent: true });
 });
 
@@ -1086,6 +1091,31 @@ function closeConnectionSuccessAlert() {
   connectionSuccessAlert.value = null;
 }
 
+function setConnectionGlobalMessage(message: string, autoClearMs = 0) {
+  if (connectionGlobalMessageTimer.value) {
+    clearTimeout(connectionGlobalMessageTimer.value);
+    connectionGlobalMessageTimer.value = null;
+  }
+
+  connectionGlobalMessage.value = message;
+
+  if (!message || autoClearMs <= 0) {
+    return;
+  }
+
+  const snapshot = message;
+  connectionGlobalMessageTimer.value = setTimeout(() => {
+    if (
+      connectionGlobalMessage.value === snapshot &&
+      !connectionBackgroundSyncActive.value &&
+      !connectionGlobalError.value
+    ) {
+      connectionGlobalMessage.value = '';
+    }
+    connectionGlobalMessageTimer.value = null;
+  }, autoClearMs);
+}
+
 function isRetryableConnectionSyncError(error: unknown) {
   if (!axios.isAxiosError(error)) return false;
   if (!error.response) return true;
@@ -1341,13 +1371,14 @@ async function importWhatsAppContacts() {
 
 function requestDeleteImportedWhatsApp() {
   isDeleteWhatsappConfirmVisible.value = true;
-  connectionGlobalMessage.value =
-    'Подтвердите удаление импортированных WhatsApp-контактов. Они будут удалены из коллекции и из всех проектов.';
+  setConnectionGlobalMessage(
+    'Подтвердите удаление импортированных WhatsApp-контактов. Они будут удалены из коллекции и из всех проектов.',
+  );
 }
 
 function cancelDeleteImportedWhatsApp() {
   isDeleteWhatsappConfirmVisible.value = false;
-  connectionGlobalMessage.value = '';
+  setConnectionGlobalMessage('');
 }
 
 async function confirmDeleteImportedWhatsApp() {
@@ -1360,7 +1391,7 @@ async function confirmDeleteImportedWhatsApp() {
     const { data } = await apiClient.delete<WhatsappDeleteImportedResult>('/integrations/whatsapp/imported');
     isDeleteWhatsappConfirmVisible.value = false;
     connectionImportStats.value = null;
-    connectionGlobalMessage.value = `Удалено импортированных контактов: ${Number(data.deleted) || 0}.`;
+    setConnectionGlobalMessage(`Удалено импортированных контактов: ${Number(data.deleted) || 0}.`, 3200);
     await entitiesStore.fetchEntities({ silent: true });
     appendConnectionClientLog('imported.delete.response', data);
   } catch (error) {
