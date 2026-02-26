@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import axios from 'axios';
 import { apiClient } from '../services/api';
+import { AUTH_SESSION_STORAGE_KEY } from '../constants/auth';
 import type { Entity, EntityPayload, EntityType, ProjectCanvasData } from '../types/entity';
 
 const bufferedEntityPatches = new Map<string, Partial<Entity>>();
@@ -8,10 +9,16 @@ const bufferedEntityPatchTimers = new Map<string, ReturnType<typeof setTimeout>>
 const bufferedEntityPatchInFlight = new Set<string>();
 const bufferedEntityPatchRetryCounts = new Map<string, number>();
 const recentlyDeletedEntityIds = new Map<string, number>();
+let realtimeEventSource: EventSource | null = null;
+let realtimeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let realtimeReconnectAttempt = 0;
+let realtimeShouldReconnect = false;
 
 const RECENT_DELETE_TTL_MS = 15000;
 const ENTITIES_FETCH_TIMEOUT_MS = 60000;
 const ENTITY_UPDATE_TIMEOUT_MS = 60000;
+const REALTIME_RETRY_BASE_MS = 1000;
+const REALTIME_RETRY_MAX_MS = 30000;
 
 const ENTITY_TYPES: EntityType[] = [
   'project',
@@ -92,6 +99,53 @@ function cleanupExpiredRecentlyDeleted(now = Date.now()) {
     if (expiresAt <= now) {
       recentlyDeletedEntityIds.delete(id);
     }
+  }
+}
+
+function readRealtimeSessionToken() {
+  if (typeof window === 'undefined') return '';
+  try {
+    const token = window.localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+    return typeof token === 'string' ? token.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+function resolveRealtimeEventsUrl(sessionToken: string) {
+  if (typeof window === 'undefined') return '';
+
+  const rawApiBase = String(import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api')
+    .trim()
+    .replace(/\/+$/, '');
+  if (!rawApiBase) return '';
+
+  let url: URL;
+  try {
+    if (rawApiBase.startsWith('http://') || rawApiBase.startsWith('https://')) {
+      url = new URL(`${rawApiBase}/events`);
+    } else {
+      url = new URL(`${rawApiBase}/events`, window.location.origin);
+    }
+  } catch {
+    return '';
+  }
+
+  if (sessionToken) {
+    url.searchParams.set('sessionToken', sessionToken);
+  }
+
+  return url.toString();
+}
+
+function parseEntityEventPayload(rawData: string): Record<string, unknown> | null {
+  if (!rawData) return null;
+  try {
+    const parsed = JSON.parse(rawData);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
   }
 }
 
@@ -228,6 +282,164 @@ export const useEntitiesStore = defineStore('entities', {
       return 'Failed to load entities';
     },
 
+    scheduleRealtimeReconnect() {
+      if (!realtimeShouldReconnect) return;
+      if (realtimeReconnectTimer) return;
+
+      const attempt = realtimeReconnectAttempt;
+      const delay = Math.min(REALTIME_RETRY_MAX_MS, REALTIME_RETRY_BASE_MS * 2 ** Math.min(attempt, 5));
+      realtimeReconnectAttempt += 1;
+
+      realtimeReconnectTimer = setTimeout(() => {
+        realtimeReconnectTimer = null;
+        this.startRealtimeSync();
+      }, delay);
+    },
+
+    stopRealtimeSync() {
+      realtimeShouldReconnect = false;
+      realtimeReconnectAttempt = 0;
+
+      if (realtimeReconnectTimer) {
+        clearTimeout(realtimeReconnectTimer);
+        realtimeReconnectTimer = null;
+      }
+
+      if (realtimeEventSource) {
+        realtimeEventSource.close();
+        realtimeEventSource = null;
+      }
+    },
+
+    upsertEntityFromRealtime(entity: Entity, options?: { flash?: boolean }) {
+      if (!entity || typeof entity !== 'object' || !entity._id) return;
+
+      cleanupExpiredRecentlyDeleted();
+      clearRecentlyDeleted([entity._id]);
+
+      const nextItems = [...this.items];
+      const existingIndex = nextItems.findIndex((item) => item._id === entity._id);
+      let inserted = false;
+      if (existingIndex >= 0) {
+        nextItems[existingIndex] = entity;
+      } else {
+        nextItems.unshift(entity);
+        this.lastCreatedIdByType[entity.type] = entity._id;
+        inserted = true;
+      }
+
+      this.items = nextItems;
+
+      if (options?.flash && inserted) {
+        this.triggerFlash(entity.type);
+      }
+    },
+
+    applyRealtimeEntityDelete(entityIds: string[]) {
+      const normalizedIds = Array.from(
+        new Set(
+          (Array.isArray(entityIds) ? entityIds : [])
+            .map((id) => (typeof id === 'string' ? id.trim() : ''))
+            .filter(Boolean),
+        ),
+      );
+      if (!normalizedIds.length) return;
+
+      const removedEntityIds = new Set(normalizedIds);
+      for (const removedEntityId of removedEntityIds) {
+        this.clearBufferedPatchState(removedEntityId);
+      }
+
+      markRecentlyDeleted(removedEntityIds);
+      this.items = this.items.filter((item) => !removedEntityIds.has(item._id));
+      this.pruneRemovedEntitiesFromProjectCanvases(removedEntityIds);
+
+      for (const type of ENTITY_TYPES) {
+        const lastCreatedId = this.lastCreatedIdByType[type];
+        if (lastCreatedId && removedEntityIds.has(lastCreatedId)) {
+          this.lastCreatedIdByType[type] = null;
+        }
+      }
+    },
+
+    handleRealtimeEntityEvent(eventType: string, rawData: string) {
+      const payload = parseEntityEventPayload(rawData);
+      if (!payload) return;
+
+      if (eventType === 'entity.created') {
+        const entity = payload.entity as Entity | undefined;
+        if (!entity?._id) return;
+        this.upsertEntityFromRealtime(entity, { flash: true });
+        return;
+      }
+
+      if (eventType === 'entity.updated') {
+        const entity = payload.entity as Entity | undefined;
+        if (!entity?._id) return;
+        this.upsertEntityFromRealtime(entity);
+        return;
+      }
+
+      if (eventType === 'entity.deleted') {
+        const entityIds = payload.entityIds as string[] | undefined;
+        this.applyRealtimeEntityDelete(Array.isArray(entityIds) ? entityIds : []);
+      }
+    },
+
+    startRealtimeSync() {
+      if (typeof window === 'undefined') return;
+      if (typeof EventSource === 'undefined') return;
+
+      realtimeShouldReconnect = true;
+      const sessionToken = readRealtimeSessionToken();
+      if (!sessionToken) {
+        this.stopRealtimeSync();
+        return;
+      }
+
+      const eventsUrl = resolveRealtimeEventsUrl(sessionToken);
+      if (!eventsUrl) {
+        this.error = 'Realtime channel URL is invalid';
+        return;
+      }
+
+      if (realtimeReconnectTimer) {
+        clearTimeout(realtimeReconnectTimer);
+        realtimeReconnectTimer = null;
+      }
+
+      if (realtimeEventSource) {
+        return;
+      }
+
+      const source = new EventSource(eventsUrl, { withCredentials: true });
+      realtimeEventSource = source;
+
+      source.onopen = () => {
+        realtimeReconnectAttempt = 0;
+      };
+
+      source.addEventListener('entity.created', (event: MessageEvent<string>) => {
+        this.handleRealtimeEntityEvent('entity.created', event.data);
+      });
+
+      source.addEventListener('entity.updated', (event: MessageEvent<string>) => {
+        this.handleRealtimeEntityEvent('entity.updated', event.data);
+      });
+
+      source.addEventListener('entity.deleted', (event: MessageEvent<string>) => {
+        this.handleRealtimeEntityEvent('entity.deleted', event.data);
+      });
+
+      source.onerror = () => {
+        if (realtimeEventSource) {
+          realtimeEventSource.close();
+          realtimeEventSource = null;
+        }
+        this.scheduleRealtimeReconnect();
+      };
+    },
+
     async fetchEntities(options?: FetchEntitiesOptions) {
       const silent = options?.silent ?? false;
       const requestedType = options?.type;
@@ -298,12 +510,16 @@ export const useEntitiesStore = defineStore('entities', {
     },
 
     async bootstrap(options?: { deferConnection?: boolean }) {
-      if (this.initialized) return;
+      if (this.initialized) {
+        this.startRealtimeSync();
+        return;
+      }
       const deferConnection = options?.deferConnection ?? true;
 
       if (deferConnection) {
         await this.fetchEntities({ excludeType: 'connection' });
         this.initialized = true;
+        this.startRealtimeSync();
         if (!this.loadedTypes.connection) {
           void this.fetchEntities({
             silent: true,
@@ -317,6 +533,7 @@ export const useEntitiesStore = defineStore('entities', {
       await this.fetchEntities();
 
       this.initialized = true;
+      this.startRealtimeSync();
     },
 
     async fetchTypeIfNeeded(type: EntityType) {
@@ -463,8 +680,6 @@ export const useEntitiesStore = defineStore('entities', {
         void this.fetchEntities({ silent: true });
         throw error;
       }
-
-      void this.fetchEntities({ silent: true });
     },
   },
 });

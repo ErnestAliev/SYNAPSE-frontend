@@ -59,6 +59,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  entitiesStore.stopRealtimeSync();
   document.removeEventListener('pointerdown', onPointerDown);
   window.removeEventListener('resize', updateViewportBottomOffset);
   window.removeEventListener('orientationchange', updateViewportBottomOffset);
@@ -71,6 +72,7 @@ watch(
   () => authStore.isAuthenticated,
   async (isAuthenticated, wasAuthenticated) => {
     if (isAuthenticated) {
+      entitiesStore.startRealtimeSync();
       if (!entitiesStore.initialized) {
         await entitiesStore.bootstrap({ deferConnection: true });
         return;
@@ -81,6 +83,7 @@ watch(
     }
 
     if (wasAuthenticated) {
+      entitiesStore.stopRealtimeSync();
       entitiesStore.items = [];
       entitiesStore.initialized = false;
       entitiesStore.error = null;
