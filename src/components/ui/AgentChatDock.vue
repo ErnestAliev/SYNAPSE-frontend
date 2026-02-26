@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import axios from 'axios';
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useEntitiesStore } from '../../stores/entities';
 import type { EntityType } from '../../types/entity';
@@ -36,6 +36,8 @@ interface AgentChatResponse {
 }
 
 const STORAGE_KEY = 'synapse12.agent-chat.v2';
+const PANEL_SIZE_STORAGE_KEY = 'synapse12.agent-chat.panel-size.v1';
+const PANEL_TOP_OFFSET_PX = 60;
 const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   project: 'Проекты',
   connection: 'Подключение',
@@ -57,12 +59,24 @@ const messageDraft = ref('');
 const pendingUploads = ref<EntityAttachment[]>([]);
 const isVoiceListening = ref(false);
 const isSending = ref(false);
+const isResizingPanel = ref(false);
 
 const chatFeedRef = ref<HTMLElement | null>(null);
 const chatInputRef = ref<HTMLTextAreaElement | null>(null);
 const docInputRef = ref<HTMLInputElement | null>(null);
+const panelRef = ref<HTMLElement | null>(null);
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
 const pendingComposerHeightReset = ref(false);
+const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1366);
+const viewportHeight = ref(typeof window !== 'undefined' ? window.innerHeight : 768);
+const panelSize = ref<{ width: number; height: number } | null>(loadStoredPanelSize());
+const resizePointerId = ref<number | null>(null);
+const resizeStart = ref<{
+  clientX: number;
+  clientY: number;
+  width: number;
+  height: number;
+} | null>(null);
 
 const messagesByScope = ref<Record<string, ChatMessage[]>>(loadStoredMessages());
 
@@ -184,6 +198,143 @@ function persistMessages() {
   } catch {
     // Ignore localStorage write errors.
   }
+}
+
+function loadStoredPanelSize() {
+  if (typeof window === 'undefined') {
+    return null as { width: number; height: number } | null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(PANEL_SIZE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { width?: number; height?: number };
+    const width = Number(parsed.width);
+    const height = Number(parsed.height);
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+    return {
+      width: Math.max(1, Math.floor(width)),
+      height: Math.max(1, Math.floor(height)),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistPanelSize() {
+  if (typeof window === 'undefined' || !panelSize.value) return;
+  try {
+    window.localStorage.setItem(PANEL_SIZE_STORAGE_KEY, JSON.stringify(panelSize.value));
+  } catch {
+    // Ignore localStorage write errors.
+  }
+}
+
+const isPhoneViewport = computed(() => viewportWidth.value <= 700);
+const panelEdgeMarginPx = computed(() => (isPhoneViewport.value ? 10 : 18));
+
+const panelConstraints = computed(() => {
+  const maxWidth = Math.max(280, viewportWidth.value - panelEdgeMarginPx.value * 2);
+  const maxHeight = Math.max(260, viewportHeight.value - PANEL_TOP_OFFSET_PX - panelEdgeMarginPx.value);
+  const minWidth = isPhoneViewport.value ? 280 : 320;
+  const minHeight = isPhoneViewport.value ? 320 : 360;
+
+  return {
+    maxWidth,
+    maxHeight,
+    minWidth: Math.min(minWidth, maxWidth),
+    minHeight: Math.min(minHeight, maxHeight),
+  };
+});
+
+function getDefaultPanelSize() {
+  const constraints = panelConstraints.value;
+  const width = Math.min(isPhoneViewport.value ? constraints.maxWidth : 420, constraints.maxWidth);
+  const heightTarget = Math.round(viewportHeight.value * (isPhoneViewport.value ? 0.68 : 0.76));
+  const height = Math.min(heightTarget, constraints.maxHeight);
+  return {
+    width: Math.max(constraints.minWidth, width),
+    height: Math.max(constraints.minHeight, height),
+  };
+}
+
+function clampPanelSize(size: { width: number; height: number }) {
+  const constraints = panelConstraints.value;
+  return {
+    width: Math.min(constraints.maxWidth, Math.max(constraints.minWidth, Math.round(size.width))),
+    height: Math.min(constraints.maxHeight, Math.max(constraints.minHeight, Math.round(size.height))),
+  };
+}
+
+const resolvedPanelSize = computed(() => {
+  const fallback = getDefaultPanelSize();
+  const raw = panelSize.value || fallback;
+  return clampPanelSize(raw);
+});
+
+const panelStyle = computed(() => ({
+  width: `${resolvedPanelSize.value.width}px`,
+  height: `${resolvedPanelSize.value.height}px`,
+  maxWidth: `${panelConstraints.value.maxWidth}px`,
+  maxHeight: `${panelConstraints.value.maxHeight}px`,
+}));
+
+function updateViewportSize() {
+  if (typeof window === 'undefined') return;
+  viewportWidth.value = window.innerWidth;
+  viewportHeight.value = window.innerHeight;
+}
+
+function stopPanelResize() {
+  if (typeof window === 'undefined') return;
+  isResizingPanel.value = false;
+  resizeStart.value = null;
+  resizePointerId.value = null;
+  window.removeEventListener('pointermove', onPanelResizePointerMove);
+  window.removeEventListener('pointerup', onPanelResizePointerUp);
+  window.removeEventListener('pointercancel', onPanelResizePointerUp);
+}
+
+function onPanelResizePointerMove(event: PointerEvent) {
+  if (!isResizingPanel.value || !resizeStart.value) return;
+
+  const deltaX = event.clientX - resizeStart.value.clientX;
+  const deltaY = event.clientY - resizeStart.value.clientY;
+  const nextWidth = resizeStart.value.width - deltaX;
+  const nextHeight = resizeStart.value.height - deltaY;
+  panelSize.value = clampPanelSize({
+    width: nextWidth,
+    height: nextHeight,
+  });
+}
+
+function onPanelResizePointerUp() {
+  if (!isResizingPanel.value) return;
+  stopPanelResize();
+  persistPanelSize();
+}
+
+function onPanelResizeHandlePointerDown(event: PointerEvent) {
+  if (isPhoneViewport.value) return;
+  if (event.pointerType === 'mouse' && event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+
+  const panel = panelRef.value;
+  if (!panel) return;
+  const rect = panel.getBoundingClientRect();
+  resizeStart.value = {
+    clientX: event.clientX,
+    clientY: event.clientY,
+    width: rect.width,
+    height: rect.height,
+  };
+  isResizingPanel.value = true;
+  resizePointerId.value = event.pointerId;
+
+  window.addEventListener('pointermove', onPanelResizePointerMove, { passive: true });
+  window.addEventListener('pointerup', onPanelResizePointerUp);
+  window.addEventListener('pointercancel', onPanelResizePointerUp);
 }
 
 const routeScopeType = computed<'collection' | 'project-canvas'>(() => {
@@ -400,6 +551,7 @@ function autoResizeComposer() {
 function toggleChat() {
   isOpen.value = !isOpen.value;
   if (isOpen.value) {
+    panelSize.value = resolvedPanelSize.value;
     pendingComposerHeightReset.value = true;
     void nextTick(() => {
       autoResizeComposer();
@@ -628,8 +780,31 @@ watch(scopedMessages, () => {
   });
 });
 
+watch(panelConstraints, () => {
+  panelSize.value = resolvedPanelSize.value;
+});
+
+watch(panelSize, () => {
+  if (!panelSize.value || isResizingPanel.value) return;
+  persistPanelSize();
+});
+
+onMounted(() => {
+  updateViewportSize();
+  panelSize.value = resolvedPanelSize.value;
+  if (typeof window === 'undefined') return;
+  window.addEventListener('resize', updateViewportSize);
+  window.addEventListener('orientationchange', updateViewportSize);
+  window.visualViewport?.addEventListener('resize', updateViewportSize);
+});
+
 onBeforeUnmount(() => {
+  stopPanelResize();
   stopVoiceCapture();
+  if (typeof window === 'undefined') return;
+  window.removeEventListener('resize', updateViewportSize);
+  window.removeEventListener('orientationchange', updateViewportSize);
+  window.visualViewport?.removeEventListener('resize', updateViewportSize);
 });
 </script>
 
@@ -651,7 +826,22 @@ onBeforeUnmount(() => {
       </svg>
     </button>
 
-    <section v-if="isOpen" class="agent-chat-panel" @pointerdown.stop>
+    <section
+      v-if="isOpen"
+      ref="panelRef"
+      class="agent-chat-panel"
+      :style="panelStyle"
+      @pointerdown.stop
+    >
+      <button
+        type="button"
+        class="agent-chat-resize-handle"
+        title="Изменить размер окна"
+        aria-label="Изменить размер окна"
+        @pointerdown="onPanelResizeHandlePointerDown"
+      >
+        <span />
+      </button>
       <header class="agent-chat-header">
         <div class="agent-chat-title-wrap">
           <div class="agent-chat-title">{{ scopeTitle }}</div>
@@ -845,9 +1035,9 @@ onBeforeUnmount(() => {
 .agent-chat-panel {
   position: fixed;
   right: calc(18px + env(safe-area-inset-right, 0px));
-  top: 60px;
   bottom: calc(18px + env(safe-area-inset-bottom, 0px) + var(--synapse-vv-bottom-offset, 0px));
   width: min(420px, calc(100vw - 20px));
+  height: min(76vh, calc(100vh - 84px));
   border-radius: 16px;
   border: 1px solid #dbe4f3;
   background: #ffffff;
@@ -855,6 +1045,38 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-height: 360px;
+  min-width: 320px;
+}
+
+.agent-chat-resize-handle {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #94a3b8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: nwse-resize;
+  touch-action: none;
+  z-index: 3;
+}
+
+.agent-chat-resize-handle span {
+  width: 10px;
+  height: 10px;
+  border-left: 2px solid currentColor;
+  border-top: 2px solid currentColor;
+  transform: rotate(-45deg);
+}
+
+.agent-chat-resize-handle:hover {
+  color: #64748b;
 }
 
 .agent-chat-header {
@@ -1162,12 +1384,17 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 700px) {
   .agent-chat-panel {
-    top: 60px;
     right: calc(10px + env(safe-area-inset-right, 0px));
     bottom: calc(10px + env(safe-area-inset-bottom, 0px) + var(--synapse-vv-bottom-offset, 0px));
     width: calc(100vw - 20px);
+    min-width: 280px;
+    min-height: 320px;
+  }
+
+  .agent-chat-resize-handle {
+    display: none;
   }
 
   .agent-chat-dock {
