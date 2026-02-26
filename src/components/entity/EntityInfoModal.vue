@@ -247,6 +247,8 @@ const footerCropPointer = ref<{
   originY: number;
 } | null>(null);
 const isFooterCropBusy = ref(false);
+const fieldInputRefs = ref<Record<string, HTMLInputElement | null>>({});
+const editingFieldValue = ref<{ fieldKey: string; originalValue: string } | null>(null);
 
 function toProfile(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -521,6 +523,7 @@ function loadDraft(entityId: string) {
   isProjectPickerOpen.value = false;
   projectActionMessage.value = '';
   isProjectActionBusy.value = false;
+  editingFieldValue.value = null;
 
   pendingComposerHeightReset.value = true;
   void nextTick(() => {
@@ -741,17 +744,105 @@ function onFieldDraftInput(fieldKey: string, event: Event) {
   draft.value.fieldDrafts[fieldKey] = input.value.slice(0, 32);
 }
 
+function setFieldInputRef(fieldKey: string, element: unknown) {
+  if (typeof HTMLInputElement !== 'undefined' && element instanceof HTMLInputElement) {
+    fieldInputRefs.value[fieldKey] = element;
+    return;
+  }
+  if (element === null) {
+    delete fieldInputRefs.value[fieldKey];
+  }
+}
+
+function focusFieldInput(fieldKey: string, selectAll = false) {
+  void nextTick(() => {
+    const input = fieldInputRefs.value[fieldKey];
+    if (!input) return;
+    input.focus();
+    if (selectAll) {
+      input.select();
+    }
+  });
+}
+
+function onFieldDraftKeydown(fieldKey: string, event: KeyboardEvent) {
+  if (event.key !== 'Escape') return;
+  event.preventDefault();
+  if (!draft.value) return;
+  draft.value.fieldDrafts[fieldKey] = '';
+  if (editingFieldValue.value?.fieldKey === fieldKey) {
+    editingFieldValue.value = null;
+  }
+}
+
+function startEditFieldValue(fieldKey: string, value: string) {
+  if (!draft.value) return;
+  editingFieldValue.value = { fieldKey, originalValue: value };
+  draft.value.fieldDrafts[fieldKey] = value.slice(0, 32);
+  focusFieldInput(fieldKey, true);
+}
+
+function normalizeLinkForOpen(value: string) {
+  const raw = value.trim();
+  if (!raw) return '';
+  if (/^(https?:\/\/|mailto:|tel:)/i.test(raw)) {
+    return raw;
+  }
+  return `https://${raw}`;
+}
+
+function openFieldLink(value: string) {
+  if (typeof window === 'undefined') return;
+  const url = normalizeLinkForOpen(value);
+  if (!url) return;
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
 function addFieldValue(fieldKey: string) {
   if (!draft.value) return;
   const nextValue = (draft.value.fieldDrafts[fieldKey] || '').trim().slice(0, 32);
-  if (!nextValue) return;
+  const values = [...(draft.value.metadataValues[fieldKey] || [])];
+  const editing = editingFieldValue.value;
 
-  const values = draft.value.metadataValues[fieldKey] || [];
+  if (editing && editing.fieldKey === fieldKey) {
+    if (!nextValue) {
+      draft.value.fieldDrafts[fieldKey] = '';
+      editingFieldValue.value = null;
+      return;
+    }
+
+    const originalIndex = values.indexOf(editing.originalValue);
+    let changed = false;
+
+    if (originalIndex >= 0) {
+      if (values[originalIndex] !== nextValue) {
+        if (values.includes(nextValue)) {
+          values.splice(originalIndex, 1);
+        } else {
+          values[originalIndex] = nextValue;
+        }
+        changed = true;
+      }
+    } else if (!values.includes(nextValue)) {
+      values.push(nextValue);
+      changed = true;
+    }
+
+    draft.value.metadataValues[fieldKey] = values;
+    draft.value.fieldDrafts[fieldKey] = '';
+    editingFieldValue.value = null;
+    if (changed) {
+      scheduleSave();
+    }
+    return;
+  }
+
+  if (!nextValue) return;
   if (!values.includes(nextValue)) {
     draft.value.metadataValues[fieldKey] = [...values, nextValue];
+    scheduleSave();
   }
   draft.value.fieldDrafts[fieldKey] = '';
-  scheduleSave();
 }
 
 function removeFieldValue(fieldKey: string, value: string) {
@@ -759,6 +850,14 @@ function removeFieldValue(fieldKey: string, value: string) {
   draft.value.metadataValues[fieldKey] = (draft.value.metadataValues[fieldKey] || []).filter(
     (item) => item !== value,
   );
+  if (
+    editingFieldValue.value &&
+    editingFieldValue.value.fieldKey === fieldKey &&
+    editingFieldValue.value.originalValue === value
+  ) {
+    editingFieldValue.value = null;
+    draft.value.fieldDrafts[fieldKey] = '';
+  }
   scheduleSave();
 }
 
@@ -1746,6 +1845,7 @@ onBeforeUnmount(() => {
             >
               <div class="entity-info-field-scroll">
                 <input
+                  :ref="(el) => setFieldInputRef(field.key, el)"
                   :value="getFieldDraft(field.key)"
                   type="text"
                   class="entity-info-tag-input"
@@ -1753,16 +1853,31 @@ onBeforeUnmount(() => {
                   :placeholder="field.label"
                   @input="onFieldDraftInput(field.key, $event)"
                   @keydown.enter.prevent="addFieldValue(field.key)"
+                  @keydown="onFieldDraftKeydown(field.key, $event)"
                 />
-                <button
+                <div
                   v-for="value in getFieldValues(field.key)"
                   :key="`${field.key}:${value}`"
-                  type="button"
                   class="entity-info-tag"
-                  @click="removeFieldValue(field.key, value)"
                 >
-                  {{ value }}
-                </button>
+                  <button
+                    type="button"
+                    class="entity-info-tag-main"
+                    :class="{ link: field.key === 'links' }"
+                    :title="field.key === 'links' ? 'Открыть ссылку' : 'Редактировать'"
+                    @click="field.key === 'links' ? openFieldLink(value) : startEditFieldValue(field.key, value)"
+                  >
+                    {{ value }}
+                  </button>
+                  <button
+                    type="button"
+                    class="entity-info-tag-remove"
+                    title="Удалить"
+                    @click.stop="removeFieldValue(field.key, value)"
+                  >
+                    ×
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -2436,14 +2551,62 @@ onBeforeUnmount(() => {
 
 .entity-info-tag {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border: 1px solid #bfd5ff;
   border-radius: 999px;
   background: #eff6ff;
+  padding: 2px 4px 2px 8px;
+}
+
+.entity-info-tag-main {
+  border: none;
+  background: transparent;
   color: #1e40af;
   font-size: 11px;
   font-weight: 700;
-  padding: 5px 9px;
+  line-height: 1.25;
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 3px 0;
   cursor: pointer;
+}
+
+.entity-info-tag-main.link {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.entity-info-tag-remove {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(30, 64, 175, 0.14);
+  color: #1e3a8a;
+  font-size: 12px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.entity-info-tag:hover .entity-info-tag-remove,
+.entity-info-tag:focus-within .entity-info-tag-remove {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.entity-info-tag-remove:hover {
+  background: rgba(30, 64, 175, 0.24);
 }
 
 .entity-info-tag-input {
