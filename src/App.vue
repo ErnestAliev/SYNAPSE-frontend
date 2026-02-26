@@ -17,6 +17,8 @@ const showWorkspaceExtras = computed(() => {
   return route.name !== 'auth-login';
 });
 
+const showHeader = computed(() => route.name !== 'auth-login');
+
 function onPointerDown(event: PointerEvent) {
   if (!settingsOpen.value) return;
   const target = event.target as Node | null;
@@ -73,7 +75,7 @@ watch(
 
 <template>
   <div class="app-shell">
-    <AppHeader />
+    <AppHeader v-if="showHeader" />
 
     <main class="app-content">
       <RouterView />
