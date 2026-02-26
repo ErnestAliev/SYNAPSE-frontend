@@ -224,25 +224,27 @@ onBeforeUnmount(() => {
 }
 
 .dropdown-trigger {
-  height: 30px;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  background: var(--bg-card);
+  height: 27px;
+  border: 1px solid #d2dfef;
+  border-radius: 11px;
+  background: rgba(250, 253, 255, 0.96);
   color: var(--text-main);
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 10px;
-  min-width: 120px;
-  box-shadow: var(--shadow-base);
+  gap: 6px;
+  padding: 0 8px;
+  min-width: 0;
+  max-width: 152px;
+  box-shadow: none;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   transition: all 0.2s;
 }
 
 .dropdown-trigger:hover {
-  box-shadow: var(--shadow-hover);
+  border-color: #b8cdea;
+  box-shadow: none;
 }
 
 .dropdown-trigger.open {
@@ -251,7 +253,7 @@ onBeforeUnmount(() => {
 }
 
 .dropdown-label {
-  max-width: 164px;
+  max-width: 116px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -276,7 +278,7 @@ onBeforeUnmount(() => {
   border-radius: 12px;
   border: 1px solid var(--border-color);
   background: var(--bg-card);
-  box-shadow: var(--shadow-hover);
+  box-shadow: none;
 }
 
 .dropdown-controls {

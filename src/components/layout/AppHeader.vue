@@ -197,18 +197,18 @@ watch(
 
 <style scoped>
 .global-header {
-  height: 60px;
-  background: var(--bg-header);
+  height: 58px;
+  background: linear-gradient(180deg, rgba(248, 252, 255, 0.96) 0%, rgba(241, 247, 255, 0.9) 100%);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border-bottom: 1px solid rgba(226, 232, 240, 0.6);
+  border-bottom: 1px solid rgba(178, 197, 222, 0.72);
   display: flex;
   align-items: center;
   padding: 0 24px;
   gap: 14px;
   z-index: 100;
   flex-shrink: 0;
-  box-shadow: 0 2px 10px rgba(112, 144, 176, 0.05);
+  box-shadow: none;
 }
 
 .tabs-container {
@@ -218,6 +218,7 @@ watch(
   overflow-x: auto;
   flex: 1;
   justify-content: flex-start;
+  padding: 3px 0;
 }
 
 .tabs-container::-webkit-scrollbar {
@@ -234,19 +235,25 @@ watch(
 
 .tab-wrapper {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 20px;
+  border: 1px solid #d2dfef;
+  background: rgba(250, 253, 255, 0.96);
+  box-shadow: none;
 }
 
 .tab-btn {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 14px;
+  padding: 5px 12px;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 20px;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   transition: all 0.2s;
   white-space: nowrap;
@@ -254,7 +261,8 @@ watch(
 
 .tab-btn:hover {
   color: var(--text-main);
-  background: rgba(0, 0, 0, 0.03);
+  border-color: transparent;
+  background: rgba(237, 244, 255, 0.92);
 }
 
 .tab-btn.active {

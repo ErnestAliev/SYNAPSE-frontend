@@ -2302,11 +2302,12 @@ function closeEntityInfoModal() {
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 16px 32px;
+  padding: 10px 24px;
   background: var(--bg-header);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border-bottom: 1px solid rgba(226, 232, 240, 0.8);
+  border-bottom: 1px solid rgba(178, 197, 222, 0.72);
+  box-shadow: none;
   z-index: 90;
   flex-wrap: nowrap;
   overflow-x: auto;
@@ -2361,7 +2362,7 @@ function closeEntityInfoModal() {
   gap: 6px;
   background: var(--bg-card);
   border: 1px solid transparent;
-  padding: 6px 12px;
+  padding: 5px 10px;
   border-radius: 20px;
   min-width: 220px;
   width: 220px;
@@ -2379,7 +2380,7 @@ function closeEntityInfoModal() {
   border: none;
   outline: none;
   background: transparent;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-main);
   width: 100%;
 }
@@ -2397,19 +2398,19 @@ function closeEntityInfoModal() {
 }
 
 .filters-counter {
-  height: 30px;
+  height: 27px;
   display: inline-flex;
   align-items: center;
-  padding: 0 12px;
-  border-radius: 12px;
-  background: #ffffff;
-  border: 1px solid #dbe4f3;
+  padding: 0 10px;
+  border-radius: 11px;
+  background: rgba(250, 253, 255, 0.96);
+  border: 1px solid #d2dfef;
   color: #475569;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   line-height: 1;
   white-space: nowrap;
-  box-shadow: var(--shadow-base);
+  box-shadow: none;
   flex-shrink: 0;
 }
 
@@ -2428,12 +2429,12 @@ function closeEntityInfoModal() {
 }
 
 .connection-toolbar-btn {
-  height: 30px;
+  height: 27px;
   border-radius: 10px;
-  border: 1px solid #dbe4f3;
-  background: #ffffff;
+  border: 1px solid #d2dfef;
+  background: rgba(250, 253, 255, 0.96);
   color: #334155;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   padding: 0 10px;
   cursor: pointer;
