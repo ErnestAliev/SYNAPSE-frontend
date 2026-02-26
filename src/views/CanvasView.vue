@@ -4335,6 +4335,15 @@ watch(
 );
 
 watch(
+  activeMenuNode,
+  (node) => {
+    if (!node && contextMenu.value) {
+      closeContextMenu();
+    }
+  },
+);
+
+watch(
   activeEdgeNodes,
   (pair) => {
     if (!pair && edgeMenu.value) {
@@ -4680,7 +4689,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div
-        v-if="contextMenu"
+        v-if="contextMenu && activeMenuNode && contextMenuPosition"
         class="menu-backdrop"
         :style="menuBackdropStyle"
         @pointerdown="closeContextMenu"
