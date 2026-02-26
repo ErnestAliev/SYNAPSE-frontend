@@ -1,0 +1,51 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="ogBg" x1="90" y1="60" x2="1110" y2="570" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#EAF2FF"/>
+      <stop offset="1" stop-color="#DDEBFF"/>
+    </linearGradient>
+    <linearGradient id="ogCard" x1="116" y1="88" x2="508" y2="542" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2B7BFF"/>
+      <stop offset="1" stop-color="#1058FF"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#ogBg)"/>
+
+  <g opacity="0.26" stroke="#C9DBF8" stroke-width="1">
+    <path d="M0 90H1200"/>
+    <path d="M0 180H1200"/>
+    <path d="M0 270H1200"/>
+    <path d="M0 360H1200"/>
+    <path d="M0 450H1200"/>
+    <path d="M0 540H1200"/>
+    <path d="M120 0V630"/>
+    <path d="M240 0V630"/>
+    <path d="M360 0V630"/>
+    <path d="M480 0V630"/>
+    <path d="M600 0V630"/>
+    <path d="M720 0V630"/>
+    <path d="M840 0V630"/>
+    <path d="M960 0V630"/>
+    <path d="M1080 0V630"/>
+  </g>
+
+  <rect x="94" y="84" width="436" height="462" rx="110" fill="url(#ogCard)"/>
+
+  <g stroke="#FFFFFF" stroke-opacity="0.96" stroke-width="22" stroke-linecap="round">
+    <line x1="312" y1="315" x2="208" y2="211"/>
+    <line x1="312" y1="315" x2="416" y2="211"/>
+    <line x1="312" y1="315" x2="416" y2="419"/>
+    <line x1="312" y1="315" x2="208" y2="419"/>
+  </g>
+
+  <circle cx="312" cy="315" r="58" fill="#FFFFFF"/>
+  <circle cx="208" cy="211" r="34" fill="#FFFFFF"/>
+  <circle cx="416" cy="211" r="34" fill="#FFFFFF"/>
+  <circle cx="416" cy="419" r="34" fill="#FFFFFF"/>
+  <circle cx="208" cy="419" r="34" fill="#FFFFFF"/>
+
+  <text x="600" y="258" fill="#0F172A" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="90" font-weight="800">Synapse12</text>
+  <text x="600" y="332" fill="#334155" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="38" font-weight="600">Next-Gen Visual Knowledge Graph</text>
+  <text x="600" y="390" fill="#475569" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="31" font-weight="500">AI analytics workspace for entities, projects and connections</text>
+</svg>
