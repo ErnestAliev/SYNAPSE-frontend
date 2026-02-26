@@ -1530,18 +1530,19 @@ function closeEntityInfoModal() {
             {{ connectionSessionActionLabel() }}
           </button>
           <button
+            v-if="connectionImportSessionStatus === 'ready'"
             type="button"
             class="connection-import-btn"
-            :disabled="isConnectionImportBusy || connectionImportSessionStatus !== 'ready'"
+            :disabled="isConnectionImportBusy"
             @click="importWhatsAppContacts"
           >
-            {{
-              isConnectionImportBusy && connectionImportSessionStatus === 'importing'
-                ? 'Импорт...'
-                : 'Импортировать контакты'
-            }}
+            {{ isConnectionImportBusy ? 'Импорт...' : 'Импортировать контакты' }}
           </button>
         </div>
+
+        <p v-if="connectionImportSessionStatus !== 'ready'" class="connection-step-hint">
+          1) Сканируйте QR в WhatsApp -> Связанные устройства. 2) Дождитесь статуса «Подключено». 3) Нажмите «Импортировать контакты».
+        </p>
 
         <div v-if="connectionImportStats" class="connection-import-stats">
           <span>Всего найдено: {{ connectionImportStats.total }}</span>
@@ -2250,6 +2251,13 @@ function closeEntityInfoModal() {
   color: #b91c1c;
   font-size: 12px;
   font-weight: 600;
+}
+
+.connection-step-hint {
+  margin: 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .entity-phone-meta {
