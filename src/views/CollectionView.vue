@@ -236,6 +236,9 @@ interface WhatsappPhotoBackfillResult {
   updated: number;
   skippedNoIdentity: number;
   failed: number;
+  remaining?: number;
+  hasMore?: boolean;
+  limit?: number;
   session?: WhatsappSessionStatus;
 }
 
@@ -1135,17 +1138,79 @@ async function backfillWhatsAppPhotos() {
   scheduleConnectionImportPoll(700);
 
   try {
-    const { data } = await apiClient.post<WhatsappPhotoBackfillResult>(
-      '/integrations/whatsapp/photos/backfill',
-      {
-        sessionId: connectionImportSessionId.value,
-        onlyMissing: true,
-      },
-    );
-    applyConnectionSessionState(data.session);
+    const batchLimit = 80;
+    const maxBatches = 80;
+    let scannedTotal = 0;
+    let updatedTotal = 0;
+    let skippedNoIdentityTotal = 0;
+    let failedTotal = 0;
+    let remaining = 0;
+    let hasMore = true;
+    let batch = 0;
+
+    while (hasMore && batch < maxBatches) {
+      const cleanupRoles = batch === 0;
+      appendConnectionClientLog('photos.backfill.batch.request', {
+        batch: batch + 1,
+        limit: batchLimit,
+        cleanupRoles,
+      });
+
+      const { data } = await apiClient.post<WhatsappPhotoBackfillResult>(
+        '/integrations/whatsapp/photos/backfill',
+        {
+          sessionId: connectionImportSessionId.value,
+          onlyMissing: true,
+          limit: batchLimit,
+          cleanupRoles,
+        },
+        {
+          timeout: 120_000,
+        },
+      );
+
+      applyConnectionSessionState(data.session);
+
+      const scanned = Number(data.scanned) || 0;
+      const updated = Number(data.updated) || 0;
+      const skippedNoIdentity = Number(data.skippedNoIdentity) || 0;
+      const failed = Number(data.failed) || 0;
+      remaining = Math.max(0, Number(data.remaining) || 0);
+
+      scannedTotal += scanned;
+      updatedTotal += updated;
+      skippedNoIdentityTotal += skippedNoIdentity;
+      failedTotal += failed;
+      hasMore = Boolean(data.hasMore) && scanned > 0;
+
+      connectionImportMessage.value = `Догрузка фото: обновлено ${updatedTotal} из ${scannedTotal}. Осталось без фото: ${remaining}.`;
+      appendConnectionClientLog('photos.backfill.batch.response', {
+        batch: batch + 1,
+        scanned,
+        updated,
+        skippedNoIdentity,
+        failed,
+        remaining,
+        hasMore,
+      });
+
+      batch += 1;
+    }
+
     await entitiesStore.fetchEntities({ silent: true });
-    connectionImportMessage.value = `Фото обновлены: ${data.updated} из ${data.scanned}. Без идентификатора: ${data.skippedNoIdentity}.`;
-    appendConnectionClientLog('photos.backfill.response', data);
+
+    if (hasMore) {
+      connectionImportMessage.value = `Догрузка фото остановлена по лимиту батчей. Обновлено: ${updatedTotal} из ${scannedTotal}. Осталось без фото: ${remaining}.`;
+      appendConnectionClientLog('photos.backfill.partial_stop', {
+        scannedTotal,
+        updatedTotal,
+        skippedNoIdentityTotal,
+        failedTotal,
+        remaining,
+      });
+    } else {
+      connectionImportMessage.value = `Фото обновлены: ${updatedTotal} из ${scannedTotal}. Без идентификатора: ${skippedNoIdentityTotal}. Ошибок: ${failedTotal}. Осталось без фото: ${remaining}.`;
+    }
   } catch (error) {
     connectionImportError.value = formatConnectionImportError(error);
     appendConnectionClientLog('photos.backfill.error', { message: connectionImportError.value });
