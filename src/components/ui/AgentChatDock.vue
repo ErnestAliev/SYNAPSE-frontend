@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import axios from 'axios';
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useEntitiesStore } from '../../stores/entities';
 import type { EntityType } from '../../types/entity';
+import { apiClient } from '../../services/api';
 
 type ChatRole = 'user' | 'assistant';
 
@@ -20,6 +22,16 @@ interface ChatMessage {
   text: string;
   createdAt: string;
   attachments: EntityAttachment[];
+}
+
+interface AgentChatRequestScope {
+  type: 'collection' | 'project';
+  entityType?: EntityType;
+  projectId?: string;
+}
+
+interface AgentChatResponse {
+  reply: string;
 }
 
 const STORAGE_KEY = 'synapse12.agent-chat.v2';
@@ -42,6 +54,7 @@ const isOpen = ref(false);
 const messageDraft = ref('');
 const pendingUploads = ref<EntityAttachment[]>([]);
 const isVoiceListening = ref(false);
+const isSending = ref(false);
 
 const chatFeedRef = ref<HTMLElement | null>(null);
 const chatInputRef = ref<HTMLTextAreaElement | null>(null);
@@ -243,9 +256,75 @@ const scopedMessages = computed(() => {
   return messagesByScope.value[scopeKey.value] || [];
 });
 
-function pushMessage(role: ChatRole, text: string, attachments: EntityAttachment[] = []) {
+function formatApiError(error: unknown) {
+  if (axios.isAxiosError(error)) {
+    const status = error.response?.status;
+    const responseMessage =
+      (error.response?.data as { message?: string } | undefined)?.message || error.message;
+    return status ? `${responseMessage} (HTTP ${status})` : responseMessage;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return 'AI request failed';
+}
+
+function buildRequestScope(): AgentChatRequestScope | null {
+  if (routeScopeType.value === 'project-canvas') {
+    const projectId = typeof route.params.id === 'string' ? route.params.id.trim() : '';
+    if (!projectId) return null;
+    return {
+      type: 'project',
+      projectId,
+    };
+  }
+
+  return {
+    type: 'collection',
+    entityType: collectionType.value,
+  };
+}
+
+function buildHistoryPayload(messages: ChatMessage[]) {
+  return messages
+    .slice(-12)
+    .map((message) => ({
+      role: message.role,
+      text: message.text,
+    }))
+    .filter((message) => message.text.trim().length > 0);
+}
+
+function buildAttachmentsPayload(attachments: EntityAttachment[]) {
+  return attachments.slice(0, 6).map((attachment) => ({
+    name: attachment.name,
+    mime: attachment.mime,
+    size: attachment.size,
+  }));
+}
+
+async function requestAssistantReply(args: {
+  scope: AgentChatRequestScope;
+  message: string;
+  history: Array<{ role: ChatRole; text: string }>;
+  attachments: EntityAttachment[];
+}) {
+  const { data } = await apiClient.post<AgentChatResponse>('/ai/agent-chat', {
+    scope: args.scope,
+    message: args.message,
+    history: args.history,
+    attachments: buildAttachmentsPayload(args.attachments),
+  });
+
+  return typeof data.reply === 'string' ? data.reply.trim() : '';
+}
+
+function pushMessage(role: ChatRole, text: string, attachments: EntityAttachment[] = [], scope?: string) {
   const trimmed = text.trim();
   if (!trimmed && !attachments.length) return;
+  const targetScope = scope || scopeKey.value;
 
   const nextMessage: ChatMessage = {
     id: createMessageId(),
@@ -257,7 +336,7 @@ function pushMessage(role: ChatRole, text: string, attachments: EntityAttachment
 
   messagesByScope.value = {
     ...messagesByScope.value,
-    [scopeKey.value]: [...scopedMessages.value, nextMessage],
+    [targetScope]: [...(messagesByScope.value[targetScope] || []), nextMessage],
   };
   persistMessages();
 }
@@ -298,26 +377,65 @@ function toggleChat() {
   }
 }
 
-function sendMessage() {
+async function sendMessage() {
+  if (isSending.value) return;
+
   const value = messageDraft.value.trim();
   const attachments = [...pendingUploads.value];
   if (!value && !attachments.length) return;
+  const activeScope = buildRequestScope();
+  if (!activeScope) {
+    pushMessage('assistant', 'Не удалось определить контекст анализа.');
+    return;
+  }
 
-  pushMessage('user', value, attachments);
+  const activeScopeKey = scopeKey.value;
+  const historyPayload = buildHistoryPayload(messagesByScope.value[activeScopeKey] || []);
+
+  pushMessage('user', value, attachments, activeScopeKey);
   messageDraft.value = '';
   pendingUploads.value = [];
+
+  isSending.value = true;
 
   void nextTick(() => {
     autoResizeComposer();
     scrollToBottom('auto');
   });
+
+  try {
+    const reply = await requestAssistantReply({
+      scope: activeScope,
+      message: value,
+      history: historyPayload,
+      attachments,
+    });
+    if (reply) {
+      pushMessage('assistant', reply, [], activeScopeKey);
+    } else {
+      pushMessage('assistant', 'Недостаточно данных в текущем контексте.', [], activeScopeKey);
+    }
+  } catch (error) {
+    pushMessage(
+      'assistant',
+      `Не удалось получить ответ от LLM. ${formatApiError(error)}`,
+      [],
+      activeScopeKey,
+    );
+  } finally {
+    isSending.value = false;
+    void nextTick(() => {
+      scrollToBottom('auto');
+    });
+  }
 }
 
 function onComposerKeydown(event: KeyboardEvent) {
+  if (isSending.value) return;
   if (event.key !== 'Enter') return;
   if (event.shiftKey) return;
   event.preventDefault();
-  sendMessage();
+  void sendMessage();
 }
 
 function onTextInput() {
@@ -534,6 +652,14 @@ onBeforeUnmount(() => {
           </div>
           <time class="agent-chat-time">{{ toDisplayTime(message.createdAt) }}</time>
         </article>
+
+        <article v-if="isSending" class="agent-chat-message assistant">
+          <div class="agent-chat-bubble typing">
+            <span class="agent-chat-typing-dot"></span>
+            <span class="agent-chat-typing-dot"></span>
+            <span class="agent-chat-typing-dot"></span>
+          </div>
+        </article>
       </section>
 
       <section class="agent-chat-composer">
@@ -561,6 +687,7 @@ onBeforeUnmount(() => {
             class="agent-chat-input"
             rows="1"
             :placeholder="inputPlaceholder"
+            :disabled="isSending"
             @input="onTextInput"
             @keydown="onComposerKeydown"
           />
@@ -572,6 +699,7 @@ onBeforeUnmount(() => {
               type="button"
               class="agent-chat-tool-btn"
               title="Загрузка документа"
+              :disabled="isSending"
               @click="docInputRef?.click()"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -592,6 +720,7 @@ onBeforeUnmount(() => {
               type="button"
               class="agent-chat-tool-btn"
               title="Текстовый ввод"
+              :disabled="isSending"
               @click="focusComposer"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -604,6 +733,7 @@ onBeforeUnmount(() => {
               class="agent-chat-tool-btn"
               :class="{ active: isVoiceListening }"
               title="Голосовой ввод"
+              :disabled="isSending"
               @click="onVoiceToggle"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -619,7 +749,8 @@ onBeforeUnmount(() => {
             type="button"
             class="agent-chat-tool-btn send"
             title="Отправить"
-            @click="sendMessage"
+            :disabled="isSending"
+            @click="void sendMessage()"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M3 11.5 21 3l-7.5 18-2.6-7.1L3 11.5Z" />
@@ -781,6 +912,29 @@ onBeforeUnmount(() => {
   color: #ffffff;
 }
 
+.agent-chat-bubble.typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 12px;
+}
+
+.agent-chat-typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #8aa3cf;
+  animation: agentTypingPulse 1s ease-in-out infinite;
+}
+
+.agent-chat-typing-dot:nth-child(2) {
+  animation-delay: 0.18s;
+}
+
+.agent-chat-typing-dot:nth-child(3) {
+  animation-delay: 0.36s;
+}
+
 .agent-chat-text {
   margin: 0;
   white-space: pre-wrap;
@@ -878,6 +1032,11 @@ onBeforeUnmount(() => {
   color: #94a3b8;
 }
 
+.agent-chat-input:disabled {
+  color: #64748b;
+  cursor: wait;
+}
+
 .agent-chat-tools {
   display: flex;
   align-items: center;
@@ -933,12 +1092,43 @@ onBeforeUnmount(() => {
   border-color: #1058ff;
 }
 
+.agent-chat-tool-btn:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
+.agent-chat-tool-btn:disabled:hover {
+  color: #6b7a91;
+  border-color: #dbe4f3;
+  background: #ffffff;
+}
+
+.agent-chat-tool-btn.send:disabled,
+.agent-chat-tool-btn.send:disabled:hover {
+  color: #ffffff;
+  border-color: #1058ff;
+  background: #1058ff;
+  opacity: 0.65;
+}
+
 .agent-chat-hidden-input {
   position: absolute;
   width: 0;
   height: 0;
   opacity: 0;
   pointer-events: none;
+}
+
+@keyframes agentTypingPulse {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  50% {
+    transform: translateY(-2px);
+    opacity: 1;
+  }
 }
 
 @media (max-width: 768px) {
