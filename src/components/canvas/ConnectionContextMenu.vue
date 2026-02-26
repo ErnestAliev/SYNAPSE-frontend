@@ -7,12 +7,14 @@ const props = withDefaults(
     y: number;
     zoom: number;
     label?: string;
+    options?: string[];
     color?: string;
     arrowLeft?: boolean;
     arrowRight?: boolean;
   }>(),
   {
     label: '',
+    options: () => [],
     color: '#262626',
     arrowLeft: false,
     arrowRight: false,
@@ -27,20 +29,10 @@ const emit = defineEmits<{
   (event: 'delete-edge'): void;
   (event: 'color-change', payload: { color: string }): void;
   (event: 'label-change', payload: { label: string }): void;
+  (event: 'create-option', payload: { label: string }): void;
 }>();
 
-const relationOptions = [
-  'Связь не указана',
-  'Коллеги',
-  'Партнеры',
-  'Клиентские отношения',
-  'Профессиональные связи',
-  'Семейные связи',
-  'Друзья',
-  'Соперники',
-  'Романтические партнеры',
-  'Социальные связи',
-];
+const EMPTY_RELATION_LABEL = 'Связь не указана';
 
 const selectedLabel = ref(props.label || '');
 const searchQuery = ref(props.label || '');
@@ -50,12 +42,31 @@ const menuStyle = computed(() => ({
   top: `${props.y}px`,
   transform: `translate(-50%, -50%) scale(${props.zoom})`,
 }));
+const relationOptions = computed(() => {
+  const dedup = new Set<string>();
+  const normalized = props.options
+    .map((option) => option.trim().slice(0, 60))
+    .filter((option) => option.length > 0)
+    .filter((option) => {
+      const key = option.toLowerCase();
+      if (dedup.has(key)) return false;
+      dedup.add(key);
+      return true;
+    });
+
+  if (!normalized.some((option) => option.toLowerCase() === EMPTY_RELATION_LABEL.toLowerCase())) {
+    return [EMPTY_RELATION_LABEL, ...normalized];
+  }
+
+  return normalized;
+});
 const relationSearchOptions = computed(() => {
   const current = (props.label || '').trim();
-  if (!current || relationOptions.includes(current)) {
-    return relationOptions;
+  const options = relationOptions.value;
+  if (!current || options.some((option) => option.toLowerCase() === current.toLowerCase())) {
+    return options;
   }
-  return [current, ...relationOptions];
+  return [current, ...options];
 });
 const filteredRelationOptions = computed(() => {
   const query = searchQuery.value.trim().toLowerCase();
@@ -89,7 +100,7 @@ watch(
 
 function applyLabel(rawLabel: string) {
   const normalized = rawLabel.trim().slice(0, 60);
-  const nextLabel = normalized === 'Связь не указана' ? '' : normalized;
+  const nextLabel = normalized === EMPTY_RELATION_LABEL ? '' : normalized;
   emit('label-change', { label: nextLabel });
   selectedLabel.value = nextLabel;
   searchQuery.value = nextLabel;
@@ -120,6 +131,32 @@ function onSearchOptionClick(option: string) {
 
 function onSearchOptionPointerDown(event: PointerEvent) {
   event.preventDefault();
+}
+
+function onSearchKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+
+  const normalized = searchQuery.value.trim().slice(0, 60);
+  if (!normalized) {
+    applyLabel(EMPTY_RELATION_LABEL);
+    emit('close');
+    return;
+  }
+
+  const hasOption = relationSearchOptions.value.some(
+    (option) => option.toLowerCase() === normalized.toLowerCase(),
+  );
+  const matchedOption = relationSearchOptions.value.find(
+    (option) => option.toLowerCase() === normalized.toLowerCase(),
+  );
+
+  if (!hasOption && normalized.toLowerCase() !== EMPTY_RELATION_LABEL.toLowerCase()) {
+    emit('create-option', { label: normalized });
+  }
+
+  applyLabel(matchedOption || normalized);
+  emit('close');
 }
 
 function onColorInput(event: Event) {
@@ -188,6 +225,7 @@ function onColorInput(event: Event) {
         @focus="onSearchFocus"
         @blur="onSearchBlur"
         @input="onSearchInput"
+        @keydown="onSearchKeydown"
       />
 
       <div v-if="isSearchOpen" class="connection-search-dropdown">
@@ -196,7 +234,7 @@ function onColorInput(event: Event) {
           :key="option"
           type="button"
           class="connection-search-option"
-          :class="{ active: (selectedLabel || 'Связь не указана') === option }"
+          :class="{ active: (selectedLabel || EMPTY_RELATION_LABEL) === option }"
           @pointerdown="onSearchOptionPointerDown"
           @click="onSearchOptionClick(option)"
         >

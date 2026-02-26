@@ -69,6 +69,19 @@ const ENTITY_TYPE_CHAT_TARGET: Record<EntityType, string> = {
   task: 'задачу',
   shape: 'элемент',
 };
+const EMPTY_CONNECTION_RELATION_LABEL = 'Связь не указана';
+const DEFAULT_CONNECTION_RELATION_OPTIONS = [
+  EMPTY_CONNECTION_RELATION_LABEL,
+  'Коллеги',
+  'Партнеры',
+  'Клиентские отношения',
+  'Профессиональные связи',
+  'Семейные связи',
+  'Друзья',
+  'Соперники',
+  'Романтические партнеры',
+  'Социальные связи',
+];
 type CanvasArrangePreset = 'line' | 'circle' | 'square' | 'rectangle';
 
 interface CanvasBackgroundPreset {
@@ -666,6 +679,20 @@ const edgeMenuPosition = computed(() => {
     x: Math.min(Math.max(rawX, rect.left + padding), rect.right - padding),
     y: Math.min(Math.max(rawY, rect.top + padding), rect.bottom - padding),
   };
+});
+
+const connectionRelationOptions = computed(() => {
+  const customOptions = getCustomConnectionRelationOptions(authStore.user?.settings);
+  const dedup = new Set<string>();
+
+  return [...DEFAULT_CONNECTION_RELATION_OPTIONS, ...customOptions].filter((option) => {
+    const normalized = normalizeRelationOption(option);
+    if (!normalized) return false;
+    const key = normalized.toLowerCase();
+    if (dedup.has(key)) return false;
+    dedup.add(key);
+    return true;
+  });
 });
 
 const menuBackdropStyle = computed<CSSProperties>(() => {
@@ -1504,6 +1531,27 @@ function toStringArray(value: unknown) {
   return value
     .map((item) => (typeof item === 'string' ? item.trim() : ''))
     .filter((item) => item.length > 0);
+}
+
+function normalizeRelationOption(value: unknown) {
+  if (typeof value !== 'string') return '';
+  return value.trim().slice(0, 60);
+}
+
+function getCustomConnectionRelationOptions(settingsValue: unknown) {
+  const settings = toProfile(settingsValue);
+  const raw = toStringArray(settings.connectionRelationOptions);
+  const dedup = new Set<string>();
+
+  return raw
+    .map((item) => normalizeRelationOption(item))
+    .filter((item) => item.length > 0 && item.toLowerCase() !== EMPTY_CONNECTION_RELATION_LABEL.toLowerCase())
+    .filter((item) => {
+      const key = item.toLowerCase();
+      if (dedup.has(key)) return false;
+      dedup.add(key);
+      return true;
+    });
 }
 
 function toMetadataStringArray(value: unknown) {
@@ -2764,6 +2812,29 @@ function onEdgeLabelChange(payload: { label: string }) {
   patchActiveEdge({
     label: payload.label.trim().slice(0, 60),
   });
+}
+
+async function onEdgeCreateRelationOption(payload: { label: string }) {
+  const normalized = normalizeRelationOption(payload.label);
+  if (!normalized) return;
+  if (normalized.toLowerCase() === EMPTY_CONNECTION_RELATION_LABEL.toLowerCase()) return;
+
+  const alreadyKnown = connectionRelationOptions.value.some(
+    (option) => option.toLowerCase() === normalized.toLowerCase(),
+  );
+  if (alreadyKnown) return;
+  if (!authStore.isAuthenticated) return;
+
+  const currentCustom = getCustomConnectionRelationOptions(authStore.user?.settings);
+  const nextCustom = [...currentCustom, normalized];
+
+  try {
+    await authStore.updateSettings({
+      connectionRelationOptions: nextCustom,
+    });
+  } catch (error) {
+    console.error('Failed to save custom connection relation option', error);
+  }
 }
 
 function onEdgeDelete() {
@@ -4128,6 +4199,7 @@ onBeforeUnmount(() => {
       :y="edgeMenuPosition.y"
       :zoom="camera.zoom"
       :label="activeEdge.label || ''"
+      :options="connectionRelationOptions"
       :color="activeEdge.color || EDGE_DEFAULT_COLOR"
       :arrow-left="Boolean(activeEdge.arrowLeft)"
       :arrow-right="Boolean(activeEdge.arrowRight)"
@@ -4138,6 +4210,7 @@ onBeforeUnmount(() => {
       @delete-edge="onEdgeDelete"
       @color-change="onEdgeColorChange"
       @label-change="onEdgeLabelChange"
+      @create-option="onEdgeCreateRelationOption"
     />
 
     <div

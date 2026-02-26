@@ -235,5 +235,23 @@ export const useAuthStore = defineStore('auth', {
         this.initialized = true;
       }
     },
+
+    async updateSettings(settingsPatch: Record<string, unknown>) {
+      if (!this.user) {
+        throw new Error('Unauthorized');
+      }
+
+      const hasKeys = Object.keys(settingsPatch || {}).length > 0;
+      if (!hasKeys) {
+        return this.user;
+      }
+
+      const { data } = await apiClient.put<{ user: AuthUser }>('/auth/settings', {
+        settings: settingsPatch,
+      });
+
+      this.user = data.user;
+      return this.user;
+    },
   },
 });
