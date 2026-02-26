@@ -33,6 +33,8 @@ const emit = defineEmits<{
 const ENTITY_SYNC_DELAY = 420;
 const GRID_STEP = 40;
 const PROJECT_INSERT_GAP = GRID_STEP * 3;
+const FOOTER_CROP_VIEW_SIZE = 220;
+const FOOTER_CROP_OUTPUT_SIZE = 512;
 const ENTITY_TYPE_CHAT_TARGET: Record<EntityType, string> = {
   project: 'проект',
   connection: 'контакт',
@@ -224,11 +226,27 @@ const footerImageInputRef = ref<HTMLInputElement | null>(null);
 const footerLogoInputRef = ref<HTMLInputElement | null>(null);
 const footerEmojiOpen = ref(false);
 const footerLogoOpen = ref(false);
+const footerCropOpen = ref(false);
 const footerEmojiQuery = ref('');
 const footerLogoQuery = ref('');
 const footerCustomLogos = ref<LogoLibraryItem[]>([]);
 const footerCustomLogoName = ref('');
 const footerLogoUploadError = ref('');
+const footerCropError = ref('');
+const footerCropImageSrc = ref('');
+const footerCropScale = ref(1);
+const footerCropOffsetX = ref(0);
+const footerCropOffsetY = ref(0);
+const footerCropNaturalWidth = ref(0);
+const footerCropNaturalHeight = ref(0);
+const footerCropPointer = ref<{
+  id: number;
+  startX: number;
+  startY: number;
+  originX: number;
+  originY: number;
+} | null>(null);
+const isFooterCropBusy = ref(false);
 
 function toProfile(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -243,6 +261,11 @@ function logoImageFromProfile(profile: Record<string, unknown>) {
 
   const logo = raw as Record<string, unknown>;
   return typeof logo.image === 'string' ? logo.image : '';
+}
+
+function imageFromProfile(profile: Record<string, unknown>) {
+  const raw = profile.image;
+  return typeof raw === 'string' ? raw.trim() : '';
 }
 
 function toBooleanFlag(value: unknown) {
@@ -262,6 +285,9 @@ function toBooleanFlag(value: unknown) {
 function closeFooterPanels() {
   footerEmojiOpen.value = false;
   footerLogoOpen.value = false;
+  footerCropOpen.value = false;
+  footerCropError.value = '';
+  footerCropPointer.value = null;
 }
 
 function closeProfileFooter() {
@@ -1131,6 +1157,10 @@ const filteredFooterCustomLogos = computed(() => {
   });
 });
 
+const footerCropImageStyle = computed(() => ({
+  transform: `translate(calc(-50% + ${footerCropOffsetX.value}px), calc(-50% + ${footerCropOffsetY.value}px)) scale(${footerCropScale.value})`,
+}));
+
 const activeFields = computed(() => {
   const type = draft.value?.type || 'shape';
   return getEntityContextFields(type);
@@ -1229,6 +1259,217 @@ function queueEntityNameUpdate(nextName: string) {
   }
 }
 
+async function loadImageElement(src: string) {
+  return await new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Image load failed'));
+    image.src = src;
+  });
+}
+
+function cropBaseSize() {
+  const naturalWidth = footerCropNaturalWidth.value;
+  const naturalHeight = footerCropNaturalHeight.value;
+  const view = FOOTER_CROP_VIEW_SIZE;
+  if (!naturalWidth || !naturalHeight) {
+    return { width: view, height: view };
+  }
+
+  const ratio = naturalWidth / naturalHeight;
+  if (ratio >= 1) {
+    return { width: view * ratio, height: view };
+  }
+  return { width: view, height: view / ratio };
+}
+
+function clampCropScale(value: number) {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(4, Math.max(1, value));
+}
+
+function clampCropOffsets(
+  offsetX: number,
+  offsetY: number,
+  scaleValue = footerCropScale.value,
+) {
+  const scale = clampCropScale(scaleValue);
+  const view = FOOTER_CROP_VIEW_SIZE;
+  const base = cropBaseSize();
+  const renderedWidth = base.width * scale;
+  const renderedHeight = base.height * scale;
+  const maxX = Math.max(0, (renderedWidth - view) / 2);
+  const maxY = Math.max(0, (renderedHeight - view) / 2);
+
+  const nextX = Math.max(-maxX, Math.min(maxX, offsetX));
+  const nextY = Math.max(-maxY, Math.min(maxY, offsetY));
+  return { x: nextX, y: nextY };
+}
+
+function resetFooterCropTransform() {
+  footerCropScale.value = 1;
+  footerCropOffsetX.value = 0;
+  footerCropOffsetY.value = 0;
+}
+
+async function initFooterCrop(imageSrc: string) {
+  const src = imageSrc.trim();
+  if (!src) {
+    footerCropImageSrc.value = '';
+    footerCropNaturalWidth.value = 0;
+    footerCropNaturalHeight.value = 0;
+    resetFooterCropTransform();
+    return;
+  }
+
+  const image = await loadImageElement(src);
+  footerCropImageSrc.value = src;
+  footerCropNaturalWidth.value = image.naturalWidth || 0;
+  footerCropNaturalHeight.value = image.naturalHeight || 0;
+  resetFooterCropTransform();
+}
+
+function toggleFooterCropPanel() {
+  if (footerCropOpen.value) {
+    footerCropOpen.value = false;
+    footerCropPointer.value = null;
+    return;
+  }
+
+  footerEmojiOpen.value = false;
+  footerLogoOpen.value = false;
+  footerCropError.value = '';
+
+  const sourceImage = imageFromProfile(toProfile(currentEntity.value?.profile));
+  footerCropOpen.value = true;
+
+  if (!sourceImage) {
+    footerCropImageSrc.value = '';
+    footerCropNaturalWidth.value = 0;
+    footerCropNaturalHeight.value = 0;
+    footerCropError.value = 'Сначала добавьте фото.';
+    return;
+  }
+
+  void initFooterCrop(sourceImage).catch(() => {
+    footerCropImageSrc.value = '';
+    footerCropNaturalWidth.value = 0;
+    footerCropNaturalHeight.value = 0;
+    footerCropError.value = 'Не удалось открыть фото для обрезки.';
+  });
+}
+
+function onFooterCropScaleInput(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const nextScale = clampCropScale(Number(input?.value || 1));
+  footerCropScale.value = nextScale;
+  const clamped = clampCropOffsets(footerCropOffsetX.value, footerCropOffsetY.value, nextScale);
+  footerCropOffsetX.value = clamped.x;
+  footerCropOffsetY.value = clamped.y;
+}
+
+function onFooterCropPointerDown(event: PointerEvent) {
+  if (!footerCropImageSrc.value) return;
+  const target = event.currentTarget as HTMLElement | null;
+  target?.setPointerCapture(event.pointerId);
+  footerCropPointer.value = {
+    id: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    originX: footerCropOffsetX.value,
+    originY: footerCropOffsetY.value,
+  };
+}
+
+function onFooterCropPointerMove(event: PointerEvent) {
+  const pointer = footerCropPointer.value;
+  if (!pointer || pointer.id !== event.pointerId) return;
+
+  const deltaX = event.clientX - pointer.startX;
+  const deltaY = event.clientY - pointer.startY;
+  const clamped = clampCropOffsets(
+    pointer.originX + deltaX,
+    pointer.originY + deltaY,
+    footerCropScale.value,
+  );
+  footerCropOffsetX.value = clamped.x;
+  footerCropOffsetY.value = clamped.y;
+}
+
+function onFooterCropPointerUp(event: PointerEvent) {
+  const target = event.currentTarget as HTMLElement | null;
+  if (target?.hasPointerCapture(event.pointerId)) {
+    target.releasePointerCapture(event.pointerId);
+  }
+  if (footerCropPointer.value?.id === event.pointerId) {
+    footerCropPointer.value = null;
+  }
+}
+
+async function applyFooterCrop() {
+  if (isFooterCropBusy.value) return;
+  if (!footerCropImageSrc.value) {
+    footerCropError.value = 'Сначала добавьте фото.';
+    return;
+  }
+
+  isFooterCropBusy.value = true;
+  footerCropError.value = '';
+  try {
+    const image = await loadImageElement(footerCropImageSrc.value);
+    const canvas = document.createElement('canvas');
+    canvas.width = FOOTER_CROP_OUTPUT_SIZE;
+    canvas.height = FOOTER_CROP_OUTPUT_SIZE;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Canvas context unavailable');
+    }
+
+    const base = cropBaseSize();
+    const scale = clampCropScale(footerCropScale.value);
+    const renderedWidth = base.width * scale;
+    const renderedHeight = base.height * scale;
+    const topLeftX = FOOTER_CROP_VIEW_SIZE / 2 - renderedWidth / 2 + footerCropOffsetX.value;
+    const topLeftY = FOOTER_CROP_VIEW_SIZE / 2 - renderedHeight / 2 + footerCropOffsetY.value;
+    const outputScale = FOOTER_CROP_OUTPUT_SIZE / FOOTER_CROP_VIEW_SIZE;
+
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.save();
+    context.beginPath();
+    context.arc(
+      FOOTER_CROP_OUTPUT_SIZE / 2,
+      FOOTER_CROP_OUTPUT_SIZE / 2,
+      FOOTER_CROP_OUTPUT_SIZE / 2,
+      0,
+      Math.PI * 2,
+    );
+    context.closePath();
+    context.clip();
+    context.drawImage(
+      image,
+      topLeftX * outputScale,
+      topLeftY * outputScale,
+      renderedWidth * outputScale,
+      renderedHeight * outputScale,
+    );
+    context.restore();
+
+    const croppedImage = canvas.toDataURL('image/jpeg', 0.9);
+    queueProfilePatch({
+      image: croppedImage,
+      emoji: '',
+      logo: undefined,
+    });
+    footerCropImageSrc.value = croppedImage;
+    footerCropOpen.value = false;
+    footerCropPointer.value = null;
+  } catch {
+    footerCropError.value = 'Не удалось сохранить обрезку фото.';
+  } finally {
+    isFooterCropBusy.value = false;
+  }
+}
+
 function onFooterColorClick() {
   footerColorInputRef.value?.click();
 }
@@ -1258,6 +1499,13 @@ async function onFooterImageInput(event: Event) {
     logo: undefined,
   });
 
+  footerCropError.value = '';
+  if (footerCropOpen.value) {
+    void initFooterCrop(image).catch(() => {
+      footerCropError.value = 'Не удалось открыть фото для обрезки.';
+    });
+  }
+
   if (input) {
     input.value = '';
   }
@@ -1269,6 +1517,7 @@ function toggleFooterEmojiPanel() {
     return;
   }
   footerLogoOpen.value = false;
+  footerCropOpen.value = false;
   footerEmojiOpen.value = true;
 }
 
@@ -1293,6 +1542,7 @@ function toggleFooterLogoPanel() {
     return;
   }
   footerEmojiOpen.value = false;
+  footerCropOpen.value = false;
   footerLogoOpen.value = true;
 }
 
@@ -1686,6 +1936,22 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="menu-circle-btn"
+            :class="{ active: footerCropOpen }"
+            title="Обрезать фото"
+            @click="toggleFooterCropPanel"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M14 4h6v6" />
+              <path d="M10 20H4v-6" />
+              <path d="M20 10V4h-6" />
+              <path d="M4 14v6h6" />
+              <path d="M14 10 7 17" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            class="menu-circle-btn"
             :class="{ active: footerEmojiOpen }"
             title="Эмодзи"
             @click="toggleFooterEmojiPanel"
@@ -1781,6 +2047,64 @@ onBeforeUnmount(() => {
                 </span>
                 <span class="entity-footer-logo-name">{{ logo.name }}</span>
               </button>
+            </div>
+          </div>
+
+          <div v-if="footerCropOpen" class="entity-footer-panel crop-panel" @pointerdown.stop>
+            <div
+              class="entity-footer-crop-stage"
+              @pointerdown="onFooterCropPointerDown"
+              @pointermove="onFooterCropPointerMove"
+              @pointerup="onFooterCropPointerUp"
+              @pointercancel="onFooterCropPointerUp"
+            >
+              <div
+                class="entity-footer-crop-circle"
+                :class="{ dragging: Boolean(footerCropPointer) }"
+              >
+                <img
+                  v-if="footerCropImageSrc"
+                  :src="footerCropImageSrc"
+                  alt=""
+                  class="entity-footer-crop-image"
+                  :style="footerCropImageStyle"
+                  draggable="false"
+                />
+                <span v-else class="entity-footer-crop-empty">Нет фото</span>
+              </div>
+            </div>
+
+            <input
+              type="range"
+              min="1"
+              max="4"
+              step="0.01"
+              :value="footerCropScale"
+              class="entity-footer-crop-slider"
+              @input="onFooterCropScaleInput"
+            />
+
+            <div class="entity-footer-crop-actions">
+              <button
+                type="button"
+                class="entity-footer-upload-btn"
+                :disabled="isFooterCropBusy"
+                @click="toggleFooterCropPanel"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                class="entity-footer-upload-btn primary"
+                :disabled="isFooterCropBusy || !footerCropImageSrc"
+                @click="applyFooterCrop"
+              >
+                {{ isFooterCropBusy ? 'Сохранение...' : 'Сохранить' }}
+              </button>
+            </div>
+
+            <div v-if="footerCropError" class="entity-footer-upload-error">
+              {{ footerCropError }}
             </div>
           </div>
         </section>
@@ -2472,6 +2796,11 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.entity-footer-panel.crop-panel {
+  width: 306px;
+  max-width: min(306px, calc(100vw - 96px));
+}
+
 .entity-footer-search {
   width: 100%;
   height: 30px;
@@ -2547,6 +2876,18 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+.entity-footer-upload-btn.primary {
+  border-color: #1058ff;
+  background: #1058ff;
+  color: #ffffff;
+}
+
+.entity-footer-upload-btn.primary:hover {
+  border-color: #0c46cc;
+  background: #0c46cc;
+  color: #ffffff;
+}
+
 .entity-footer-upload-btn:hover {
   border-color: #bfd5ff;
   background: #eef4ff;
@@ -2610,6 +2951,65 @@ onBeforeUnmount(() => {
   color: #334155;
   font-size: 12px;
   font-weight: 700;
+}
+
+.entity-footer-crop-stage {
+  border: 1px solid #dbe4f3;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.entity-footer-crop-circle {
+  width: 220px;
+  height: 220px;
+  border-radius: 999px;
+  border: 1px solid #bfd5ff;
+  overflow: hidden;
+  position: relative;
+  background: radial-gradient(circle at 50% 44%, #eef4ff, #dbeafe);
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+}
+
+.entity-footer-crop-circle.dragging {
+  cursor: grabbing;
+}
+
+.entity-footer-crop-image {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform-origin: center center;
+  pointer-events: none;
+}
+
+.entity-footer-crop-empty {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.entity-footer-crop-slider {
+  width: 100%;
+}
+
+.entity-footer-crop-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .entity-delete-confirm-overlay {
