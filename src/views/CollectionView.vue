@@ -69,6 +69,22 @@ const QUICK_FILTER_ITEMS: ReadonlyArray<{ key: QuickFilterKey; label: string }> 
   { key: 'hideWithoutName', label: 'Скрыть без имени' },
 ];
 
+const IMPORTANCE_VALUE_MAP: Record<string, string> = {
+  низкая: 'Низкая',
+  low: 'Низкая',
+  l: 'Низкая',
+  средняя: 'Средняя',
+  medium: 'Средняя',
+  med: 'Средняя',
+  m: 'Средняя',
+  высокая: 'Высокая',
+  high: 'Высокая',
+  h: 'Высокая',
+  critical: 'Высокая',
+  критично: 'Высокая',
+  критическая: 'Высокая',
+};
+
 const ENTITY_FILTER_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   connection: [
     { key: 'tags', label: 'Теги' },
@@ -543,8 +559,20 @@ function toStringArray(value: unknown) {
     .filter((item) => item.length > 0);
 }
 
+function normalizeImportanceList(values: string[]) {
+  const result: string[] = [];
+  for (const value of values) {
+    const mapped = IMPORTANCE_VALUE_MAP[value.trim().toLowerCase()] || '';
+    if (!mapped) continue;
+    if (!result.includes(mapped)) result.push(mapped);
+  }
+  return result.slice(0, 1);
+}
+
 function metadataList(entity: Entity, key: MetadataFieldKey) {
-  return toStringArray(toMetadata(entity)[key]);
+  const values = toStringArray(toMetadata(entity)[key]);
+  if (key !== 'importance') return values;
+  return normalizeImportanceList(values);
 }
 
 function hasEntityPhoto(entity: Entity) {

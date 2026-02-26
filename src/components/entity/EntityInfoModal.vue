@@ -109,6 +109,21 @@ interface MetadataFieldConfig {
 const DEFAULT_METADATA_FIELD_MAX_LENGTH = 32;
 const LINKS_METADATA_FIELD_MAX_LENGTH = 2048;
 const LINK_CHIP_FALLBACK_LABEL = 'Website';
+const IMPORTANCE_LEVELS = ['Низкая', 'Средняя', 'Высокая'] as const;
+const IMPORTANCE_LEVEL_MAP: Record<string, (typeof IMPORTANCE_LEVELS)[number]> = {
+  низкая: 'Низкая',
+  low: 'Низкая',
+  l: 'Низкая',
+  средняя: 'Средняя',
+  medium: 'Средняя',
+  med: 'Средняя',
+  m: 'Средняя',
+  высокая: 'Высокая',
+  high: 'Высокая',
+  h: 'Высокая',
+  критично: 'Высокая',
+  critical: 'Высокая',
+};
 const LINK_CHIP_LABELS: Array<{ label: string; domains: string[] }> = [
   { label: 'Instagram', domains: ['instagram.com'] },
   { label: 'Facebook', domains: ['facebook.com', 'fb.com'] },
@@ -214,6 +229,7 @@ const draft = ref<{
   name: string;
   type: EntityType;
   description: string;
+  importanceSource: 'auto' | 'manual';
   metadataValues: Record<string, string[]>;
   fieldDrafts: Record<string, string>;
   textInput: string;
@@ -334,6 +350,26 @@ function toMetadataStringArray(value: unknown) {
   return toStringArray(value);
 }
 
+function normalizeImportanceLabel(value: string) {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return '';
+  return IMPORTANCE_LEVEL_MAP[normalized] || '';
+}
+
+function normalizeImportanceSource(value: unknown): 'auto' | 'manual' {
+  if (typeof value !== 'string') return 'auto';
+  return value.trim().toLowerCase() === 'manual' ? 'manual' : 'auto';
+}
+
+function normalizeImportanceArray(value: unknown) {
+  const list = toMetadataStringArray(value);
+  for (const item of list) {
+    const normalized = normalizeImportanceLabel(item);
+    if (normalized) return [normalized];
+  }
+  return [] as string[];
+}
+
 function getEntityContextFields(type: EntityType) {
   return ENTITY_CONTEXT_FIELDS[type] || [];
 }
@@ -341,7 +377,10 @@ function getEntityContextFields(type: EntityType) {
 function buildEntityMetadataValues(type: EntityType, metadata: Record<string, unknown>) {
   const values: Record<string, string[]> = {};
   for (const field of getEntityContextFields(type)) {
-    values[field.key] = toMetadataStringArray(metadata[field.key]);
+    values[field.key] =
+      field.key === 'importance'
+        ? normalizeImportanceArray(metadata[field.key])
+        : toMetadataStringArray(metadata[field.key]);
   }
   return values;
 }
@@ -527,6 +566,7 @@ function loadDraft(entityId: string) {
     name: entity.name || '',
     type: entity.type,
     description: typeof aiMetadata.description === 'string' ? aiMetadata.description : '',
+    importanceSource: normalizeImportanceSource(aiMetadata.importance_source),
     metadataValues: buildEntityMetadataValues(entity.type, aiMetadata),
     fieldDrafts: buildEntityFieldDrafts(entity.type),
     textInput: '',
@@ -585,6 +625,16 @@ function persistDraft(entityId: string) {
 
   for (const field of getEntityContextFields(currentDraft.type)) {
     nextMetadata[field.key] = currentDraft.metadataValues[field.key] || [];
+  }
+
+  const hasImportanceField = getEntityContextFields(currentDraft.type).some(
+    (field) => field.key === 'importance',
+  );
+  if (hasImportanceField) {
+    const normalizedImportance = normalizeImportanceArray(nextMetadata.importance);
+    nextMetadata.importance = normalizedImportance;
+    nextMetadata.importance_source =
+      currentDraft.importanceSource === 'manual' && normalizedImportance.length ? 'manual' : 'auto';
   }
 
   entitiesStore.queueEntityUpdate(
@@ -835,9 +885,20 @@ function getLinkChipLabel(value: string) {
 
 function addFieldValue(fieldKey: string) {
   if (!draft.value) return;
-  const nextValue = (draft.value.fieldDrafts[fieldKey] || '')
+  const isImportanceField = fieldKey === 'importance';
+  let nextValue = (draft.value.fieldDrafts[fieldKey] || '')
     .trim()
     .slice(0, getMetadataFieldMaxLength(fieldKey));
+  if (isImportanceField) {
+    if (!draft.value.description.trim()) {
+      draft.value.metadataValues[fieldKey] = [];
+      draft.value.fieldDrafts[fieldKey] = '';
+      draft.value.importanceSource = 'auto';
+      scheduleSave();
+      return;
+    }
+    nextValue = normalizeImportanceLabel(nextValue);
+  }
   const values = [...(draft.value.metadataValues[fieldKey] || [])];
   const editing = editingFieldValue.value;
 
@@ -845,6 +906,20 @@ function addFieldValue(fieldKey: string) {
     if (!nextValue) {
       draft.value.fieldDrafts[fieldKey] = '';
       editingFieldValue.value = null;
+      return;
+    }
+
+    if (isImportanceField) {
+      const nextValues = nextValue ? [nextValue] : [];
+      const changed =
+        values.length !== nextValues.length || (nextValues.length > 0 && values[0] !== nextValues[0]);
+      draft.value.metadataValues[fieldKey] = nextValues;
+      draft.value.fieldDrafts[fieldKey] = '';
+      editingFieldValue.value = null;
+      if (changed) {
+        draft.value.importanceSource = nextValues.length ? 'manual' : 'auto';
+        scheduleSave();
+      }
       return;
     }
 
@@ -875,6 +950,16 @@ function addFieldValue(fieldKey: string) {
   }
 
   if (!nextValue) return;
+  if (isImportanceField) {
+    const currentValue = values[0] || '';
+    if (values.length !== 1 || currentValue !== nextValue) {
+      draft.value.metadataValues[fieldKey] = [nextValue];
+      draft.value.importanceSource = 'manual';
+      scheduleSave();
+    }
+    draft.value.fieldDrafts[fieldKey] = '';
+    return;
+  }
   if (!values.includes(nextValue)) {
     draft.value.metadataValues[fieldKey] = [...values, nextValue];
     scheduleSave();
@@ -887,6 +972,9 @@ function removeFieldValue(fieldKey: string, value: string) {
   draft.value.metadataValues[fieldKey] = (draft.value.metadataValues[fieldKey] || []).filter(
     (item) => item !== value,
   );
+  if (fieldKey === 'importance') {
+    draft.value.importanceSource = 'auto';
+  }
   if (
     editingFieldValue.value &&
     editingFieldValue.value.fieldKey === fieldKey &&
@@ -903,6 +991,15 @@ function onNameInput() {
 }
 
 function onDescriptionInput() {
+  if (
+    draft.value &&
+    Object.prototype.hasOwnProperty.call(draft.value.metadataValues, 'importance') &&
+    !draft.value.description.trim()
+  ) {
+    draft.value.metadataValues.importance = [];
+    draft.value.fieldDrafts.importance = '';
+    draft.value.importanceSource = 'auto';
+  }
   scheduleSave();
 }
 
