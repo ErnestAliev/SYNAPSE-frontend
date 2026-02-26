@@ -800,8 +800,8 @@ onBeforeUnmount(() => {
 <style scoped>
 .agent-chat-dock {
   position: fixed;
-  right: 18px;
-  bottom: 18px;
+  right: calc(18px + env(safe-area-inset-right, 0px));
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px) + var(--synapse-vv-bottom-offset, 0px));
   z-index: 165;
 }
 
@@ -844,9 +844,9 @@ onBeforeUnmount(() => {
 
 .agent-chat-panel {
   position: fixed;
-  right: 18px;
+  right: calc(18px + env(safe-area-inset-right, 0px));
   top: 60px;
-  bottom: 18px;
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px) + var(--synapse-vv-bottom-offset, 0px));
   width: min(420px, calc(100vw - 20px));
   border-radius: 16px;
   border: 1px solid #dbe4f3;
@@ -1165,14 +1165,14 @@ onBeforeUnmount(() => {
 @media (max-width: 768px) {
   .agent-chat-panel {
     top: 60px;
-    right: 10px;
-    bottom: 10px;
+    right: calc(10px + env(safe-area-inset-right, 0px));
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px) + var(--synapse-vv-bottom-offset, 0px));
     width: calc(100vw - 20px);
   }
 
   .agent-chat-dock {
-    right: 10px;
-    bottom: 10px;
+    right: calc(10px + env(safe-area-inset-right, 0px));
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px) + var(--synapse-vv-bottom-offset, 0px));
   }
 }
 </style>

@@ -481,6 +481,7 @@ const isLibraryOpen = ref(false);
 const activeLibraryType = ref<EntityType>('shape');
 const hoveredLibraryType = ref<EntityType | null>(null);
 const libraryQuery = ref('');
+const mobileLibraryExpanded = ref(false);
 const selectedMobileLibraryEntityId = ref('');
 const libraryActionMessage = ref('');
 const libraryActionMessageTimer = ref<ReturnType<typeof setTimeout> | null>(null);
@@ -2327,6 +2328,22 @@ function closeLibraryPanel() {
   isLibraryOpen.value = false;
   hoveredLibraryType.value = null;
   libraryQuery.value = '';
+  if (isMobileLikeDevice.value) {
+    mobileLibraryExpanded.value = false;
+  }
+}
+
+function toggleMobileLibraryPanel() {
+  if (!isMobileLikeDevice.value) return;
+  mobileLibraryExpanded.value = !mobileLibraryExpanded.value;
+  if (!mobileLibraryExpanded.value) {
+    isLibraryOpen.value = false;
+    hoveredLibraryType.value = null;
+    libraryQuery.value = '';
+    selectedMobileLibraryEntityId.value = '';
+    clearLibraryActionMessageTimer();
+    libraryActionMessage.value = '';
+  }
 }
 
 function closeNodeSearch() {
@@ -2398,11 +2415,18 @@ function clearTouchGesture() {
 function updateMobileLikeDeviceFlag() {
   if (typeof window === 'undefined') {
     isMobileLikeDevice.value = false;
+    mobileLibraryExpanded.value = false;
     return;
   }
 
+  const wasMobile = isMobileLikeDevice.value;
   const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
   isMobileLikeDevice.value = coarsePointer || window.innerWidth <= 1024;
+  if (isMobileLikeDevice.value && !wasMobile) {
+    mobileLibraryExpanded.value = false;
+  } else if (!isMobileLikeDevice.value && wasMobile) {
+    mobileLibraryExpanded.value = true;
+  }
 }
 
 function beginTouchGesture() {
@@ -2612,7 +2636,6 @@ function onMobileLibraryAddSelected() {
 
   onLibraryItemAddToCanvas(selected);
   selectedMobileLibraryEntityId.value = '';
-  isLibraryOpen.value = false;
 }
 
 function onMobileAlignSelect(event: Event) {
@@ -3516,6 +3539,10 @@ function onLibraryCategoryHover(type: EntityType | null) {
 }
 
 function onLibraryCategoryClick(type: EntityType) {
+  if (isMobileLikeDevice.value && !mobileLibraryExpanded.value) {
+    mobileLibraryExpanded.value = true;
+  }
+
   if (activeLibraryType.value === type) {
     isLibraryOpen.value = !isLibraryOpen.value;
   } else {
@@ -4166,8 +4193,35 @@ onBeforeUnmount(() => {
       @dragleave="onViewportDragLeave"
       @drop="onViewportDrop"
     >
-      <aside class="canvas-library" @pointerdown.stop @wheel.stop>
-        <div class="library-rail">
+      <aside
+        class="canvas-library"
+        :class="{
+          'mobile-collapsed': isMobileLikeDevice && !mobileLibraryExpanded,
+          'mobile-expanded': isMobileLikeDevice && mobileLibraryExpanded,
+        }"
+        @pointerdown.stop
+        @wheel.stop
+      >
+        <button
+          v-if="isMobileLikeDevice"
+          type="button"
+          class="library-mobile-toggle"
+          :aria-label="mobileLibraryExpanded ? 'Свернуть панель сущностей' : 'Развернуть панель сущностей'"
+          @click="toggleMobileLibraryPanel"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              v-if="mobileLibraryExpanded"
+              d="M15 6 9 12l6 6"
+            />
+            <path
+              v-else
+              d="m9 6 6 6-6 6"
+            />
+          </svg>
+        </button>
+
+        <div v-if="!isMobileLikeDevice || mobileLibraryExpanded" class="library-rail">
           <button
             v-for="category in libraryCategories"
             :key="category.type"
@@ -4186,7 +4240,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <div v-if="isLibraryOpen" class="library-panel">
+        <div v-if="isLibraryOpen && (!isMobileLikeDevice || mobileLibraryExpanded)" class="library-panel">
           <div class="library-search-row">
             <AppIcon name="search" />
             <input
@@ -4722,14 +4776,18 @@ onBeforeUnmount(() => {
 }
 
 .canvas-library {
-  position: absolute;
+  position: fixed;
   left: 14px;
-  top: 50%;
+  top: 50vh;
   transform: translateY(-50%);
   z-index: 40;
   display: flex;
   align-items: flex-start;
   gap: 10px;
+}
+
+.library-mobile-toggle {
+  display: none;
 }
 
 .library-rail {
@@ -5369,9 +5427,9 @@ onBeforeUnmount(() => {
 }
 
 .canvas-controls {
-  position: absolute;
+  position: fixed;
   left: 50%;
-  bottom: 14px;
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px) + var(--synapse-vv-bottom-offset, 0px));
   transform: translateX(-50%);
   z-index: 45;
   display: inline-flex;
@@ -6169,6 +6227,66 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1024px) {
+  .canvas-library {
+    left: 0;
+    top: 50vh;
+    gap: 8px;
+  }
+
+  .canvas-library.mobile-collapsed {
+    gap: 0;
+  }
+
+  .canvas-library.mobile-collapsed .library-rail,
+  .canvas-library.mobile-collapsed .library-panel {
+    display: none;
+  }
+
+  .library-mobile-toggle {
+    display: inline-flex;
+    width: 30px;
+    height: 74px;
+    border-radius: 0 12px 12px 0;
+    border: 1px solid rgba(226, 232, 240, 0.92);
+    border-left: none;
+    background: rgba(255, 255, 255, 0.95);
+    color: #64748b;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 10px 22px rgba(112, 144, 176, 0.2);
+  }
+
+  .library-mobile-toggle svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .library-mobile-toggle:hover {
+    color: #1058ff;
+    background: #eef4ff;
+  }
+
+  .library-rail {
+    padding: 7px;
+    gap: 6px;
+  }
+
+  .library-rail-btn {
+    width: 34px;
+    height: 34px;
+  }
+
+  .library-rail-btn :deep(svg) {
+    width: 16px;
+    height: 16px;
+  }
+
   .library-panel {
     width: min(84vw, 320px);
     max-height: min(62dvh, 560px);
@@ -6185,7 +6303,7 @@ onBeforeUnmount(() => {
   }
 
   .canvas-controls {
-    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px) + var(--synapse-vv-bottom-offset, 0px));
     gap: 6px;
     padding: 6px;
     max-width: calc(100% - 20px);

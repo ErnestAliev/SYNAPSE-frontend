@@ -32,16 +32,39 @@ function toggleSettingsMenu() {
   settingsOpen.value = !settingsOpen.value;
 }
 
+function updateViewportBottomOffset() {
+  if (typeof window === 'undefined') return;
+
+  const vv = window.visualViewport;
+  if (!vv) {
+    document.documentElement.style.setProperty('--synapse-vv-bottom-offset', '0px');
+    return;
+  }
+
+  const offset = Math.max(0, Math.round(window.innerHeight - (vv.height + vv.offsetTop)));
+  document.documentElement.style.setProperty('--synapse-vv-bottom-offset', `${offset}px`);
+}
+
 onMounted(async () => {
   await authStore.bootstrap();
   if (authStore.isAuthenticated) {
     await entitiesStore.bootstrap({ deferConnection: true });
   }
   document.addEventListener('pointerdown', onPointerDown);
+  window.addEventListener('resize', updateViewportBottomOffset);
+  window.addEventListener('orientationchange', updateViewportBottomOffset);
+  window.visualViewport?.addEventListener('resize', updateViewportBottomOffset);
+  window.visualViewport?.addEventListener('scroll', updateViewportBottomOffset);
+  updateViewportBottomOffset();
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onPointerDown);
+  window.removeEventListener('resize', updateViewportBottomOffset);
+  window.removeEventListener('orientationchange', updateViewportBottomOffset);
+  window.visualViewport?.removeEventListener('resize', updateViewportBottomOffset);
+  window.visualViewport?.removeEventListener('scroll', updateViewportBottomOffset);
+  document.documentElement.style.setProperty('--synapse-vv-bottom-offset', '0px');
 });
 
 watch(
@@ -134,7 +157,8 @@ watch(
 <style scoped>
 .app-shell {
   position: relative;
-  height: 100vh;
+  height: 100dvh;
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
 }
@@ -153,9 +177,9 @@ watch(
 }
 
 .settings-wrap {
-  position: absolute;
-  left: 18px;
-  bottom: 18px;
+  position: fixed;
+  left: calc(18px + env(safe-area-inset-left, 0px));
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px) + var(--synapse-vv-bottom-offset, 0px));
   z-index: 120;
 }
 
