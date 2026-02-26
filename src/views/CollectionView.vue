@@ -564,6 +564,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   clearConnectionImportPoll();
+  void stopConnectionSession({ silent: true });
 });
 
 watch(
@@ -743,9 +744,27 @@ async function startConnectionSession() {
   }
 }
 
-function closeConnectionImportModal() {
+async function stopConnectionSession(options?: { silent?: boolean }) {
+  const sessionId = connectionImportSessionId.value;
+  if (!sessionId) return;
+
+  try {
+    await apiClient.delete(`/integrations/whatsapp/session/${sessionId}`);
+  } catch (error) {
+    if (!options?.silent) {
+      connectionImportError.value = formatConnectionImportError(error);
+    }
+  } finally {
+    connectionImportSessionId.value = '';
+    connectionImportQrCode.value = '';
+    connectionImportSessionStatus.value = 'idle';
+  }
+}
+
+async function closeConnectionImportModal() {
   if (isConnectionImportBusy.value) return;
   clearConnectionImportPoll();
+  await stopConnectionSession({ silent: true });
   isConnectionImportModalOpen.value = false;
 }
 
@@ -804,6 +823,8 @@ async function importWhatsAppContacts() {
   } finally {
     isConnectionImportBusy.value = false;
   }
+
+  await stopConnectionSession({ silent: true });
 }
 
 function connectionSessionStatusLabel() {
@@ -819,10 +840,18 @@ function connectionSessionStatusLabel() {
 
 function connectionSessionActionLabel() {
   const status = connectionImportSessionStatus.value;
-  if (status === 'ready') return 'Переподключить';
+  if (status === 'ready') return 'Перезапустить QR';
   if (status === 'qr') return 'Обновить QR';
-  if (status === 'initializing' || status === 'importing') return 'Обновить статус';
-  return 'Подключить WhatsApp';
+  return 'Получить QR';
+}
+
+function connectionProgressValue() {
+  const status = connectionImportSessionStatus.value;
+  if (status === 'initializing') return 20;
+  if (status === 'qr') return 45;
+  if (status === 'importing') return 80;
+  if (status === 'ready') return 100;
+  return 0;
 }
 
 function connectionPhone(entity: Entity) {
@@ -1470,16 +1499,6 @@ function closeEntityInfoModal() {
           Разовое подключение: если в WhatsApp появятся новые контакты, запустите импорт повторно.
         </p>
 
-        <div class="connection-provider-item active">
-          <div class="connection-provider-icon">W</div>
-          <div class="connection-provider-content">
-            <div class="connection-provider-name">WhatsApp</div>
-            <div class="connection-provider-hint">
-              Статус: {{ connectionSessionStatusLabel() }}
-            </div>
-          </div>
-        </div>
-
         <div
           class="connection-status-badge"
           :class="`status-${connectionImportSessionStatus}`"
@@ -1487,9 +1506,19 @@ function closeEntityInfoModal() {
           {{ connectionSessionStatusLabel() }}
         </div>
 
+        <div class="connection-progress-wrap">
+          <div class="connection-progress-track">
+            <div class="connection-progress-fill" :style="{ width: `${connectionProgressValue()}%` }" />
+          </div>
+          <div class="connection-progress-value">{{ connectionProgressValue() }}%</div>
+        </div>
+
         <div v-if="connectionImportQrCode" class="connection-qr-wrap">
           <img class="connection-qr-image" :src="connectionImportQrCode" alt="WhatsApp QR" />
           <p class="connection-qr-hint">Сканируйте QR-код в WhatsApp на телефоне.</p>
+        </div>
+        <div v-else class="connection-qr-placeholder">
+          QR появится здесь после запуска сессии.
         </div>
 
         <div class="connection-import-actions">
@@ -2117,6 +2146,35 @@ function closeEntityInfoModal() {
   color: #b91c1c;
 }
 
+.connection-progress-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.connection-progress-track {
+  flex: 1;
+  height: 7px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.connection-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #3b82f6, #1058ff);
+  transition: width 0.2s ease;
+}
+
+.connection-progress-value {
+  min-width: 40px;
+  text-align: right;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .connection-qr-wrap {
   width: 100%;
   border-radius: 12px;
@@ -2127,6 +2185,21 @@ function closeEntityInfoModal() {
   flex-direction: column;
   align-items: center;
   gap: 8px;
+}
+
+.connection-qr-placeholder {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px dashed #cbd5e1;
+  background: #f8fafc;
+  min-height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  font-size: 12px;
+  text-align: center;
+  padding: 12px;
 }
 
 .connection-qr-image {
