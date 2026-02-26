@@ -806,6 +806,7 @@ onMounted(async () => {
   }
 
   applyStoredFiltersForType(activeType.value);
+  void entitiesStore.fetchTypeIfNeeded(activeType.value);
 });
 
 onBeforeUnmount(() => {
@@ -861,6 +862,7 @@ watch(activeType, () => {
   isDeleteWhatsappConfirmVisible.value = false;
   isConnectionPhotosBusy.value = false;
   applyStoredFiltersForType(activeType.value);
+  void entitiesStore.fetchTypeIfNeeded(activeType.value);
 });
 
 watch(

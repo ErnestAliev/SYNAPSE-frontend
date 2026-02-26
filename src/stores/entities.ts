@@ -40,6 +40,21 @@ interface EntitiesState {
   initialized: boolean;
   flashStates: Partial<Record<EntityType, number | null>>;
   lastCreatedIdByType: Partial<Record<EntityType, string | null>>;
+  loadedTypes: Partial<Record<EntityType, boolean>>;
+}
+
+interface FetchEntitiesOptions {
+  silent?: boolean;
+  type?: EntityType;
+  excludeType?: EntityType;
+  merge?: boolean;
+}
+
+function createInitialLoadedTypeState(): Partial<Record<EntityType, boolean>> {
+  return ENTITY_TYPES.reduce((acc, type) => {
+    acc[type] = false;
+    return acc;
+  }, {} as Partial<Record<EntityType, boolean>>);
 }
 
 function mergeEntityPatch(base: Partial<Entity>, patch: Partial<Entity>): Partial<Entity> {
@@ -91,6 +106,7 @@ export const useEntitiesStore = defineStore('entities', {
       acc[type] = null;
       return acc;
     }, {} as Partial<Record<EntityType, string | null>>),
+    loadedTypes: createInitialLoadedTypeState(),
   }),
 
   getters: {
@@ -212,26 +228,61 @@ export const useEntitiesStore = defineStore('entities', {
       return 'Failed to load entities';
     },
 
-    async fetchEntities(options?: { silent?: boolean }) {
+    async fetchEntities(options?: FetchEntitiesOptions) {
       const silent = options?.silent ?? false;
+      const requestedType = options?.type;
+      const excludedType = requestedType ? undefined : options?.excludeType;
+      const merge = options?.merge ?? false;
       if (!silent) {
         this.loading = true;
       }
       this.error = null;
 
       try {
+        const params: Record<string, string | number> = { _t: Date.now() };
+        if (requestedType) {
+          params.type = requestedType;
+        } else if (excludedType) {
+          params.excludeType = excludedType;
+        }
+
         const { data } = await apiClient.get<Entity[]>('/entities', {
-          params: { _t: Date.now() },
+          params,
           timeout: ENTITIES_FETCH_TIMEOUT_MS,
         });
 
         cleanupExpiredRecentlyDeleted();
-        const nextItems = data.filter((item) => !recentlyDeletedEntityIds.has(item._id));
+        const nextFetchedItems = data.filter((item) => !recentlyDeletedEntityIds.has(item._id));
 
-        this.items = nextItems;
+        if (merge) {
+          const merged = new Map(this.items.map((item) => [item._id, item] as const));
+          for (const item of nextFetchedItems) {
+            merged.set(item._id, item);
+          }
+          this.items = Array.from(merged.values());
+        } else {
+          this.items = nextFetchedItems;
+        }
 
-        const existingIds = new Set(nextItems.map((item) => item._id));
-        for (const type of ENTITY_TYPES) {
+        if (requestedType) {
+          this.loadedTypes[requestedType] = true;
+        } else if (excludedType) {
+          for (const type of ENTITY_TYPES) {
+            this.loadedTypes[type] = type !== excludedType;
+          }
+        } else {
+          for (const type of ENTITY_TYPES) {
+            this.loadedTypes[type] = true;
+          }
+        }
+
+        const existingIds = new Set(this.items.map((item) => item._id));
+        const affectedTypes = requestedType
+          ? [requestedType]
+          : excludedType
+            ? ENTITY_TYPES.filter((type) => type !== excludedType)
+            : ENTITY_TYPES;
+        for (const type of affectedTypes) {
           const lastCreatedId = this.lastCreatedIdByType[type];
           if (lastCreatedId && !existingIds.has(lastCreatedId)) {
             this.lastCreatedIdByType[type] = null;
@@ -246,12 +297,36 @@ export const useEntitiesStore = defineStore('entities', {
       }
     },
 
-    async bootstrap() {
+    async bootstrap(options?: { deferConnection?: boolean }) {
       if (this.initialized) return;
+      const deferConnection = options?.deferConnection ?? true;
+
+      if (deferConnection) {
+        await this.fetchEntities({ excludeType: 'connection' });
+        this.initialized = true;
+        if (!this.loadedTypes.connection) {
+          void this.fetchEntities({
+            silent: true,
+            type: 'connection',
+            merge: true,
+          });
+        }
+        return;
+      }
 
       await this.fetchEntities();
 
       this.initialized = true;
+    },
+
+    async fetchTypeIfNeeded(type: EntityType) {
+      if (this.loadedTypes[type]) return;
+
+      await this.fetchEntities({
+        silent: true,
+        type,
+        merge: true,
+      });
     },
 
     triggerFlash(type: EntityType) {

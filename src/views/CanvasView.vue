@@ -47,6 +47,8 @@ const PROFILE_PROGRESS_CIRCUMFERENCE = 2 * Math.PI * PROFILE_PROGRESS_RADIUS;
 const NODE_MENU_HINT_STORAGE_PREFIX = 'synapse12.hints.nodeMenu.v3';
 const NODE_MENU_HINT_FIRST_PROJECT_STORAGE_KEY = 'synapse12.hints.nodeMenu.firstProjectId.v1';
 const LIBRARY_DRAG_MIME = 'application/x-synapse12-entity-id';
+const MOBILE_NODE_ADD_PADDING_PX = 24;
+const MOBILE_NODE_ADD_EXTRA_GAP_PX = 18;
 const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   project: 'Проект',
   connection: 'Подключение',
@@ -497,6 +499,16 @@ const viewportSyncTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const nodeSearchOpen = ref(false);
 const nodeSearchQuery = ref('');
 const nodeSearchInputRef = ref<HTMLInputElement | null>(null);
+const isMobileLikeDevice = ref(false);
+const touchPointers = ref<Map<number, { clientX: number; clientY: number }>>(new Map());
+const touchGesture = ref<{
+  startDistance: number;
+  startMidX: number;
+  startMidY: number;
+  startWorldX: number;
+  startWorldY: number;
+  startZoom: number;
+} | null>(null);
 
 const routeProjectId = computed(() => {
   const id = route.params.id;
@@ -2321,6 +2333,208 @@ function clientToWorld(clientX: number, clientY: number) {
   };
 }
 
+function clientToViewportLocal(clientX: number, clientY: number) {
+  const viewport = viewportRef.value;
+  if (!viewport) {
+    return { x: 0, y: 0 };
+  }
+
+  const rect = viewport.getBoundingClientRect();
+  return {
+    x: clientX - rect.left,
+    y: clientY - rect.top,
+  };
+}
+
+function collectTouchPointsSorted() {
+  return Array.from(touchPointers.value.entries())
+    .sort((left, right) => left[0] - right[0])
+    .map(([, point]) => point);
+}
+
+function clearTouchGesture() {
+  touchGesture.value = null;
+}
+
+function updateMobileLikeDeviceFlag() {
+  if (typeof window === 'undefined') {
+    isMobileLikeDevice.value = false;
+    return;
+  }
+
+  const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
+  isMobileLikeDevice.value = coarsePointer || window.innerWidth <= 1024;
+}
+
+function beginTouchGesture() {
+  const points = collectTouchPointsSorted();
+  if (points.length < 2) {
+    clearTouchGesture();
+    return;
+  }
+
+  const first = points[0];
+  const second = points[1];
+  if (!first || !second) {
+    clearTouchGesture();
+    return;
+  }
+
+  const localFirst = clientToViewportLocal(first.clientX, first.clientY);
+  const localSecond = clientToViewportLocal(second.clientX, second.clientY);
+  const startMidX = (localFirst.x + localSecond.x) / 2;
+  const startMidY = (localFirst.y + localSecond.y) / 2;
+  const startDistance = Math.max(
+    8,
+    Math.hypot(localSecond.x - localFirst.x, localSecond.y - localFirst.y),
+  );
+
+  touchGesture.value = {
+    startDistance,
+    startMidX,
+    startMidY,
+    startWorldX: (startMidX - camera.value.x) / camera.value.zoom,
+    startWorldY: (startMidY - camera.value.y) / camera.value.zoom,
+    startZoom: camera.value.zoom,
+  };
+}
+
+function applyTouchGesture() {
+  const gesture = touchGesture.value;
+  const points = collectTouchPointsSorted();
+  if (!gesture || points.length < 2) return;
+
+  const first = points[0];
+  const second = points[1];
+  if (!first || !second) return;
+
+  const localFirst = clientToViewportLocal(first.clientX, first.clientY);
+  const localSecond = clientToViewportLocal(second.clientX, second.clientY);
+  const nextMidX = (localFirst.x + localSecond.x) / 2;
+  const nextMidY = (localFirst.y + localSecond.y) / 2;
+  const nextDistance = Math.max(
+    8,
+    Math.hypot(localSecond.x - localFirst.x, localSecond.y - localFirst.y),
+  );
+  const scaleFactor = nextDistance / gesture.startDistance;
+  const nextZoom = clampZoom(gesture.startZoom * scaleFactor);
+
+  camera.value.zoom = nextZoom;
+  camera.value.x = nextMidX - gesture.startWorldX * nextZoom;
+  camera.value.y = nextMidY - gesture.startWorldY * nextZoom;
+}
+
+function resolveViewportWorldBounds(paddingPx = MOBILE_NODE_ADD_PADDING_PX) {
+  const viewport = viewportRef.value;
+  if (!viewport) {
+    return {
+      left: -240,
+      top: -180,
+      right: 240,
+      bottom: 180,
+    };
+  }
+
+  const rect = viewport.getBoundingClientRect();
+  const maxX = Math.max(paddingPx, rect.width - paddingPx);
+  const maxY = Math.max(paddingPx, rect.height - paddingPx);
+
+  const left = (paddingPx - camera.value.x) / camera.value.zoom;
+  const top = (paddingPx - camera.value.y) / camera.value.zoom;
+  const right = (maxX - camera.value.x) / camera.value.zoom;
+  const bottom = (maxY - camera.value.y) / camera.value.zoom;
+
+  return {
+    left: Math.min(left, right),
+    top: Math.min(top, bottom),
+    right: Math.max(left, right),
+    bottom: Math.max(top, bottom),
+  };
+}
+
+function canPlaceNodeAtWorldPosition(worldX: number, worldY: number) {
+  const candidateRadius = NODE_CIRCLE_DIAMETER / 2;
+  const requiredGap =
+    AUTO_CONNECT_EDGE_GAP_PX / Math.max(camera.value.zoom, 0.0001) + MOBILE_NODE_ADD_EXTRA_GAP_PX;
+
+  for (const existingNode of nodes.value) {
+    const existingRadius = getNodeRadiusWorld(existingNode);
+    const minDistance = existingRadius + candidateRadius + requiredGap;
+    const distance = Math.hypot(existingNode.x - worldX, existingNode.y - worldY);
+    if (distance < minDistance) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function findSafeViewportPlacement() {
+  const bounds = resolveViewportWorldBounds();
+  const step = GRID_STEP * 2;
+  const startX = snap(bounds.left + GRID_STEP);
+  const startY = snap(bounds.top + GRID_STEP);
+  const endX = snap(bounds.right - GRID_STEP);
+  const endY = snap(bounds.bottom - GRID_STEP);
+
+  for (let y = startY; y <= endY; y += step) {
+    for (let x = startX; x <= endX; x += step) {
+      const snappedX = snap(x);
+      const snappedY = snap(y);
+      if (canPlaceNodeAtWorldPosition(snappedX, snappedY)) {
+        return { x: snappedX, y: snappedY };
+      }
+    }
+  }
+
+  const centerWorld = clientToWorld(
+    (viewportRef.value?.getBoundingClientRect().left || 0) +
+      (viewportRef.value?.getBoundingClientRect().width || 0) / 2,
+    (viewportRef.value?.getBoundingClientRect().top || 0) +
+      (viewportRef.value?.getBoundingClientRect().height || 0) / 2,
+  );
+
+  return {
+    x: snap(centerWorld.x),
+    y: snap(centerWorld.y),
+  };
+}
+
+function addEntityNodeToCanvas(
+  entityId: string,
+  worldX: number,
+  worldY: number,
+  options?: { autoConnect?: boolean },
+) {
+  const entity = entitiesStore.byId(entityId);
+  if (!entity) return;
+
+  const localNodeId = createLocalNodeId();
+  nodes.value.push({
+    id: localNodeId,
+    entityId: entity._id,
+    x: snap(worldX),
+    y: snap(worldY),
+    scale: 1,
+  });
+  selectNodesByIds([localNodeId], { additive: false });
+
+  if (options?.autoConnect ?? true) {
+    connectNodeToNearest(localNodeId);
+  }
+  queueCanvasSync();
+}
+
+function onLibraryItemAddToCanvas(item: MenuSearchItem) {
+  closeContextMenu();
+  closeEdgeMenu();
+  nameEditingNodeId.value = null;
+  const placement = findSafeViewportPlacement();
+  addEntityNodeToCanvas(item.id, placement.x, placement.y, {
+    autoConnect: false,
+  });
+}
+
 function centerViewportOn(worldX: number, worldY: number) {
   const viewport = viewportRef.value;
   if (!viewport) return false;
@@ -2931,6 +3145,24 @@ function onViewportPointerDown(event: PointerEvent) {
     closeResetCanvasConfirm();
   }
 
+  if (event.pointerType === 'touch') {
+    touchPointers.value.set(event.pointerId, {
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+
+    if (touchPointers.value.size > 1) {
+      event.preventDefault();
+      clearSelectionRect();
+      draggingNode.value = null;
+      draggingGroup.value = null;
+      isPanning.value = false;
+      suppressMenuOpenUntil.value = Date.now() + 180;
+      beginTouchGesture();
+      return;
+    }
+  }
+
   const canPanByMiddleButton = event.button === 1;
 
   if (canPanByMiddleButton) {
@@ -2995,6 +3227,22 @@ function onViewportClick(event: MouseEvent) {
 }
 
 function onWindowPointerMove(event: PointerEvent) {
+  if (event.pointerType === 'touch' && touchPointers.value.has(event.pointerId)) {
+    touchPointers.value.set(event.pointerId, {
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+
+    if (touchPointers.value.size > 1) {
+      if (!touchGesture.value) {
+        beginTouchGesture();
+      }
+      applyTouchGesture();
+      event.preventDefault();
+      return;
+    }
+  }
+
   if (selectionRect.value) {
     const world = clientToWorld(event.clientX, event.clientY);
     const deltaX = world.x - selectionRect.value.startX;
@@ -3057,7 +3305,25 @@ function onWindowPointerMove(event: PointerEvent) {
   node.y = nextY;
 }
 
-function onWindowPointerUp() {
+function onWindowPointerUp(event: PointerEvent) {
+  if (event.pointerType === 'touch') {
+    const hadTouchGesture = Boolean(touchGesture.value);
+    touchPointers.value.delete(event.pointerId);
+    if (touchPointers.value.size < 2) {
+      clearTouchGesture();
+    }
+
+    if (hadTouchGesture) {
+      suppressMenuOpenUntil.value = Date.now() + 160;
+      clearSelectionRect();
+      if (touchPointers.value.size <= 1) {
+        draggingNode.value = null;
+        draggingGroup.value = null;
+      }
+      return;
+    }
+  }
+
   if (selectionRect.value) {
     const applied = finalizeSelectionRect();
     if (applied) {
@@ -3113,6 +3379,8 @@ function resetTransientStates() {
   isPanning.value = false;
   draggingNode.value = null;
   draggingGroup.value = null;
+  touchPointers.value.clear();
+  clearTouchGesture();
   isCanvasDropActive.value = false;
   viewportDragDepth.value = 0;
   clearSelectionRect();
@@ -3239,24 +3507,32 @@ function onViewportDrop(event: DragEvent) {
   closeContextMenu();
   closeEdgeMenu();
   nameEditingNodeId.value = null;
-
-  const localNodeId = createLocalNodeId();
-  nodes.value.push({
-    id: localNodeId,
-    entityId: draggedEntity._id,
-    x: snap(world.x),
-    y: snap(world.y),
-    scale: 1,
+  addEntityNodeToCanvas(draggedEntity._id, world.x, world.y, {
+    autoConnect: true,
   });
-  selectNodesByIds([localNodeId], { additive: false });
-  connectNodeToNearest(localNodeId);
-  queueCanvasSync();
 }
 
 function onNodeDragStart(payload: {
   nodeId: string;
   pointerEvent: PointerEvent;
 }) {
+  if (payload.pointerEvent.pointerType === 'touch') {
+    touchPointers.value.set(payload.pointerEvent.pointerId, {
+      clientX: payload.pointerEvent.clientX,
+      clientY: payload.pointerEvent.clientY,
+    });
+
+    if (touchPointers.value.size > 1) {
+      clearSelectionRect();
+      draggingNode.value = null;
+      draggingGroup.value = null;
+      isPanning.value = false;
+      suppressMenuOpenUntil.value = Date.now() + 180;
+      beginTouchGesture();
+      return;
+    }
+  }
+
   if (payload.pointerEvent.shiftKey) return;
 
   const node = nodes.value.find((item) => item.id === payload.nodeId);
@@ -3720,10 +3996,12 @@ watch(
 );
 
 onMounted(() => {
+  updateMobileLikeDeviceFlag();
   window.addEventListener('pointermove', onWindowPointerMove);
   window.addEventListener('pointerup', onWindowPointerUp);
   window.addEventListener('pointercancel', onWindowPointerUp);
   window.addEventListener('keydown', onWindowKeyDown);
+  window.addEventListener('resize', updateMobileLikeDeviceFlag);
   window.addEventListener('blur', resetTransientStates);
 });
 
@@ -3737,6 +4015,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerup', onWindowPointerUp);
   window.removeEventListener('pointercancel', onWindowPointerUp);
   window.removeEventListener('keydown', onWindowKeyDown);
+  window.removeEventListener('resize', updateMobileLikeDeviceFlag);
   window.removeEventListener('blur', resetTransientStates);
 });
 </script>
@@ -3801,28 +4080,40 @@ onBeforeUnmount(() => {
             </div>
 
             <template v-else>
-              <button
+              <div
                 v-for="item in filteredLibraryItems"
                 :key="item.id"
-                type="button"
                 class="library-item"
-                draggable="true"
-                @dragstart="onLibraryItemDragStart($event, item)"
               >
-                <span class="library-item-node-wrap">
-                  <ProfileProgressRing class="library-item-progress" :value="item.progress" :size="40" :stroke-width="3" />
-                  <span
-                    class="library-item-node"
-                    :style="{ background: item.color, borderColor: item.color }"
-                  >
-                    <img v-if="item.image && !item.hasLogo" class="library-item-image" :src="item.image" alt="" />
-                    <img v-else-if="item.hasLogo" class="library-item-logo" :src="item.image" alt="" />
-                    <span v-else-if="item.emoji" class="library-item-emoji">{{ item.emoji }}</span>
-                    <AppIcon v-else :name="item.type" class="library-item-icon" />
+                <button
+                  type="button"
+                  class="library-item-main"
+                  :draggable="!isMobileLikeDevice"
+                  @dragstart="onLibraryItemDragStart($event, item)"
+                >
+                  <span class="library-item-node-wrap">
+                    <ProfileProgressRing class="library-item-progress" :value="item.progress" :size="40" :stroke-width="3" />
+                    <span
+                      class="library-item-node"
+                      :style="{ background: item.color, borderColor: item.color }"
+                    >
+                      <img v-if="item.image && !item.hasLogo" class="library-item-image" :src="item.image" alt="" />
+                      <img v-else-if="item.hasLogo" class="library-item-logo" :src="item.image" alt="" />
+                      <span v-else-if="item.emoji" class="library-item-emoji">{{ item.emoji }}</span>
+                      <AppIcon v-else :name="item.type" class="library-item-icon" />
+                    </span>
                   </span>
-                </span>
-                <span class="library-item-name">{{ item.name }}</span>
-              </button>
+                  <span class="library-item-name">{{ item.name }}</span>
+                </button>
+                <button
+                  v-if="isMobileLikeDevice"
+                  type="button"
+                  class="library-item-add-btn"
+                  @click="onLibraryItemAddToCanvas(item)"
+                >
+                  Добавить на холст
+                </button>
+              </div>
             </template>
           </div>
         </div>
@@ -4658,6 +4949,14 @@ onBeforeUnmount(() => {
 
 .library-item {
   width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.library-item-main {
+  width: 100%;
+  appearance: none;
   border: 1px solid transparent;
   border-radius: 12px;
   background: #ffffff;
@@ -4675,14 +4974,35 @@ onBeforeUnmount(() => {
     box-shadow 0.16s ease;
 }
 
-.library-item:hover {
+.library-item-main:hover {
   border-color: #cfe0ff;
   transform: translateY(-1px);
   box-shadow: 0 8px 18px rgba(112, 144, 176, 0.17);
 }
 
-.library-item:active {
+.library-item-main:active {
   cursor: grabbing;
+}
+
+.library-item-add-btn {
+  height: 30px;
+  border-radius: 10px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    color 0.16s ease;
+}
+
+.library-item-add-btn:hover {
+  border-color: #bfd5ff;
+  background: #eef4ff;
+  color: #1058ff;
 }
 
 .library-item-node-wrap {

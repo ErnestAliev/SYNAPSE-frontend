@@ -35,7 +35,7 @@ function toggleSettingsMenu() {
 onMounted(async () => {
   await authStore.bootstrap();
   if (authStore.isAuthenticated) {
-    await entitiesStore.bootstrap();
+    await entitiesStore.bootstrap({ deferConnection: true });
   }
   document.addEventListener('pointerdown', onPointerDown);
 });
@@ -49,7 +49,7 @@ watch(
   async (isAuthenticated, wasAuthenticated) => {
     if (isAuthenticated) {
       if (!entitiesStore.initialized) {
-        await entitiesStore.bootstrap();
+        await entitiesStore.bootstrap({ deferConnection: true });
         return;
       }
 
@@ -61,6 +61,18 @@ watch(
       entitiesStore.items = [];
       entitiesStore.initialized = false;
       entitiesStore.error = null;
+      entitiesStore.loadedTypes = {
+        project: false,
+        connection: false,
+        person: false,
+        company: false,
+        event: false,
+        resource: false,
+        goal: false,
+        result: false,
+        task: false,
+        shape: false,
+      };
     }
   },
 );

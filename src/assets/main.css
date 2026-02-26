@@ -46,3 +46,17 @@ a {
 #app {
   height: 100vh;
 }
+
+@media (max-width: 1024px) {
+  input[type='search'],
+  .dropdown-search,
+  .connection-search-input,
+  .entities-search-input,
+  .library-search-input,
+  .canvas-node-search-input,
+  .emoji-search,
+  .logo-search,
+  .entity-footer-search {
+    font-size: 16px !important;
+  }
+}

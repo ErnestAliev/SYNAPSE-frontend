@@ -1003,10 +1003,6 @@ function onDescriptionInput() {
   scheduleSave();
 }
 
-function focusChatInput() {
-  chatInputRef.value?.focus();
-}
-
 function autoResizeChatInput() {
   const input = chatInputRef.value;
   if (!input) return;
@@ -1873,6 +1869,19 @@ onBeforeUnmount(() => {
 <template>
   <div class="entity-info-overlay" @pointerdown.self="closeModal">
     <div v-if="draft" class="entity-info-modal" @pointerdown.stop>
+      <button
+        type="button"
+        class="entity-info-close-btn entity-info-close-btn-desktop"
+        title="Закрыть"
+        aria-label="Закрыть"
+        @click="closeModal"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 6 18 18" />
+          <path d="M18 6 6 18" />
+        </svg>
+      </button>
+
       <header class="entity-info-header">
         <div v-if="modalIcon" class="entity-info-progress-avatar">
           <button
@@ -2105,18 +2114,6 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="entity-info-chat-icon-btn"
-              title="Текстовый чат"
-              :disabled="isAiRequestInFlight"
-              @click="focusChatInput"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 5h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H8l-5 4V7a2 2 0 0 1 2-2Z" />
-              </svg>
-            </button>
-
-            <button
-              type="button"
-              class="entity-info-chat-icon-btn"
               :class="{ active: isVoiceListening }"
               title="Голосовой ввод"
               :disabled="isAiRequestInFlight"
@@ -2130,6 +2127,19 @@ onBeforeUnmount(() => {
               </svg>
             </button>
           </div>
+
+          <button
+            type="button"
+            class="entity-info-close-btn entity-info-close-btn-mobile"
+            title="Закрыть"
+            aria-label="Закрыть"
+            @click="closeModal"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 6 18 18" />
+              <path d="M18 6 6 18" />
+            </svg>
+          </button>
 
           <button
             type="button"
@@ -2420,6 +2430,50 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.entity-info-close-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #6b7a91;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.entity-info-close-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.entity-info-close-btn:hover {
+  color: #1058ff;
+  border-color: #bfd5ff;
+  background: #eef4ff;
+}
+
+.entity-info-close-btn-desktop {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 3;
+}
+
+.entity-info-close-btn-mobile {
+  display: none;
 }
 
 .entity-info-header {
@@ -2917,6 +2971,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  position: relative;
   border-top: 1px solid #e8edf7;
   padding-top: 7px;
 }
@@ -2974,6 +3029,21 @@ onBeforeUnmount(() => {
   color: #9aa9c2;
   border-color: #dbe4f3;
   background: #f5f8ff;
+}
+
+@media (max-width: 900px) {
+  .entity-info-close-btn-desktop {
+    display: none;
+  }
+
+  .entity-info-close-btn-mobile {
+    display: inline-flex;
+    position: absolute;
+    left: 50%;
+    top: 7px;
+    transform: translateX(-50%);
+    z-index: 2;
+  }
 }
 
 .entity-info-chat-input {
