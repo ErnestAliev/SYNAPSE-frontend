@@ -1051,32 +1051,31 @@ onBeforeUnmount(() => {
 
 .agent-chat-resize-handle {
   position: absolute;
-  top: 1px;
-  left: 1px;
-  width: 16px;
-  height: 16px;
+  top: 0;
+  left: 0;
+  width: 14px;
+  height: 14px;
   border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: #94a3b8;
+  border-radius: 0;
+  background: #1058ff;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+  color: #1058ff;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: nwse-resize;
   touch-action: none;
   z-index: 3;
+  padding: 0;
+  box-shadow: none;
 }
 
 .agent-chat-resize-handle span {
-  width: 7px;
-  height: 7px;
-  border-left: 1.5px solid currentColor;
-  border-top: 1.5px solid currentColor;
-  transform: rotate(-45deg);
+  display: none;
 }
 
 .agent-chat-resize-handle:hover {
-  color: #64748b;
+  background: #0b4bdd;
 }
 
 .agent-chat-header {
