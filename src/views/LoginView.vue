@@ -110,6 +110,7 @@ onMounted(() => {
 <style scoped>
 .auth-view {
   height: 100%;
+  min-height: 100dvh;
   width: 100%;
   display: flex;
   align-items: center;
@@ -378,40 +379,76 @@ onMounted(() => {
 
 @media (max-width: 560px) {
   .auth-layout {
-    gap: 96px;
+    gap: 28px;
   }
 
   .brand-area {
-    gap: 44px;
+    gap: 18px;
   }
 
   .brand-copy,
   .auth-actions {
-    gap: 24px;
+    gap: 12px;
   }
 
   .auth-actions {
-    margin-top: 28px;
+    margin-top: 6px;
   }
 
   .brand-mark-wrap {
-    width: 150px;
-    height: 150px;
+    width: 108px;
+    height: 108px;
   }
 
   .brand-mark {
-    width: 136px;
-    height: 136px;
+    width: 96px;
+    height: 96px;
+  }
+
+  .brand-title {
+    font-size: 24px;
+    line-height: 1.16;
+  }
+
+  .auth-actions-title {
+    font-size: 14px;
   }
 
   .brand-description {
-    font-size: 14px;
+    font-size: 13px;
+    line-height: 1.4;
   }
 }
 
 @media (max-width: 980px) {
   .line-nowrap-desktop {
     white-space: normal;
+  }
+}
+
+@media (max-width: 768px) {
+  .auth-view {
+    align-items: flex-start;
+    padding: 14px 12px 18px;
+  }
+
+  .auth-layout {
+    width: min(100%, 520px);
+    justify-content: flex-start;
+    gap: 34px;
+  }
+
+  .brand-area {
+    gap: 24px;
+  }
+
+  .brand-copy {
+    gap: 16px;
+  }
+
+  .auth-actions {
+    gap: 16px;
+    margin-top: 8px;
   }
 }
 </style>
