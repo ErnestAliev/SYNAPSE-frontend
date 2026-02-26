@@ -4203,7 +4203,7 @@ onBeforeUnmount(() => {
         @wheel.stop
       >
         <button
-          v-if="isMobileLikeDevice"
+          v-if="isMobileLikeDevice && !mobileLibraryExpanded"
           type="button"
           class="library-mobile-toggle"
           :aria-label="mobileLibraryExpanded ? 'Свернуть панель сущностей' : 'Развернуть панель сущностей'"
@@ -4778,7 +4778,7 @@ onBeforeUnmount(() => {
 .canvas-library {
   position: fixed;
   left: 14px;
-  top: 50vh;
+  top: calc(50vh - 18px);
   transform: translateY(-50%);
   z-index: 40;
   display: flex;
@@ -6229,8 +6229,9 @@ onBeforeUnmount(() => {
 @media (max-width: 1024px) {
   .canvas-library {
     left: 0;
-    top: 50vh;
+    top: calc(50vh - 24px);
     gap: 8px;
+    max-width: calc(100vw - 8px);
   }
 
   .canvas-library.mobile-collapsed {

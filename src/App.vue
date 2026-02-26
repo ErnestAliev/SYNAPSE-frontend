@@ -231,4 +231,11 @@ watch(
   font-weight: 600;
   color: #64748b;
 }
+
+@media (max-width: 768px) {
+  .settings-wrap {
+    left: calc(10px + env(safe-area-inset-left, 0px));
+    bottom: calc(14px + env(safe-area-inset-bottom, 0px) + var(--synapse-vv-bottom-offset, 0px));
+  }
+}
 </style>
