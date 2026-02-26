@@ -171,6 +171,17 @@ export const useEntitiesStore = defineStore('entities', {
   },
 
   actions: {
+    hasPendingEntityUpdate(id: string) {
+      const normalizedId = String(id || '').trim();
+      if (!normalizedId) return false;
+
+      return (
+        bufferedEntityPatches.has(normalizedId) ||
+        bufferedEntityPatchTimers.has(normalizedId) ||
+        bufferedEntityPatchInFlight.has(normalizedId)
+      );
+    },
+
     clearBufferedPatchState(id: string) {
       const timer = bufferedEntityPatchTimers.get(id);
       if (timer) {

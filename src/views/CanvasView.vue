@@ -1001,10 +1001,114 @@ function resolveProjectCanvasVersion(project: Entity | null | undefined) {
   const viewportKey = canvas.viewport
     ? `${canvas.viewport.x}:${canvas.viewport.y}:${canvas.viewport.zoom}:${canvas.viewport.width}:${canvas.viewport.height}`
     : 'no-viewport';
+  let fingerprint = 2166136261;
+  const hashChunk = (value: string) => {
+    for (let index = 0; index < value.length; index += 1) {
+      fingerprint ^= value.charCodeAt(index);
+      fingerprint = Math.imul(fingerprint, 16777619);
+    }
+  };
+
+  for (const node of canvas.nodes) {
+    hashChunk(
+      `${node.id}|${node.entityId}|${Math.round(node.x * 100)}|${Math.round(node.y * 100)}|${Math.round(
+        normalizeNodeScale(node.scale) * 1000,
+      )};`,
+    );
+  }
+  for (const edge of canvas.edges) {
+    hashChunk(
+      `${edge.id}|${edge.source}|${edge.target}|${edge.label || ''}|${edge.color || ''}|${
+        edge.arrowLeft ? 1 : 0
+      }|${edge.arrowRight ? 1 : 0};`,
+    );
+  }
 
   return [updatedAt || createdAt || project._id, nodesCount, edgesCount, viewportKey, canvas.background || ''].join(
     '|',
-  );
+  ).concat(`|${String(fingerprint >>> 0)}`);
+}
+
+function getCurrentProjectSnapshotFromStore() {
+  const projectId = routeProjectId.value;
+  if (!projectId) return null;
+
+  const project = entitiesStore.byId(projectId);
+  if (!project || project.type !== 'project') return null;
+
+  return {
+    projectId,
+    projectVersion: resolveProjectCanvasVersion(project),
+    canvasData: normalizeCanvasData(project.canvas_data),
+  };
+}
+
+function hasPendingLocalCanvasSync(projectId: string) {
+  return entitiesStore.hasPendingEntityUpdate(projectId);
+}
+
+function canApplyIncomingCanvasSnapshot(snapshot: { projectId: string; projectVersion: string }) {
+  if (!snapshot.projectId || !snapshot.projectVersion) return false;
+  if (snapshot.projectId !== routeProjectId.value) return false;
+  if (isLoading.value) return false;
+  if (snapshot.projectVersion === lastAppliedProjectCanvasVersion.value) return false;
+  if (hasPendingLocalCanvasSync(snapshot.projectId)) return false;
+  return true;
+}
+
+function syncFromStoreIfNeeded() {
+  const snapshot = getCurrentProjectSnapshotFromStore();
+  if (!snapshot) return;
+  if (!canApplyIncomingCanvasSnapshot(snapshot)) return;
+
+  if (isCanvasInteractionActive()) {
+    pendingRemoteCanvasSnapshot.value = snapshot;
+    schedulePendingRemoteCanvasApply();
+    return;
+  }
+
+  applyIncomingCanvasSnapshot(snapshot);
+}
+
+function resolvePendingSnapshot() {
+  const snapshot = pendingRemoteCanvasSnapshot.value;
+  if (!snapshot) return null;
+  if (snapshot.projectId !== routeProjectId.value) return null;
+  if (!snapshot.projectVersion) return null;
+  return snapshot;
+}
+
+function shouldDropPendingSnapshot(snapshot: { projectId: string; projectVersion: string }) {
+  if (!snapshot.projectVersion) return true;
+  if (snapshot.projectId !== routeProjectId.value) return true;
+  if (snapshot.projectVersion === lastAppliedProjectCanvasVersion.value) return true;
+  if (hasPendingLocalCanvasSync(snapshot.projectId)) return true;
+  return false;
+}
+
+function cachePendingSnapshot(snapshot: {
+  projectId: string;
+  projectVersion: string;
+  canvasData: ProjectCanvasData;
+}) {
+  if (!snapshot.projectVersion) return;
+  pendingRemoteCanvasSnapshot.value = snapshot;
+}
+
+function handleIncomingProjectSnapshot(snapshot: {
+  projectId: string;
+  projectVersion: string;
+  canvasData: ProjectCanvasData;
+}) {
+  if (!canApplyIncomingCanvasSnapshot(snapshot)) return;
+
+  if (isCanvasInteractionActive()) {
+    cachePendingSnapshot(snapshot);
+    schedulePendingRemoteCanvasApply();
+    return;
+  }
+
+  applyIncomingCanvasSnapshot(snapshot);
 }
 
 function normalizeCanvasViewport(value: unknown): ProjectCanvasViewport | undefined {
@@ -2370,10 +2474,13 @@ function applyIncomingCanvasSnapshot(snapshot: {
 }
 
 function tryApplyPendingRemoteCanvasSnapshot() {
-  const snapshot = pendingRemoteCanvasSnapshot.value;
-  if (!snapshot) return;
+  const snapshot = resolvePendingSnapshot();
+  if (!snapshot) {
+    pendingRemoteCanvasSnapshot.value = null;
+    return;
+  }
 
-  if (snapshot.projectId !== routeProjectId.value) {
+  if (shouldDropPendingSnapshot(snapshot)) {
     pendingRemoteCanvasSnapshot.value = null;
     return;
   }
@@ -4196,18 +4303,8 @@ watch(
     };
   },
   (snapshot) => {
-    if (!snapshot || !snapshot.projectVersion) return;
-    if (snapshot.projectVersion === lastAppliedProjectCanvasVersion.value) return;
-    if (snapshot.projectId !== routeProjectId.value) return;
-    if (isLoading.value) return;
-
-    if (isCanvasInteractionActive()) {
-      pendingRemoteCanvasSnapshot.value = snapshot;
-      schedulePendingRemoteCanvasApply();
-      return;
-    }
-
-    applyIncomingCanvasSnapshot(snapshot);
+    if (!snapshot) return;
+    handleIncomingProjectSnapshot(snapshot);
   },
 );
 
@@ -4219,10 +4316,12 @@ watch(
     Boolean(draggingNode.value),
     Boolean(draggingGroup.value),
     Boolean(touchGesture.value),
+    routeProjectId.value ? entitiesStore.hasPendingEntityUpdate(routeProjectId.value) : false,
   ],
   () => {
     if (!isCanvasInteractionActive()) {
       tryApplyPendingRemoteCanvasSnapshot();
+      syncFromStoreIfNeeded();
     }
   },
 );
