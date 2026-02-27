@@ -471,8 +471,21 @@ function buildAttachmentsPayload(attachments: EntityAttachment[]) {
 }
 
 function buildDebugAttachment(debug: Record<string, unknown>) {
-  const fileName = `llm-debug-${Date.now()}.json`;
+  const fileName = `llm-log-${Date.now()}.json`;
   const json = JSON.stringify(debug, null, 2);
+  const encoded = encodeURIComponent(json);
+  return {
+    id: createAttachmentId(),
+    name: fileName,
+    mime: 'application/json',
+    size: json.length,
+    data: `data:application/json;charset=utf-8,${encoded}`,
+  } satisfies EntityAttachment;
+}
+
+function buildErrorLogAttachment(payload: Record<string, unknown>) {
+  const fileName = `llm-error-log-${Date.now()}.json`;
+  const json = JSON.stringify(payload, null, 2);
   const encoded = encodeURIComponent(json);
   return {
     id: createAttachmentId(),
@@ -494,7 +507,7 @@ async function requestAssistantReply(args: {
     message: args.message,
     history: args.history,
     attachments: buildAttachmentsPayload(args.attachments),
-    debug: import.meta.env.DEV,
+    debug: true,
   });
 
   return {
@@ -574,6 +587,26 @@ function toggleChat() {
   }
 }
 
+function clearAllChatHistory() {
+  if (typeof window !== 'undefined') {
+    const confirmed = window.confirm('Очистить всю историю общего LLM-чата? Действие необратимо.');
+    if (!confirmed) return;
+    try {
+      window.localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // Ignore localStorage errors.
+    }
+  }
+
+  messagesByScope.value = {};
+  messageDraft.value = '';
+  pendingUploads.value = [];
+  void nextTick(() => {
+    autoResizeComposer();
+    scrollToBottom('auto');
+  });
+}
+
 async function sendMessage() {
   if (isSending.value) return;
 
@@ -614,10 +647,20 @@ async function sendMessage() {
       pushMessage('assistant', 'Недостаточно данных в текущем контексте.', debugAttachments, activeScopeKey);
     }
   } catch (error) {
+    const errorLog = buildErrorLogAttachment({
+      timestamp: getIsoNow(),
+      scope: activeScope,
+      request: {
+        message: value,
+        history: historyPayload,
+        attachments: buildAttachmentsPayload(attachments),
+      },
+      error: formatApiError(error),
+    });
     pushMessage(
       'assistant',
       `Не удалось получить ответ от LLM. ${formatApiError(error)}`,
-      [],
+      [errorLog],
       activeScopeKey,
     );
   } finally {
@@ -858,9 +901,26 @@ onBeforeUnmount(() => {
           <div class="agent-chat-title">{{ scopeTitle }}</div>
           <div class="agent-chat-summary">{{ scopeSummary }}</div>
         </div>
+        <div class="agent-chat-header-actions">
+          <button
+            type="button"
+            class="agent-chat-clear"
+            title="Очистить историю"
+            aria-label="Очистить историю"
+            @click="clearAllChatHistory"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 6h18" />
+              <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+              <path d="m6 6 1 14a1 1 0 0 0 1 .9h8a1 1 0 0 0 1-.9L18 6" />
+              <path d="M10 11v6" />
+              <path d="M14 11v6" />
+            </svg>
+          </button>
         <button type="button" class="agent-chat-close" aria-label="Закрыть чат" @click="toggleChat">
           ×
         </button>
+        </div>
       </header>
 
       <section ref="chatFeedRef" class="agent-chat-feed">
@@ -1127,6 +1187,46 @@ onBeforeUnmount(() => {
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
+}
+
+.agent-chat-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-chat-clear {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #64748b;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    color 0.16s ease;
+}
+
+.agent-chat-clear svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.agent-chat-clear:hover,
+.agent-chat-close:hover {
+  color: #1058ff;
+  border-color: #bfd5ff;
+  background: #eef4ff;
 }
 
 .agent-chat-feed {
