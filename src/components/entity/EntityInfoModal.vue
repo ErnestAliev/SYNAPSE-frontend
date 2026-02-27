@@ -831,6 +831,11 @@ function getFieldDraft(fieldKey: string) {
   return draft.value.fieldDrafts[fieldKey] || '';
 }
 
+function getFieldPlaceholder(field: MetadataFieldConfig) {
+  const count = draft.value ? (draft.value.metadataValues[field.key] || []).length : 0;
+  return `${field.label}: ${count}`;
+}
+
 function getMetadataFieldMaxLength(fieldKey: string) {
   return fieldKey === 'links' ? LINKS_METADATA_FIELD_MAX_LENGTH : DEFAULT_METADATA_FIELD_MAX_LENGTH;
 }
@@ -2154,7 +2159,7 @@ onBeforeUnmount(() => {
                   type="text"
                   class="entity-info-tag-input"
                   :maxlength="getMetadataFieldMaxLength(field.key)"
-                  :placeholder="field.label"
+                  :placeholder="getFieldPlaceholder(field)"
                   @input="onFieldDraftInput(field.key, $event)"
                   @keydown.enter.prevent="addFieldValue(field.key)"
                   @keydown="onFieldDraftKeydown(field.key, $event)"
