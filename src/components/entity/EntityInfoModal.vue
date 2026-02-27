@@ -2176,19 +2176,6 @@ onBeforeUnmount(() => {
       :class="{ 'mobile-footer-open': profileFooterOpen }"
       @pointerdown.stop="onModalPointerDown"
     >
-      <button
-        type="button"
-        class="entity-info-close-btn entity-info-close-btn-desktop"
-        title="Закрыть"
-        aria-label="Закрыть"
-        @click="closeModal"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M6 6 18 18" />
-          <path d="M18 6 6 18" />
-        </svg>
-      </button>
-
       <header class="entity-info-header">
         <div v-if="modalIcon" class="entity-info-progress-avatar">
           <button
@@ -2230,50 +2217,18 @@ onBeforeUnmount(() => {
               class="entity-info-name-input"
               @input="onNameInput"
             />
-            <div class="entity-info-title-actions">
-              <button
-                type="button"
-                class="entity-info-title-action-btn"
-                :disabled="isProjectActionBusy"
-                title="Добавить в проект"
-                aria-label="Добавить в проект"
-                @click="openProjectAddConfirm"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 5v14" />
-                  <path d="M5 12h14" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                class="entity-info-title-action-btn action-reset"
-                :disabled="isProjectActionBusy"
-                title="Сбросить данные"
-                aria-label="Сбросить данные"
-                @click="openClearChatConfirm"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M3 12a9 9 0 1 0 3-6.7" />
-                  <path d="M3 4v4h4" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                class="entity-info-title-action-btn danger"
-                :disabled="isProjectActionBusy"
-                title="Удалить"
-                aria-label="Удалить"
-                @click="openDeleteConfirm"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M4 7h16" />
-                  <path d="M9 7V5h6v2" />
-                  <path d="M10 11v6" />
-                  <path d="M14 11v6" />
-                  <path d="M6 7l1 12h10l1-12" />
-                </svg>
-              </button>
-            </div>
+            <button
+              type="button"
+              class="entity-info-close-btn entity-info-close-btn-inline"
+              title="Закрыть"
+              aria-label="Закрыть"
+              @click="closeModal"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 6 18 18" />
+                <path d="M18 6 6 18" />
+              </svg>
+            </button>
           </div>
           <div class="entity-info-progress-meta">
             <span class="entity-info-progress-level">{{ profileProgressLevel }}</span>
@@ -2466,22 +2421,54 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <button
-            type="button"
-            class="entity-info-close-btn entity-info-close-btn-mobile"
-            title="Закрыть"
-            aria-label="Закрыть"
-            @click="closeModal"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M6 6 18 18" />
-              <path d="M18 6 6 18" />
-            </svg>
-          </button>
+          <div class="entity-info-title-actions entity-info-chat-tools-actions">
+            <button
+              type="button"
+              class="entity-info-title-action-btn"
+              :disabled="isProjectActionBusy"
+              title="Добавить в проект"
+              aria-label="Добавить в проект"
+              @click="openProjectAddConfirm"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5v14" />
+                <path d="M5 12h14" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="entity-info-title-action-btn action-reset"
+              :disabled="isProjectActionBusy"
+              title="Сбросить данные"
+              aria-label="Сбросить данные"
+              @click="openClearChatConfirm"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 12a9 9 0 1 0 3-6.7" />
+                <path d="M3 4v4h4" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="entity-info-title-action-btn danger"
+              :disabled="isProjectActionBusy"
+              title="Удалить"
+              aria-label="Удалить"
+              @click="openDeleteConfirm"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 7h16" />
+                <path d="M9 7V5h6v2" />
+                <path d="M10 11v6" />
+                <path d="M14 11v6" />
+                <path d="M6 7l1 12h10l1-12" />
+              </svg>
+            </button>
+          </div>
 
           <button
             type="button"
-            class="entity-info-chat-icon-btn send"
+            class="entity-info-chat-icon-btn send entity-info-chat-tools-send"
             title="Отправить"
             :disabled="isAiRequestInFlight"
             @click="onSendInput"
@@ -2870,22 +2857,11 @@ onBeforeUnmount(() => {
   background: #eef4ff;
 }
 
-.entity-info-close-btn-desktop {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 3;
-}
-
-.entity-info-close-btn-mobile {
-  display: none;
-}
-
 .entity-info-header {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding-right: 40px;
+  padding-right: 0;
 }
 
 .entity-info-progress-avatar {
@@ -2969,7 +2945,8 @@ onBeforeUnmount(() => {
 }
 
 .entity-info-name-input {
-  width: min(100%, 220px);
+  width: 100%;
+  max-width: none;
   flex: 1 1 auto;
   min-width: 0;
   border: 1px solid #dbe4f3;
@@ -2984,6 +2961,10 @@ onBeforeUnmount(() => {
 .entity-info-name-input:focus {
   border-color: #bfdbfe;
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.14);
+}
+
+.entity-info-close-btn-inline {
+  flex-shrink: 0;
 }
 
 .entity-info-title-actions {
@@ -3455,6 +3436,7 @@ onBeforeUnmount(() => {
 
 .entity-info-chat-bar {
   display: flex;
+  gap: 6px;
   align-items: stretch;
   border: 1px solid #dbe4f3;
   border-radius: 12px;
@@ -3463,9 +3445,9 @@ onBeforeUnmount(() => {
 }
 
 .entity-info-chat-tools {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   position: relative;
   border-top: 1px solid #e8edf7;
@@ -3476,6 +3458,15 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
+  justify-self: start;
+}
+
+.entity-info-chat-tools-actions {
+  justify-self: center;
+}
+
+.entity-info-chat-tools-send {
+  justify-self: end;
 }
 
 .entity-info-chat-icon-btn {
@@ -3612,19 +3603,6 @@ onBeforeUnmount(() => {
   .entity-info-chat-feed {
     padding: 8px;
     gap: 7px;
-  }
-
-  .entity-info-close-btn-desktop {
-    display: none;
-  }
-
-  .entity-info-close-btn-mobile {
-    display: inline-flex;
-    position: absolute;
-    left: 50%;
-    top: 7px;
-    transform: translateX(-50%);
-    z-index: 2;
   }
 
   .entity-info-menu-footer {

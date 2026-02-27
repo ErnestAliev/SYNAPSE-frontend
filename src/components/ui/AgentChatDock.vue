@@ -1555,10 +1555,6 @@ function onTextInput() {
   autoResizeComposer();
 }
 
-function focusComposer() {
-  chatInputRef.value?.focus();
-}
-
 async function fileToDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -1790,21 +1786,9 @@ onBeforeUnmount(() => {
           <div class="agent-chat-summary">{{ scopeSummary }}</div>
         </div>
         <div class="agent-chat-header-actions">
-          <button
-            type="button"
-            class="agent-chat-clear"
-            title="Очистить историю"
-            aria-label="Очистить историю"
-            @click="openClearHistoryConfirm"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M3 12a9 9 0 1 0 3-6.7" />
-              <path d="M3 4v4h4" />
-            </svg>
+          <button type="button" class="agent-chat-close" aria-label="Закрыть чат" @click="toggleChat">
+            ×
           </button>
-        <button type="button" class="agent-chat-close" aria-label="Закрыть чат" @click="toggleChat">
-          ×
-        </button>
         </div>
       </header>
 
@@ -1975,18 +1959,6 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="agent-chat-tool-btn"
-              title="Текстовый ввод"
-              :disabled="isSending"
-              @click="focusComposer"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 5h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H8l-5 4V7a2 2 0 0 1 2-2Z" />
-              </svg>
-            </button>
-
-            <button
-              type="button"
-              class="agent-chat-tool-btn"
               :class="{ active: isVoiceListening }"
               title="Голосовой ввод"
               :disabled="isSending"
@@ -2003,7 +1975,21 @@ onBeforeUnmount(() => {
 
           <button
             type="button"
-            class="agent-chat-tool-btn send"
+            class="agent-chat-clear agent-chat-clear-tool"
+            title="Очистить историю"
+            aria-label="Очистить историю"
+            :disabled="isSending"
+            @click="openClearHistoryConfirm"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 12a9 9 0 1 0 3-6.7" />
+              <path d="M3 4v4h4" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            class="agent-chat-tool-btn send agent-chat-tools-send"
             title="Отправить"
             :disabled="isSending"
             @click="void sendMessage()"
@@ -2522,9 +2508,9 @@ onBeforeUnmount(() => {
 }
 
 .agent-chat-tools {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   border-top: 1px solid #e8edf7;
   padding-top: 7px;
@@ -2534,6 +2520,15 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
+  justify-self: start;
+}
+
+.agent-chat-clear-tool {
+  justify-self: center;
+}
+
+.agent-chat-tools-send {
+  justify-self: end;
 }
 
 .agent-chat-tool-btn {
