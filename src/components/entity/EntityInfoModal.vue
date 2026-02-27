@@ -2797,8 +2797,8 @@ onBeforeUnmount(() => {
 
 .entity-info-close-btn-desktop {
   position: absolute;
-  top: 12px;
-  right: 12px;
+  top: 8px;
+  right: 8px;
   z-index: 3;
 }
 
@@ -2810,6 +2810,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+  padding-right: 40px;
 }
 
 .entity-info-progress-avatar {
@@ -3461,6 +3462,7 @@ onBeforeUnmount(() => {
 
   .entity-info-header {
     gap: 9px;
+    padding-right: 0;
   }
 
   .entity-info-progress-avatar,
