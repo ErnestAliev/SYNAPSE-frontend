@@ -91,11 +91,13 @@ const resizeStart = ref<{
 } | null>(null);
 const historyPollingTimer = ref<ReturnType<typeof setInterval> | null>(null);
 const activeSyncVersion = ref(0);
+const isRemoteHistoryResetting = ref(false);
 
 const messagesByScope = ref<Record<string, ChatMessage[]>>(loadStoredMessages());
 const pendingSaveTimersByScope = new Map<string, ReturnType<typeof setTimeout>>();
 const saveInFlightScopes = new Set<string>();
 const queuedResaveScopes = new Set<string>();
+const saveControllersByScope = new Map<string, AbortController>();
 
 function toProfile(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -609,17 +611,19 @@ async function fetchRemoteHistory(scope: AgentChatRequestScope) {
   return normalizeChatMessages(data?.messages);
 }
 
-async function saveRemoteHistory(scope: AgentChatRequestScope, messages: ChatMessage[]) {
+async function saveRemoteHistory(scope: AgentChatRequestScope, messages: ChatMessage[], signal?: AbortSignal) {
   await apiClient.put('/ai/chat-history', {
     scope,
     messages: normalizeChatMessages(messages),
+  }, {
+    signal,
   });
 }
 
 async function clearRemoteHistory() {
   await apiClient.delete('/ai/chat-history', {
-    data: {
-      all: true,
+    params: {
+      all: 'true',
     },
   });
 }
@@ -632,7 +636,28 @@ function setScopeMessages(nextScopeKey: string, nextMessages: ChatMessage[]) {
   persistMessages();
 }
 
+function hasPendingScopeChanges(targetScopeKey: string) {
+  return (
+    pendingSaveTimersByScope.has(targetScopeKey) ||
+    saveInFlightScopes.has(targetScopeKey) ||
+    queuedResaveScopes.has(targetScopeKey)
+  );
+}
+
+function abortAllRemoteSaves() {
+  for (const controller of saveControllersByScope.values()) {
+    try {
+      controller.abort();
+    } catch {
+      // Ignore abort errors.
+    }
+  }
+  saveControllersByScope.clear();
+}
+
 async function flushRemoteScopeSave(targetScopeKey: string) {
+  if (isRemoteHistoryResetting.value) return;
+
   const scope = parseScopeFromScopeKey(targetScopeKey);
   if (!scope) return;
 
@@ -648,13 +673,20 @@ async function flushRemoteScopeSave(targetScopeKey: string) {
   }
 
   saveInFlightScopes.add(targetScopeKey);
+  const controller = new AbortController();
+  saveControllersByScope.set(targetScopeKey, controller);
+
   try {
     const currentMessages = normalizeChatMessages(messagesByScope.value[targetScopeKey] || []);
-    await saveRemoteHistory(scope, currentMessages);
+    await saveRemoteHistory(scope, currentMessages, controller.signal);
   } catch {
     // Remote sync errors should not block local chat usage.
   } finally {
     saveInFlightScopes.delete(targetScopeKey);
+    const activeController = saveControllersByScope.get(targetScopeKey);
+    if (activeController === controller) {
+      saveControllersByScope.delete(targetScopeKey);
+    }
     if (queuedResaveScopes.has(targetScopeKey)) {
       queuedResaveScopes.delete(targetScopeKey);
       void flushRemoteScopeSave(targetScopeKey);
@@ -663,6 +695,8 @@ async function flushRemoteScopeSave(targetScopeKey: string) {
 }
 
 function scheduleRemoteScopeSave(targetScopeKey: string, delayMs = 380) {
+  if (isRemoteHistoryResetting.value) return;
+
   const scope = parseScopeFromScopeKey(targetScopeKey);
   if (!scope) return;
 
@@ -680,6 +714,8 @@ function scheduleRemoteScopeSave(targetScopeKey: string, delayMs = 380) {
 }
 
 async function syncScopeHistoryFromServer(targetScopeKey = scopeKey.value) {
+  if (isRemoteHistoryResetting.value) return;
+
   const scope = parseScopeFromScopeKey(targetScopeKey);
   if (!scope) return;
 
@@ -691,8 +727,15 @@ async function syncScopeHistoryFromServer(targetScopeKey = scopeKey.value) {
     if (activeSyncVersion.value !== syncVersion) return;
 
     const localMessages = normalizeChatMessages(messagesByScope.value[targetScopeKey] || []);
-    const mergedMessages = mergeMessages(localMessages, remoteMessages);
+    const hasPendingChanges = hasPendingScopeChanges(targetScopeKey);
+    if (!hasPendingChanges) {
+      if (!areMessagesEqual(localMessages, remoteMessages)) {
+        setScopeMessages(targetScopeKey, remoteMessages);
+      }
+      return;
+    }
 
+    const mergedMessages = mergeMessages(localMessages, remoteMessages);
     if (!areMessagesEqual(localMessages, mergedMessages)) {
       setScopeMessages(targetScopeKey, mergedMessages);
     }
@@ -886,6 +929,9 @@ function cancelClearHistoryConfirm() {
 }
 
 async function confirmClearAllChatHistory() {
+  isRemoteHistoryResetting.value = true;
+  stopHistoryPolling();
+
   if (typeof window !== 'undefined') {
     try {
       window.localStorage.removeItem(STORAGE_KEY);
@@ -902,6 +948,7 @@ async function confirmClearAllChatHistory() {
   pendingSaveTimersByScope.clear();
   saveInFlightScopes.clear();
   queuedResaveScopes.clear();
+  abortAllRemoteSaves();
 
   messagesByScope.value = {};
   messageDraft.value = '';
@@ -911,6 +958,12 @@ async function confirmClearAllChatHistory() {
     await clearRemoteHistory();
   } catch {
     // Ignore remote cleanup failures and keep local cleanup result.
+  } finally {
+    isRemoteHistoryResetting.value = false;
+    if (isOpen.value) {
+      startHistoryPolling();
+      void syncScopeHistoryFromServer(scopeKey.value);
+    }
   }
 
   void nextTick(() => {
