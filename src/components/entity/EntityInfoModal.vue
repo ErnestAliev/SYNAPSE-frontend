@@ -262,6 +262,7 @@ const projectActionMessage = ref('');
 const isProjectActionBusy = ref(false);
 const selectedProjectId = ref('');
 const isDeleteConfirmOpen = ref(false);
+const isChatClearConfirmOpen = ref(false);
 const profileFooterOpen = ref(false);
 const footerColorInputRef = ref<HTMLInputElement | null>(null);
 const footerImageInputRef = ref<HTMLInputElement | null>(null);
@@ -705,6 +706,7 @@ function closeModal() {
   selectedProjectId.value = '';
   isProjectAddConfirmOpen.value = false;
   isDeleteConfirmOpen.value = false;
+  isChatClearConfirmOpen.value = false;
   closeProfileFooter();
   emit('close');
 }
@@ -719,6 +721,7 @@ function openProjectAddConfirm() {
   projectActionMessage.value = '';
   selectedProjectId.value = '';
   isDeleteConfirmOpen.value = false;
+  isChatClearConfirmOpen.value = false;
   isProjectAddConfirmOpen.value = true;
 }
 
@@ -794,12 +797,35 @@ async function onAddToProject(projectId: string) {
 function openDeleteConfirm() {
   if (!draft.value || isProjectActionBusy.value) return;
   isProjectAddConfirmOpen.value = false;
+  isChatClearConfirmOpen.value = false;
   isDeleteConfirmOpen.value = true;
 }
 
 function closeDeleteConfirm() {
   if (isProjectActionBusy.value) return;
   isDeleteConfirmOpen.value = false;
+}
+
+function openClearChatConfirm() {
+  if (!draft.value || isProjectActionBusy.value) return;
+  isProjectAddConfirmOpen.value = false;
+  isDeleteConfirmOpen.value = false;
+  isChatClearConfirmOpen.value = true;
+}
+
+function closeClearChatConfirm() {
+  if (isProjectActionBusy.value) return;
+  isChatClearConfirmOpen.value = false;
+}
+
+function confirmClearChatHistory() {
+  if (!draft.value || isProjectActionBusy.value) return;
+  draft.value.chatHistory = [];
+  draft.value.textInput = '';
+  draft.value.pendingUploads = [];
+  isChatClearConfirmOpen.value = false;
+  resetChatInputSize();
+  scheduleSave();
 }
 
 const deleteConfirmName = computed(() => {
@@ -2153,6 +2179,19 @@ onBeforeUnmount(() => {
               </button>
               <button
                 type="button"
+                class="entity-info-title-action-btn action-reset"
+                :disabled="isProjectActionBusy"
+                title="Очистить чат"
+                aria-label="Очистить чат"
+                @click="openClearChatConfirm"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 12a9 9 0 1 0 3-6.7" />
+                  <path d="M3 4v4h4" />
+                </svg>
+              </button>
+              <button
+                type="button"
                 class="entity-info-title-action-btn danger"
                 :disabled="isProjectActionBusy"
                 title="Удалить"
@@ -2597,11 +2636,11 @@ onBeforeUnmount(() => {
       </transition>
     </div>
 
-    <div
-      v-if="isProjectAddConfirmOpen"
-      class="entity-delete-confirm-overlay"
-      @pointerdown.self="closeProjectAddConfirm"
-    >
+      <div
+        v-if="isProjectAddConfirmOpen"
+        class="entity-delete-confirm-overlay"
+        @pointerdown.self="closeProjectAddConfirm"
+      >
       <div class="entity-delete-confirm-card entity-project-confirm-card" @pointerdown.stop>
         <h3 class="entity-delete-confirm-title">Добавить в проект</h3>
         <p class="entity-delete-confirm-text">Выберите проект для добавления текущей записи.</p>
@@ -2629,14 +2668,43 @@ onBeforeUnmount(() => {
             Подтвердить
           </button>
         </div>
+        </div>
       </div>
-    </div>
 
-    <div
-      v-if="isDeleteConfirmOpen"
-      class="entity-delete-confirm-overlay"
-      @pointerdown.self="closeDeleteConfirm"
-    >
+      <div
+        v-if="isChatClearConfirmOpen"
+        class="entity-delete-confirm-overlay"
+        @pointerdown.self="closeClearChatConfirm"
+      >
+        <div class="entity-delete-confirm-card entity-project-confirm-card" @pointerdown.stop>
+          <h3 class="entity-delete-confirm-title">Очистить чат?</h3>
+          <p class="entity-delete-confirm-text">История чата для этой записи будет удалена безвозвратно.</p>
+          <div class="entity-delete-confirm-actions">
+            <button
+              type="button"
+              class="entity-delete-confirm-btn secondary"
+              :disabled="isProjectActionBusy"
+              @click="closeClearChatConfirm"
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              class="entity-delete-confirm-btn primary"
+              :disabled="isProjectActionBusy"
+              @click="confirmClearChatHistory"
+            >
+              Очистить
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div
+        v-if="isDeleteConfirmOpen"
+        class="entity-delete-confirm-overlay"
+        @pointerdown.self="closeDeleteConfirm"
+      >
       <div class="entity-delete-confirm-card" @pointerdown.stop>
         <h3 class="entity-delete-confirm-title">Удалить?</h3>
         <p class="entity-delete-confirm-text">

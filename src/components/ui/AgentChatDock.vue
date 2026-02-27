@@ -1365,11 +1365,8 @@ onBeforeUnmount(() => {
             @click="openClearHistoryConfirm"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M3 6h18" />
-              <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
-              <path d="m6 6 1 14a1 1 0 0 0 1 .9h8a1 1 0 0 0 1-.9L18 6" />
-              <path d="M10 11v6" />
-              <path d="M14 11v6" />
+              <path d="M3 12a9 9 0 1 0 3-6.7" />
+              <path d="M3 4v4h4" />
             </svg>
           </button>
         <button type="button" class="agent-chat-close" aria-label="Закрыть чат" @click="toggleChat">
