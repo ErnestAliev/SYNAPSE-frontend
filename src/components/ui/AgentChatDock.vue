@@ -112,6 +112,10 @@ const chatInputRef = ref<HTMLTextAreaElement | null>(null);
 const docInputRef = ref<HTMLInputElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
+const voiceRestartTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+const voiceShouldRestart = ref(false);
+const voiceSessionBaseText = ref('');
+const voiceCommittedText = ref('');
 const pendingComposerHeightReset = ref(false);
 const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1366);
 const viewportHeight = ref(typeof window !== 'undefined' ? window.innerHeight : 768);
@@ -1597,12 +1601,39 @@ function removePendingUpload(attachmentId: string) {
   pendingUploads.value = pendingUploads.value.filter((attachment) => attachment.id !== attachmentId);
 }
 
+function clearVoiceRestartTimer() {
+  if (!voiceRestartTimer.value) return;
+  clearTimeout(voiceRestartTimer.value);
+  voiceRestartTimer.value = null;
+}
+
+function mergeVoiceSegments(...parts: string[]) {
+  return parts
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function applyVoiceDraft(interimText = '') {
+  const merged = mergeVoiceSegments(voiceSessionBaseText.value, voiceCommittedText.value, interimText);
+  messageDraft.value = merged;
+  void nextTick(() => {
+    autoResizeComposer();
+  });
+}
+
 function stopVoiceCapture() {
+  voiceShouldRestart.value = false;
+  clearVoiceRestartTimer();
   isVoiceListening.value = false;
   if (activeVoiceRecognition.value) {
     activeVoiceRecognition.value.stop();
     activeVoiceRecognition.value = null;
   }
+  voiceSessionBaseText.value = '';
+  voiceCommittedText.value = '';
 }
 
 function startVoiceCapture() {
@@ -1633,33 +1664,79 @@ function startVoiceCapture() {
   if (!RecognitionCtor) return;
 
   stopVoiceCapture();
+  voiceSessionBaseText.value = messageDraft.value.trim();
+  voiceCommittedText.value = '';
+  voiceShouldRestart.value = true;
 
-  const recognition = new RecognitionCtor();
-  recognition.lang = 'ru-RU';
-  recognition.continuous = true;
-  recognition.interimResults = true;
+  const createRecognition = () => {
+    const recognition = new RecognitionCtor();
+    recognition.lang = 'ru-RU';
+    recognition.continuous = true;
+    recognition.interimResults = true;
 
-  recognition.onresult = (event: unknown) => {
-    const eventResults = (event as { results?: ArrayLike<ArrayLike<{ transcript?: string }>> }).results;
-    const transcript = Array.from(eventResults || [])
-      .map((result) => result?.[0]?.transcript || '')
-      .join(' ')
-      .trim();
+    recognition.onresult = (event: unknown) => {
+      const payload = event as {
+        resultIndex?: number;
+        results?: ArrayLike<ArrayLike<{ transcript?: string }> & { isFinal?: boolean }>;
+      };
+      const eventResults = payload.results;
+      if (!eventResults) return;
 
-    messageDraft.value = transcript;
-    void nextTick(() => {
-      autoResizeComposer();
-    });
+      const startIndex = Number.isFinite(Number(payload.resultIndex))
+        ? Math.max(0, Number(payload.resultIndex))
+        : 0;
+      let interim = '';
+
+      for (let index = startIndex; index < eventResults.length; index += 1) {
+        const result = eventResults[index];
+        const part = typeof result?.[0]?.transcript === 'string' ? result[0].transcript.trim() : '';
+        if (!part) continue;
+        if (result?.isFinal) {
+          voiceCommittedText.value = mergeVoiceSegments(voiceCommittedText.value, part);
+        } else {
+          interim = mergeVoiceSegments(interim, part);
+        }
+      }
+
+      applyVoiceDraft(interim);
+    };
+
+    recognition.onend = () => {
+      activeVoiceRecognition.value = null;
+      if (!voiceShouldRestart.value) {
+        isVoiceListening.value = false;
+        return;
+      }
+
+      clearVoiceRestartTimer();
+      voiceRestartTimer.value = setTimeout(() => {
+        if (!voiceShouldRestart.value) return;
+        try {
+          const nextRecognition = createRecognition();
+          nextRecognition.start();
+          isVoiceListening.value = true;
+          activeVoiceRecognition.value = { stop: () => nextRecognition.stop() };
+        } catch {
+          voiceShouldRestart.value = false;
+          isVoiceListening.value = false;
+          activeVoiceRecognition.value = null;
+        }
+      }, 220);
+    };
+
+    return recognition;
   };
 
-  recognition.onend = () => {
+  try {
+    const recognition = createRecognition();
+    recognition.start();
+    isVoiceListening.value = true;
+    activeVoiceRecognition.value = { stop: () => recognition.stop() };
+  } catch {
+    voiceShouldRestart.value = false;
     isVoiceListening.value = false;
     activeVoiceRecognition.value = null;
-  };
-
-  recognition.start();
-  isVoiceListening.value = true;
-  activeVoiceRecognition.value = { stop: () => recognition.stop() };
+  }
 }
 
 function onVoiceToggle() {
