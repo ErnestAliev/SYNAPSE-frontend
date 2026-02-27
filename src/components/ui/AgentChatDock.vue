@@ -3,7 +3,7 @@ import axios from 'axios';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useEntitiesStore } from '../../stores/entities';
-import type { EntityType } from '../../types/entity';
+import type { Entity, EntityType } from '../../types/entity';
 import { apiClient } from '../../services/api';
 
 type ChatRole = 'user' | 'assistant';
@@ -61,6 +61,31 @@ const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   task: 'Задачи',
   shape: 'Элементы',
 };
+const PROJECT_PROFILE_FIELD_CONFIGS = [
+  { key: 'tags', label: 'Теги' },
+  { key: 'markers', label: 'Метки' },
+  { key: 'roles', label: 'Роли' },
+  { key: 'skills', label: 'Навыки' },
+  { key: 'risks', label: 'Риски' },
+  { key: 'priority', label: 'Приоритеты' },
+  { key: 'status', label: 'Статусы' },
+  { key: 'tasks', label: 'Задачи' },
+  { key: 'metrics', label: 'Метрики' },
+  { key: 'owners', label: 'Ответственные' },
+  { key: 'participants', label: 'Участники' },
+  { key: 'resources', label: 'Ресурсы' },
+  { key: 'outcomes', label: 'Результаты' },
+  { key: 'industry', label: 'Отрасли' },
+  { key: 'departments', label: 'Отделы' },
+  { key: 'stage', label: 'Стадии' },
+  { key: 'date', label: 'Даты' },
+  { key: 'location', label: 'Локации' },
+  { key: 'phones', label: 'Телефоны' },
+  { key: 'links', label: 'Ссылки' },
+  { key: 'importance', label: 'Значимость' },
+  { key: 'ignoredNoise', label: 'Шум' },
+] as const;
+const PROJECT_PROFILE_FIELD_KEYS = PROJECT_PROFILE_FIELD_CONFIGS.map((item) => item.key);
 
 const route = useRoute();
 const entitiesStore = useEntitiesStore();
@@ -72,6 +97,7 @@ const isVoiceListening = ref(false);
 const isSending = ref(false);
 const isResizingPanel = ref(false);
 const isClearHistoryConfirmOpen = ref(false);
+const isProjectProfileExpanded = ref(false);
 
 const chatFeedRef = ref<HTMLElement | null>(null);
 const chatInputRef = ref<HTMLTextAreaElement | null>(null);
@@ -142,6 +168,68 @@ function normalizeType(value: unknown): EntityType {
   }
 
   return 'project';
+}
+
+function normalizeProjectProfileFieldValues(fieldKey: string, rawValue: unknown) {
+  const source = Array.isArray(rawValue) ? rawValue : [rawValue];
+  const dedup = new Set<string>();
+  const values: string[] = [];
+  const maxItems = fieldKey === 'importance' ? 1 : fieldKey === 'links' ? 24 : 40;
+  const maxLength = fieldKey === 'links' ? 240 : fieldKey === 'tasks' ? 120 : 96;
+
+  for (const item of source) {
+    const value = typeof item === 'string' ? item.trim().slice(0, maxLength) : '';
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (dedup.has(key)) continue;
+    dedup.add(key);
+    values.push(value);
+    if (values.length >= maxItems) break;
+  }
+
+  return values;
+}
+
+function mergeProjectProfileValues(fieldKey: string, ...lists: string[][]) {
+  const dedup = new Set<string>();
+  const values: string[] = [];
+  const maxItems = fieldKey === 'importance' ? 1 : fieldKey === 'links' ? 24 : 40;
+
+  for (const list of lists) {
+    for (const item of normalizeProjectProfileFieldValues(fieldKey, list)) {
+      const key = item.toLowerCase();
+      if (dedup.has(key)) continue;
+      dedup.add(key);
+      values.push(item);
+      if (values.length >= maxItems) return values;
+    }
+  }
+
+  return values;
+}
+
+function getProjectLinkChipLabel(value: string) {
+  const raw = value.trim();
+  if (!raw) return 'Website';
+
+  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const host = new URL(withProtocol).hostname.toLowerCase();
+    if (host.includes('instagram')) return 'Instagram';
+    if (host.includes('facebook') || host.includes('fb.com')) return 'Facebook';
+    if (host.includes('linkedin')) return 'LinkedIn';
+    if (host.includes('telegram') || host.includes('t.me')) return 'Telegram';
+    if (host.includes('whatsapp') || host.includes('wa.me')) return 'WhatsApp';
+    if (host.includes('youtube') || host.includes('youtu.be')) return 'YouTube';
+    if (host.includes('tiktok')) return 'TikTok';
+    if (host.includes('twitter') || host.includes('x.com')) return 'X';
+    if (host.includes('vk.com') || host.includes('vkontakte')) return 'VK';
+    if (host.includes('github')) return 'GitHub';
+  } catch {
+    // noop
+  }
+
+  return 'Website';
 }
 
 function normalizeChatMessage(rawMessage: unknown): ChatMessage | null {
@@ -554,6 +642,82 @@ const scopeSummary = computed(() => {
   const count = entitiesStore.countByType(collectionType.value);
   return `Доступ: ${ENTITY_TYPE_LABELS[collectionType.value].toLowerCase()} (${count})`;
 });
+
+const activeProjectEntity = computed<Entity | null>(() => {
+  if (routeScopeType.value !== 'project-canvas') return null;
+  const projectId = typeof route.params.id === 'string' ? route.params.id.trim() : '';
+  if (!projectId) return null;
+  const entity = entitiesStore.byId(projectId);
+  if (!entity || entity.type !== 'project') return null;
+  return entity;
+});
+
+const projectCanvasEntities = computed<Entity[]>(() => {
+  const project = activeProjectEntity.value;
+  if (!project) return [];
+  const rawCanvas = toProfile(project.canvas_data);
+  const rawNodes = Array.isArray(rawCanvas.nodes) ? rawCanvas.nodes : [];
+  const uniqueIds = Array.from(
+    new Set(
+      rawNodes
+        .map((rawNode) => toProfile(rawNode))
+        .map((node) => (typeof node.entityId === 'string' ? node.entityId.trim() : ''))
+        .filter((entityId) => entityId && entityId !== project._id),
+    ),
+  );
+
+  return uniqueIds
+    .map((entityId) => entitiesStore.byId(entityId))
+    .filter((entity): entity is Entity => Boolean(entity));
+});
+
+const projectEntityAggregatedFields = computed<Record<string, string[]>>(() => {
+  const aggregated: Record<string, string[]> = Object.fromEntries(
+    PROJECT_PROFILE_FIELD_KEYS.map((fieldKey) => [fieldKey, []]),
+  );
+
+  for (const entity of projectCanvasEntities.value) {
+    const metadata = toProfile(entity.ai_metadata);
+    for (const fieldKey of PROJECT_PROFILE_FIELD_KEYS) {
+      aggregated[fieldKey] = mergeProjectProfileValues(
+        fieldKey,
+        aggregated[fieldKey] || [],
+        normalizeProjectProfileFieldValues(fieldKey, metadata[fieldKey]),
+      );
+    }
+  }
+
+  return aggregated;
+});
+
+const projectProfileDescription = computed(() => {
+  const project = activeProjectEntity.value;
+  if (!project) return '';
+  const metadata = toProfile(project.ai_metadata);
+  return typeof metadata.description === 'string' ? metadata.description.trim() : '';
+});
+
+const projectProfileFields = computed(() => {
+  const project = activeProjectEntity.value;
+  const metadata = toProfile(project?.ai_metadata);
+  const aggregated = projectEntityAggregatedFields.value;
+
+  return PROJECT_PROFILE_FIELD_CONFIGS.map((field) => {
+    const ownValues = normalizeProjectProfileFieldValues(field.key, metadata[field.key]);
+    const aggregatedValues = normalizeProjectProfileFieldValues(field.key, aggregated[field.key] || []);
+    const values = mergeProjectProfileValues(field.key, ownValues, aggregatedValues);
+    return {
+      key: field.key,
+      label: field.label,
+      values,
+      count: values.length,
+    };
+  });
+});
+
+const projectProfileFilledFieldCount = computed(
+  () => projectProfileFields.value.filter((field) => field.count > 0).length,
+);
 
 const inputPlaceholder = computed(() => {
   if (routeScopeType.value === 'project-canvas') {
@@ -1265,6 +1429,7 @@ watch(
   (nextScopeKey) => {
     messageDraft.value = '';
     pendingUploads.value = [];
+    isProjectProfileExpanded.value = false;
     stopVoiceCapture();
     pendingComposerHeightReset.value = true;
     if (!isOpen.value) return;
@@ -1374,6 +1539,47 @@ onBeforeUnmount(() => {
         </button>
         </div>
       </header>
+
+      <section v-if="routeScopeType === 'project-canvas'" class="agent-project-profile">
+        <button
+          type="button"
+          class="agent-project-profile-toggle"
+          :class="{ expanded: isProjectProfileExpanded }"
+          @click="isProjectProfileExpanded = !isProjectProfileExpanded"
+        >
+          <span class="agent-project-profile-title">Профиль проекта</span>
+          <span class="agent-project-profile-count">
+            {{ projectProfileFilledFieldCount }} / {{ PROJECT_PROFILE_FIELD_KEYS.length }}
+          </span>
+          <span class="agent-project-profile-chevron" aria-hidden="true"></span>
+        </button>
+
+        <div v-show="isProjectProfileExpanded" class="agent-project-profile-body">
+          <p v-if="projectProfileDescription" class="agent-project-description">
+            {{ projectProfileDescription }}
+          </p>
+
+          <div class="agent-project-fields-list">
+            <div
+              v-for="field in projectProfileFields"
+              :key="field.key"
+              class="agent-project-field-row"
+            >
+              <div class="agent-project-field-label">{{ field.label }}: {{ field.count }}</div>
+              <div class="agent-project-field-values">
+                <span
+                  v-for="value in field.values"
+                  :key="`${field.key}:${value}`"
+                  class="agent-project-field-chip"
+                  :title="field.key === 'links' ? value : ''"
+                >
+                  {{ field.key === 'links' ? getProjectLinkChipLabel(value) : value }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
       <section ref="chatFeedRef" class="agent-chat-feed" @scroll.passive="onFeedScroll">
         <div v-if="!scopedMessages.length" class="agent-chat-empty">
@@ -1683,6 +1889,105 @@ onBeforeUnmount(() => {
   color: #1058ff;
   border-color: #bfd5ff;
   background: #eef4ff;
+}
+
+.agent-project-profile {
+  border-bottom: 1px solid #e8edf7;
+  background: #ffffff;
+}
+
+.agent-project-profile-toggle {
+  width: 100%;
+  border: none;
+  background: #ffffff;
+  color: #0f172a;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.agent-project-profile-title {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.agent-project-profile-count {
+  margin-left: auto;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.agent-project-profile-chevron {
+  width: 8px;
+  height: 8px;
+  border-right: 1.8px solid #64748b;
+  border-bottom: 1.8px solid #64748b;
+  transform: rotate(45deg);
+  transition: transform 0.16s ease;
+}
+
+.agent-project-profile-toggle.expanded .agent-project-profile-chevron {
+  transform: rotate(225deg);
+}
+
+.agent-project-profile-body {
+  border-top: 1px solid #eff3fb;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.agent-project-description {
+  margin: 0;
+  border: 1px solid #dbe4f3;
+  border-radius: 9px;
+  background: #f8fbff;
+  color: #334155;
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+}
+
+.agent-project-fields-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-project-field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-project-field-label {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.agent-project-field-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.agent-project-field-chip {
+  border: 1px solid #dbe4f3;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 3px 7px;
 }
 
 .agent-chat-feed {
