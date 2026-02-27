@@ -76,6 +76,7 @@ const chatFeedRef = ref<HTMLElement | null>(null);
 const chatInputRef = ref<HTMLTextAreaElement | null>(null);
 const docInputRef = ref<HTMLInputElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
+const resizeHandleRef = ref<HTMLElement | null>(null);
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
 const pendingComposerHeightReset = ref(false);
 const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1366);
@@ -262,6 +263,13 @@ function persistPanelSize() {
 }
 
 const isPhoneViewport = computed(() => viewportWidth.value <= 700);
+const isIPadLikeDevice = computed(() => {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  const platform = navigator.platform || '';
+  return /iPad/i.test(ua) || (platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+});
+const canResizePanel = computed(() => !isPhoneViewport.value || isIPadLikeDevice.value);
 const panelEdgeMarginPx = computed(() => (isPhoneViewport.value ? 10 : 18));
 
 const panelConstraints = computed(() => {
@@ -324,6 +332,9 @@ function stopPanelResize() {
   window.removeEventListener('pointermove', onPanelResizePointerMove);
   window.removeEventListener('pointerup', onPanelResizePointerUp);
   window.removeEventListener('pointercancel', onPanelResizePointerUp);
+  window.removeEventListener('touchmove', onPanelResizeTouchMove);
+  window.removeEventListener('touchend', onPanelResizeTouchEnd);
+  window.removeEventListener('touchcancel', onPanelResizeTouchEnd);
 }
 
 function onPanelResizePointerMove(event: PointerEvent) {
@@ -346,7 +357,7 @@ function onPanelResizePointerUp() {
 }
 
 function onPanelResizeHandlePointerDown(event: PointerEvent) {
-  if (isPhoneViewport.value) return;
+  if (!canResizePanel.value) return;
   if (event.pointerType === 'mouse' && event.button !== 0) return;
   event.preventDefault();
   event.stopPropagation();
@@ -362,10 +373,63 @@ function onPanelResizeHandlePointerDown(event: PointerEvent) {
   };
   isResizingPanel.value = true;
   resizePointerId.value = event.pointerId;
+  if (resizeHandleRef.value && typeof resizeHandleRef.value.setPointerCapture === 'function') {
+    try {
+      resizeHandleRef.value.setPointerCapture(event.pointerId);
+    } catch {
+      // Ignore pointer capture errors in browsers that partially support it.
+    }
+  }
 
   window.addEventListener('pointermove', onPanelResizePointerMove, { passive: true });
   window.addEventListener('pointerup', onPanelResizePointerUp);
   window.addEventListener('pointercancel', onPanelResizePointerUp);
+}
+
+function onPanelResizeTouchMove(event: TouchEvent) {
+  if (!isResizingPanel.value || !resizeStart.value) return;
+  const touch = event.touches?.[0];
+  if (!touch) return;
+
+  event.preventDefault();
+
+  const deltaX = touch.clientX - resizeStart.value.clientX;
+  const deltaY = touch.clientY - resizeStart.value.clientY;
+  const nextWidth = resizeStart.value.width - deltaX;
+  const nextHeight = resizeStart.value.height - deltaY;
+  panelSize.value = clampPanelSize({
+    width: nextWidth,
+    height: nextHeight,
+  });
+}
+
+function onPanelResizeTouchEnd() {
+  if (!isResizingPanel.value) return;
+  stopPanelResize();
+  persistPanelSize();
+}
+
+function onPanelResizeHandleTouchStart(event: TouchEvent) {
+  if (!canResizePanel.value) return;
+  const touch = event.touches?.[0];
+  if (!touch) return;
+  event.preventDefault();
+  event.stopPropagation();
+
+  const panel = panelRef.value;
+  if (!panel) return;
+  const rect = panel.getBoundingClientRect();
+  resizeStart.value = {
+    clientX: touch.clientX,
+    clientY: touch.clientY,
+    width: rect.width,
+    height: rect.height,
+  };
+  isResizingPanel.value = true;
+
+  window.addEventListener('touchmove', onPanelResizeTouchMove, { passive: false });
+  window.addEventListener('touchend', onPanelResizeTouchEnd);
+  window.addEventListener('touchcancel', onPanelResizeTouchEnd);
 }
 
 const routeScopeType = computed<'collection' | 'project-canvas'>(() => {
@@ -1144,11 +1208,15 @@ onBeforeUnmount(() => {
       @pointerdown.stop
     >
       <button
+        v-if="canResizePanel"
+        ref="resizeHandleRef"
         type="button"
         class="agent-chat-resize-handle"
+        :class="{ touch: isIPadLikeDevice }"
         title="Изменить размер окна"
         aria-label="Изменить размер окна"
         @pointerdown="onPanelResizeHandlePointerDown"
+        @touchstart="onPanelResizeHandleTouchStart"
       >
         <span />
       </button>
@@ -1409,8 +1477,8 @@ onBeforeUnmount(() => {
   position: absolute;
   top: 0;
   left: 0;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border: none;
   border-radius: 0;
   background: #1058ff;
@@ -1424,6 +1492,11 @@ onBeforeUnmount(() => {
   z-index: 3;
   padding: 0;
   box-shadow: none;
+}
+
+.agent-chat-resize-handle.touch {
+  width: 24px;
+  height: 24px;
 }
 
 .agent-chat-resize-handle span {
@@ -1858,10 +1931,6 @@ onBeforeUnmount(() => {
     width: calc(100vw - 20px);
     min-width: 280px;
     min-height: 320px;
-  }
-
-  .agent-chat-resize-handle {
-    display: none;
   }
 
   .agent-chat-dock {
