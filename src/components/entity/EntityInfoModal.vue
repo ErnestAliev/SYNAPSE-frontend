@@ -3208,10 +3208,14 @@ onBeforeUnmount(() => {
   overflow-x: auto;
   overflow-y: hidden;
   padding: 4px 6px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 .entity-info-field-scroll::-webkit-scrollbar {
-  height: 6px;
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 .entity-info-tag {
