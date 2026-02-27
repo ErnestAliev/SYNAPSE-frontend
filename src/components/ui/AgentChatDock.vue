@@ -46,6 +46,7 @@ const PANEL_SIZE_STORAGE_KEY = 'synapse12.agent-chat.panel-size.v1';
 const PANEL_TOP_OFFSET_PX = 60;
 const AI_ATTACHMENT_MAX_INLINE_BYTES = 2_000_000;
 const AI_ATTACHMENT_MAX_INLINE_DATA_URL_LENGTH = 2_800_000;
+const AGENT_CHAT_REQUEST_TIMEOUT_MS = 130_000;
 const MAX_MESSAGES_PER_SCOPE = 140;
 const REMOTE_HISTORY_POLL_INTERVAL_MS = 4500;
 const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
@@ -834,6 +835,8 @@ async function requestAssistantReply(args: {
     history: args.history,
     attachments: buildAttachmentsPayload(args.attachments),
     debug: true,
+  }, {
+    timeout: AGENT_CHAT_REQUEST_TIMEOUT_MS,
   });
 
   return {
