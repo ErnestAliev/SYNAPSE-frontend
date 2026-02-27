@@ -360,6 +360,7 @@ function onPanelResizePointerUp() {
 
 function onPanelResizeHandlePointerDown(event: PointerEvent) {
   if (!canResizePanel.value) return;
+  if (event.pointerType === 'touch') return;
   if (event.pointerType === 'mouse' && event.button !== 0) return;
   event.preventDefault();
   event.stopPropagation();
@@ -1548,8 +1549,8 @@ onBeforeUnmount(() => {
 }
 
 .agent-chat-resize-handle.touch {
-  width: 24px;
-  height: 24px;
+  width: 30px;
+  height: 30px;
 }
 
 .agent-chat-resize-handle span {
