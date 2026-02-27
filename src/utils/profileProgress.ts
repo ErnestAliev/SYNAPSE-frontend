@@ -24,13 +24,13 @@ type MetadataFieldKey =
 const ENTITY_METADATA_FIELDS: Record<EntityType, MetadataFieldKey[]> = {
   connection: ['tags', 'markers', 'roles', 'status', 'links', 'importance'],
   person: ['tags', 'markers', 'skills', 'importance', 'links', 'roles'],
-  company: ['tags', 'industry', 'departments', 'stage', 'risks', 'links'],
-  event: ['tags', 'date', 'location', 'participants', 'outcomes', 'links'],
-  resource: ['tags', 'resources', 'status', 'importance', 'owners', 'links'],
-  goal: ['tags', 'priority', 'metrics', 'owners', 'status', 'links'],
-  result: ['tags', 'outcomes', 'metrics', 'importance', 'owners', 'links'],
-  task: ['tags', 'priority', 'status', 'owners', 'date', 'links'],
-  project: ['tags', 'stage', 'priority', 'risks', 'owners', 'links'],
+  company: ['tags', 'markers', 'industry', 'departments', 'stage', 'risks', 'links'],
+  event: ['tags', 'markers', 'date', 'location', 'participants', 'outcomes', 'links'],
+  resource: ['tags', 'markers', 'resources', 'status', 'importance', 'owners', 'links'],
+  goal: ['tags', 'markers', 'priority', 'metrics', 'owners', 'status', 'links'],
+  result: ['tags', 'markers', 'outcomes', 'metrics', 'importance', 'owners', 'links'],
+  task: ['tags', 'markers', 'priority', 'status', 'owners', 'date', 'links'],
+  project: ['tags', 'markers', 'stage', 'priority', 'risks', 'owners', 'links'],
   shape: ['tags', 'markers', 'importance', 'status', 'links'],
 };
 
@@ -59,13 +59,13 @@ const PROFILE_METADATA_TARGETS: Record<MetadataFieldKey, number> = {
 const PROFILE_METADATA_WEIGHTS: Record<EntityType, Partial<Record<MetadataFieldKey, number>>> = {
   connection: { tags: 1.2, markers: 1, roles: 1.1, status: 1.1, links: 0.9, importance: 1.1 },
   person: { tags: 1.1, markers: 0.8, skills: 1.3, importance: 1.2, links: 0.9, roles: 1.3 },
-  company: { tags: 1, industry: 1.3, departments: 1.2, stage: 1.2, risks: 1, links: 0.9 },
-  event: { tags: 0.9, date: 1.3, location: 1.2, participants: 1.1, outcomes: 1.1, links: 0.9 },
-  resource: { tags: 1, resources: 1.3, status: 1.2, importance: 1.1, owners: 1, links: 0.9 },
-  goal: { tags: 0.9, priority: 1.2, metrics: 1.3, owners: 1.1, status: 1.1, links: 0.9 },
-  result: { tags: 0.9, outcomes: 1.3, metrics: 1.2, importance: 1.1, owners: 1, links: 0.9 },
-  task: { tags: 0.9, priority: 1.2, status: 1.3, owners: 1.1, date: 1.1, links: 0.9 },
-  project: { tags: 1, stage: 1.2, priority: 1.2, risks: 1.1, owners: 1.1, links: 0.9 },
+  company: { tags: 1, markers: 1, industry: 1.3, departments: 1.2, stage: 1.2, risks: 1, links: 0.9 },
+  event: { tags: 0.9, markers: 1, date: 1.3, location: 1.2, participants: 1.1, outcomes: 1.1, links: 0.9 },
+  resource: { tags: 1, markers: 1, resources: 1.3, status: 1.2, importance: 1.1, owners: 1, links: 0.9 },
+  goal: { tags: 0.9, markers: 1, priority: 1.2, metrics: 1.3, owners: 1.1, status: 1.1, links: 0.9 },
+  result: { tags: 0.9, markers: 1, outcomes: 1.3, metrics: 1.2, importance: 1.1, owners: 1, links: 0.9 },
+  task: { tags: 0.9, markers: 1, priority: 1.2, status: 1.3, owners: 1.1, date: 1.1, links: 0.9 },
+  project: { tags: 1, markers: 1, stage: 1.2, priority: 1.2, risks: 1.1, owners: 1.1, links: 0.9 },
   shape: { tags: 1, markers: 1.1, importance: 1.2, status: 1.2, links: 0.9 },
 };
 

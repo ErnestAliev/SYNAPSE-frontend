@@ -159,6 +159,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   ],
   company: [
     { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
     { key: 'industry', label: 'Отрасли' },
     { key: 'departments', label: 'Отделы' },
     { key: 'stage', label: 'Стадии' },
@@ -168,6 +169,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   ],
   event: [
     { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
     { key: 'date', label: 'Даты' },
     { key: 'location', label: 'Локации' },
     { key: 'participants', label: 'Участники' },
@@ -176,6 +178,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   ],
   resource: [
     { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
     { key: 'resources', label: 'Ресурсы' },
     { key: 'status', label: 'Статусы' },
     { key: 'importance', label: 'Значимость' },
@@ -184,6 +187,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   ],
   goal: [
     { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
     { key: 'priority', label: 'Приоритеты' },
     { key: 'metrics', label: 'Метрики' },
     { key: 'owners', label: 'Ответственные' },
@@ -192,6 +196,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   ],
   result: [
     { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
     { key: 'outcomes', label: 'Результаты' },
     { key: 'metrics', label: 'Метрики' },
     { key: 'importance', label: 'Значимость' },
@@ -200,6 +205,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   ],
   task: [
     { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
     { key: 'priority', label: 'Приоритеты' },
     { key: 'status', label: 'Статусы' },
     { key: 'owners', label: 'Ответственные' },
@@ -208,6 +214,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   ],
   project: [
     { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
     { key: 'stage', label: 'Стадии' },
     { key: 'priority', label: 'Приоритеты' },
     { key: 'risks', label: 'Риски' },

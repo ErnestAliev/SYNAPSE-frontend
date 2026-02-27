@@ -231,6 +231,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   ],
   company: [
     { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
     { key: 'industry', label: 'Отрасли' },
     { key: 'departments', label: 'Отделы' },
     { key: 'stage', label: 'Стадии' },
@@ -239,6 +240,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   ],
   event: [
     { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
     { key: 'date', label: 'Даты' },
     { key: 'location', label: 'Локации' },
     { key: 'participants', label: 'Участники' },
@@ -247,6 +249,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   ],
   resource: [
     { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
     { key: 'resources', label: 'Ресурсы' },
     { key: 'status', label: 'Статусы' },
     { key: 'importance', label: 'Значимость' },
@@ -255,6 +258,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   ],
   goal: [
     { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
     { key: 'priority', label: 'Приоритеты' },
     { key: 'metrics', label: 'Метрики' },
     { key: 'owners', label: 'Ответственные' },
@@ -263,6 +267,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   ],
   result: [
     { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
     { key: 'outcomes', label: 'Результаты' },
     { key: 'metrics', label: 'Метрики' },
     { key: 'importance', label: 'Значимость' },
@@ -271,6 +276,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   ],
   task: [
     { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
     { key: 'priority', label: 'Приоритеты' },
     { key: 'status', label: 'Статусы' },
     { key: 'owners', label: 'Ответственные' },
@@ -279,6 +285,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   ],
   project: [
     { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
     { key: 'stage', label: 'Стадии' },
     { key: 'priority', label: 'Приоритеты' },
     { key: 'risks', label: 'Риски' },
@@ -333,6 +340,7 @@ const PROFILE_METADATA_WEIGHTS: Record<EntityType, Partial<Record<MetadataFieldK
   },
   company: {
     tags: 1,
+    markers: 1,
     industry: 1.3,
     departments: 1.2,
     stage: 1.2,
@@ -341,6 +349,7 @@ const PROFILE_METADATA_WEIGHTS: Record<EntityType, Partial<Record<MetadataFieldK
   },
   event: {
     tags: 0.9,
+    markers: 1,
     date: 1.3,
     location: 1.2,
     participants: 1.1,
@@ -349,6 +358,7 @@ const PROFILE_METADATA_WEIGHTS: Record<EntityType, Partial<Record<MetadataFieldK
   },
   resource: {
     tags: 1,
+    markers: 1,
     resources: 1.3,
     status: 1.2,
     importance: 1.1,
@@ -357,6 +367,7 @@ const PROFILE_METADATA_WEIGHTS: Record<EntityType, Partial<Record<MetadataFieldK
   },
   goal: {
     tags: 0.9,
+    markers: 1,
     priority: 1.2,
     metrics: 1.3,
     owners: 1.1,
@@ -365,6 +376,7 @@ const PROFILE_METADATA_WEIGHTS: Record<EntityType, Partial<Record<MetadataFieldK
   },
   result: {
     tags: 0.9,
+    markers: 1,
     outcomes: 1.3,
     metrics: 1.2,
     importance: 1.1,
@@ -373,6 +385,7 @@ const PROFILE_METADATA_WEIGHTS: Record<EntityType, Partial<Record<MetadataFieldK
   },
   task: {
     tags: 0.9,
+    markers: 1,
     priority: 1.2,
     status: 1.3,
     owners: 1.1,
@@ -381,6 +394,7 @@ const PROFILE_METADATA_WEIGHTS: Record<EntityType, Partial<Record<MetadataFieldK
   },
   project: {
     tags: 1,
+    markers: 1,
     stage: 1.2,
     priority: 1.2,
     risks: 1.1,
