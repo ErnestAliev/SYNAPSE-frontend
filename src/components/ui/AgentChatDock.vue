@@ -90,6 +90,7 @@ const resizeStart = ref<{
   width: number;
   height: number;
 } | null>(null);
+const shouldAutoScrollToBottom = ref(true);
 const historyPollingTimer = ref<ReturnType<typeof setInterval> | null>(null);
 const activeSyncVersion = ref(0);
 const isRemoteHistoryResetting = ref(false);
@@ -272,7 +273,11 @@ const isIPadLikeDevice = computed(() => {
   const platform = navigator.platform || '';
   return /iPad/i.test(ua) || (platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 });
-const canResizePanel = computed(() => !isPhoneViewport.value || isIPadLikeDevice.value);
+const isTouchDevice = computed(() => {
+  if (typeof navigator === 'undefined') return false;
+  return navigator.maxTouchPoints > 0;
+});
+const canResizePanel = computed(() => true);
 const panelEdgeMarginPx = computed(() => (isPhoneViewport.value ? 10 : 18));
 
 const panelConstraints = computed(() => {
@@ -750,7 +755,7 @@ async function syncScopeHistoryFromServer(targetScopeKey = scopeKey.value) {
   } finally {
     if (isOpen.value) {
       void nextTick(() => {
-        scrollToBottom('auto');
+        maybeScrollToBottom('auto');
       });
     }
   }
@@ -891,6 +896,24 @@ function scrollToBottom(behavior: ScrollBehavior = 'smooth') {
   });
 }
 
+function isFeedNearBottom(thresholdPx = 72) {
+  const feed = chatFeedRef.value;
+  if (!feed) return true;
+  const distanceToBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
+  return distanceToBottom <= thresholdPx;
+}
+
+function onFeedScroll() {
+  if (!isOpen.value) return;
+  shouldAutoScrollToBottom.value = isFeedNearBottom();
+}
+
+function maybeScrollToBottom(behavior: ScrollBehavior = 'smooth', force = false) {
+  if (!force && !shouldAutoScrollToBottom.value) return;
+  scrollToBottom(behavior);
+  shouldAutoScrollToBottom.value = true;
+}
+
 function autoResizeComposer() {
   const input = chatInputRef.value;
   if (!input) return;
@@ -912,9 +935,10 @@ function toggleChat() {
     startHistoryPolling();
     void syncScopeHistoryFromServer(scopeKey.value);
     pendingComposerHeightReset.value = true;
+    shouldAutoScrollToBottom.value = true;
     void nextTick(() => {
       autoResizeComposer();
-      scrollToBottom('auto');
+      maybeScrollToBottom('auto', true);
     });
   } else {
     isClearHistoryConfirmOpen.value = false;
@@ -972,7 +996,7 @@ async function confirmClearAllChatHistory() {
 
   void nextTick(() => {
     autoResizeComposer();
-    scrollToBottom('auto');
+    maybeScrollToBottom('auto', true);
   });
 }
 
@@ -999,7 +1023,8 @@ async function sendMessage() {
 
   void nextTick(() => {
     autoResizeComposer();
-    scrollToBottom('auto');
+    shouldAutoScrollToBottom.value = true;
+    maybeScrollToBottom('auto', true);
   });
 
   try {
@@ -1035,7 +1060,7 @@ async function sendMessage() {
   } finally {
     isSending.value = false;
     void nextTick(() => {
-      scrollToBottom('auto');
+      maybeScrollToBottom('auto');
     });
   }
 }
@@ -1191,7 +1216,8 @@ watch(
     void syncScopeHistoryFromServer(nextScopeKey);
     void nextTick(() => {
       autoResizeComposer();
-      scrollToBottom('auto');
+      shouldAutoScrollToBottom.value = true;
+      maybeScrollToBottom('auto', true);
     });
   },
   { immediate: true },
@@ -1200,7 +1226,7 @@ watch(
 watch(scopedMessages, () => {
   if (!isOpen.value) return;
   void nextTick(() => {
-    scrollToBottom('auto');
+    maybeScrollToBottom('auto');
   });
 });
 
@@ -1269,7 +1295,7 @@ onBeforeUnmount(() => {
         ref="resizeHandleRef"
         type="button"
         class="agent-chat-resize-handle"
-        :class="{ touch: isIPadLikeDevice }"
+        :class="{ touch: isTouchDevice || isPhoneViewport || isIPadLikeDevice }"
         title="Изменить размер окна"
         aria-label="Изменить размер окна"
         @pointerdown="onPanelResizeHandlePointerDown"
@@ -1304,7 +1330,7 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <section ref="chatFeedRef" class="agent-chat-feed">
+      <section ref="chatFeedRef" class="agent-chat-feed" @scroll.passive="onFeedScroll">
         <div v-if="!scopedMessages.length" class="agent-chat-empty">
           Сообщений пока нет
         </div>
@@ -1552,8 +1578,8 @@ onBeforeUnmount(() => {
 }
 
 .agent-chat-resize-handle.touch {
-  width: 30px;
-  height: 30px;
+  width: 36px;
+  height: 36px;
 }
 
 .agent-chat-resize-handle span {
