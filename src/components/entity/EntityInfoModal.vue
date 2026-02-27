@@ -1669,6 +1669,21 @@ const activeFields = computed(() => {
   return getEntityContextFields(type);
 });
 
+const entityProfileFilledFieldCount = computed(() => {
+  const currentDraft = draft.value;
+  if (!currentDraft) return 0;
+
+  let filled = currentDraft.description.trim() ? 1 : 0;
+  for (const field of activeFields.value) {
+    if ((currentDraft.metadataValues[field.key] || []).length > 0) {
+      filled += 1;
+    }
+  }
+  return filled;
+});
+
+const entityProfileTotalFieldCount = computed(() => activeFields.value.length + 1);
+
 const chatPlaceholder = computed(() => {
   const type = draft.value?.type || 'shape';
   return `Опишите ${ENTITY_TYPE_CHAT_TARGET[type]}`;
@@ -2272,72 +2287,77 @@ onBeforeUnmount(() => {
       </p>
 
       <div class="entity-info-fixed">
-        <section class="entity-info-section">
-          <textarea
-            ref="descriptionTextareaRef"
-            v-model="draft.description"
-            class="entity-info-textarea entity-info-description"
-            :style="descriptionTextareaStyle"
-            rows="2"
-            placeholder="Описание"
-            @input="onDescriptionInput"
-          />
-          <div
-            class="entity-info-description-resize-handle"
-            title="Изменить высоту описания"
-            @pointerdown="onDescriptionResizePointerDown"
-          />
-
+        <section class="entity-info-section entity-info-profile">
           <button
             type="button"
-            class="entity-info-fields-toggle"
+            class="entity-info-profile-toggle"
             :class="{ expanded: isFieldsListExpanded }"
             @click="toggleFieldsListExpanded"
           >
-            <span class="entity-info-fields-toggle-label">Поля</span>
-            <span class="entity-info-fields-toggle-chevron" aria-hidden="true"></span>
+            <span class="entity-info-profile-toggle-label">Профиль</span>
+            <span class="entity-info-profile-toggle-count">
+              {{ entityProfileFilledFieldCount }} / {{ entityProfileTotalFieldCount }}
+            </span>
+            <span class="entity-info-profile-toggle-chevron" aria-hidden="true"></span>
           </button>
 
-          <div v-show="isFieldsListExpanded" class="entity-info-fields-list">
+          <div v-show="isFieldsListExpanded" class="entity-info-profile-body">
+            <textarea
+              ref="descriptionTextareaRef"
+              v-model="draft.description"
+              class="entity-info-textarea entity-info-description"
+              :style="descriptionTextareaStyle"
+              rows="2"
+              placeholder="Описание"
+              @input="onDescriptionInput"
+            />
             <div
-              v-for="field in activeFields"
-              :key="field.key"
-              class="entity-info-field-row"
-            >
-              <div class="entity-info-field-scroll">
-                <input
-                  :ref="(el) => setFieldInputRef(field.key, el)"
-                  :value="getFieldDraft(field.key)"
-                  type="text"
-                  class="entity-info-tag-input"
-                  :maxlength="getMetadataFieldMaxLength(field.key)"
-                  :placeholder="getFieldPlaceholder(field)"
-                  @input="onFieldDraftInput(field.key, $event)"
-                  @keydown.enter.prevent="addFieldValue(field.key)"
-                  @keydown="onFieldDraftKeydown(field.key, $event)"
-                />
-                <div
-                  v-for="value in getFieldValues(field.key)"
-                  :key="`${field.key}:${value}`"
-                  class="entity-info-tag"
-                >
-                  <button
-                    type="button"
-                    class="entity-info-tag-main"
-                    :class="{ link: field.key === 'links' }"
-                    :title="field.key === 'links' ? value : 'Редактировать'"
-                    @click="field.key === 'links' ? openFieldLink(value) : startEditFieldValue(field.key, value)"
+              class="entity-info-description-resize-handle"
+              title="Изменить высоту описания"
+              @pointerdown="onDescriptionResizePointerDown"
+            />
+
+            <div class="entity-info-fields-list">
+              <div
+                v-for="field in activeFields"
+                :key="field.key"
+                class="entity-info-field-row"
+              >
+                <div class="entity-info-field-scroll">
+                  <input
+                    :ref="(el) => setFieldInputRef(field.key, el)"
+                    :value="getFieldDraft(field.key)"
+                    type="text"
+                    class="entity-info-tag-input"
+                    :maxlength="getMetadataFieldMaxLength(field.key)"
+                    :placeholder="getFieldPlaceholder(field)"
+                    @input="onFieldDraftInput(field.key, $event)"
+                    @keydown.enter.prevent="addFieldValue(field.key)"
+                    @keydown="onFieldDraftKeydown(field.key, $event)"
+                  />
+                  <div
+                    v-for="value in getFieldValues(field.key)"
+                    :key="`${field.key}:${value}`"
+                    class="entity-info-tag"
                   >
-                    {{ field.key === 'links' ? getLinkChipLabel(value) : value }}
-                  </button>
-                  <button
-                    type="button"
-                    class="entity-info-tag-remove"
-                    title="Удалить"
-                    @click.stop="removeFieldValue(field.key, value)"
-                  >
-                    ×
-                  </button>
+                    <button
+                      type="button"
+                      class="entity-info-tag-main"
+                      :class="{ link: field.key === 'links' }"
+                      :title="field.key === 'links' ? value : 'Редактировать'"
+                      @click="field.key === 'links' ? openFieldLink(value) : startEditFieldValue(field.key, value)"
+                    >
+                      {{ field.key === 'links' ? getLinkChipLabel(value) : value }}
+                    </button>
+                    <button
+                      type="button"
+                      class="entity-info-tag-remove"
+                      title="Удалить"
+                      @click.stop="removeFieldValue(field.key, value)"
+                    >
+                      ×
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -3126,7 +3146,11 @@ onBeforeUnmount(() => {
   background: #cbd5e1;
 }
 
-.entity-info-fields-toggle {
+.entity-info-profile {
+  gap: 8px;
+}
+
+.entity-info-profile-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: space-between;
@@ -3143,11 +3167,18 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
-.entity-info-fields-toggle-label {
+.entity-info-profile-toggle-label {
   line-height: 1;
 }
 
-.entity-info-fields-toggle-chevron {
+.entity-info-profile-toggle-count {
+  margin-left: auto;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.entity-info-profile-toggle-chevron {
   width: 0;
   height: 0;
   border-left: 5px solid transparent;
@@ -3156,8 +3187,16 @@ onBeforeUnmount(() => {
   transition: transform 0.16s ease;
 }
 
-.entity-info-fields-toggle.expanded .entity-info-fields-toggle-chevron {
+.entity-info-profile-toggle.expanded .entity-info-profile-toggle-chevron {
   transform: rotate(180deg);
+}
+
+.entity-info-profile-body {
+  border-top: 1px solid #eef3fb;
+  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .entity-info-fields-list {

@@ -85,7 +85,12 @@ const PROJECT_PROFILE_FIELD_CONFIGS = [
   { key: 'importance', label: 'Значимость' },
   { key: 'ignoredNoise', label: 'Шум' },
 ] as const;
-const PROJECT_PROFILE_FIELD_KEYS = PROJECT_PROFILE_FIELD_CONFIGS.map((item) => item.key);
+type ProjectProfileFieldKey = (typeof PROJECT_PROFILE_FIELD_CONFIGS)[number]['key'];
+const PROJECT_PROFILE_FIELD_KEYS = PROJECT_PROFILE_FIELD_CONFIGS.map((item) => item.key) as ProjectProfileFieldKey[];
+const PROJECT_PROFILE_SYNC_DELAY = 420;
+const PROJECT_DESCRIPTION_MAX_LENGTH = 3000;
+const PROJECT_FIELD_DEFAULT_MAX_LENGTH = 96;
+const PROJECT_FIELD_LINK_MAX_LENGTH = 2048;
 
 const route = useRoute();
 const entitiesStore = useEntitiesStore();
@@ -98,6 +103,9 @@ const isSending = ref(false);
 const isResizingPanel = ref(false);
 const isClearHistoryConfirmOpen = ref(false);
 const isProjectProfileExpanded = ref(false);
+const projectFieldDrafts = ref<Record<ProjectProfileFieldKey, string>>(buildProjectFieldDrafts());
+const projectFieldInputRefs = ref<Partial<Record<ProjectProfileFieldKey, HTMLInputElement | null>>>({});
+const projectEditingFieldValue = ref<{ fieldKey: ProjectProfileFieldKey; originalValue: string } | null>(null);
 
 const chatFeedRef = ref<HTMLElement | null>(null);
 const chatInputRef = ref<HTMLTextAreaElement | null>(null);
@@ -149,6 +157,14 @@ function getIsoNow() {
   return new Date().toISOString();
 }
 
+function buildProjectFieldDrafts() {
+  const drafts = {} as Record<ProjectProfileFieldKey, string>;
+  for (const fieldKey of PROJECT_PROFILE_FIELD_KEYS) {
+    drafts[fieldKey] = '';
+  }
+  return drafts;
+}
+
 function normalizeType(value: unknown): EntityType {
   const allowed: EntityType[] = [
     'project',
@@ -170,15 +186,46 @@ function normalizeType(value: unknown): EntityType {
   return 'project';
 }
 
-function normalizeProjectProfileFieldValues(fieldKey: string, rawValue: unknown) {
+function normalizeProjectImportanceValue(rawValue: unknown) {
+  const normalized = typeof rawValue === 'string' ? rawValue.trim().toLowerCase() : '';
+  if (!normalized) return '';
+  if (normalized === 'низкая' || normalized === 'low' || normalized === 'l') return 'Низкая';
+  if (normalized === 'средняя' || normalized === 'medium' || normalized === 'med' || normalized === 'm') return 'Средняя';
+  if (normalized === 'высокая' || normalized === 'high' || normalized === 'h' || normalized === 'critical' || normalized === 'критично') {
+    return 'Высокая';
+  }
+  return '';
+}
+
+function normalizeProjectLinkValue(rawValue: unknown) {
+  const raw = typeof rawValue === 'string' ? rawValue.trim() : '';
+  if (!raw) return '';
+  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const url = new URL(withProtocol);
+    if (!url.hostname || !url.protocol.startsWith('http')) return '';
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+function normalizeProjectProfileFieldValues(fieldKey: ProjectProfileFieldKey, rawValue: unknown) {
   const source = Array.isArray(rawValue) ? rawValue : [rawValue];
   const dedup = new Set<string>();
   const values: string[] = [];
   const maxItems = fieldKey === 'importance' ? 1 : fieldKey === 'links' ? 24 : 40;
-  const maxLength = fieldKey === 'links' ? 240 : fieldKey === 'tasks' ? 120 : 96;
+  const maxLength = fieldKey === 'links' ? 240 : fieldKey === 'tasks' ? 120 : PROJECT_FIELD_DEFAULT_MAX_LENGTH;
 
   for (const item of source) {
-    const value = typeof item === 'string' ? item.trim().slice(0, maxLength) : '';
+    const value =
+      fieldKey === 'importance'
+        ? normalizeProjectImportanceValue(item)
+        : fieldKey === 'links'
+          ? normalizeProjectLinkValue(item).slice(0, maxLength)
+          : typeof item === 'string'
+            ? item.trim().slice(0, maxLength)
+            : '';
     if (!value) continue;
     const key = value.toLowerCase();
     if (dedup.has(key)) continue;
@@ -190,7 +237,7 @@ function normalizeProjectProfileFieldValues(fieldKey: string, rawValue: unknown)
   return values;
 }
 
-function mergeProjectProfileValues(fieldKey: string, ...lists: string[][]) {
+function mergeProjectProfileValues(fieldKey: ProjectProfileFieldKey, ...lists: string[][]) {
   const dedup = new Set<string>();
   const values: string[] = [];
   const maxItems = fieldKey === 'importance' ? 1 : fieldKey === 'links' ? 24 : 40;
@@ -206,6 +253,21 @@ function mergeProjectProfileValues(fieldKey: string, ...lists: string[][]) {
   }
 
   return values;
+}
+
+function normalizeProjectFieldInputValue(fieldKey: ProjectProfileFieldKey, rawValue: string) {
+  const raw = rawValue.trim();
+  if (!raw) return '';
+  if (fieldKey === 'importance') return normalizeProjectImportanceValue(raw);
+  if (fieldKey === 'links') return normalizeProjectLinkValue(raw).slice(0, PROJECT_FIELD_LINK_MAX_LENGTH);
+  const maxLength = fieldKey === 'tasks' ? 120 : PROJECT_FIELD_DEFAULT_MAX_LENGTH;
+  return raw.slice(0, maxLength);
+}
+
+function getProjectFieldMaxLength(fieldKey: ProjectProfileFieldKey) {
+  if (fieldKey === 'links') return PROJECT_FIELD_LINK_MAX_LENGTH;
+  if (fieldKey === 'tasks') return 120;
+  return PROJECT_FIELD_DEFAULT_MAX_LENGTH;
 }
 
 function getProjectLinkChipLabel(value: string) {
@@ -652,44 +714,6 @@ const activeProjectEntity = computed<Entity | null>(() => {
   return entity;
 });
 
-const projectCanvasEntities = computed<Entity[]>(() => {
-  const project = activeProjectEntity.value;
-  if (!project) return [];
-  const rawCanvas = toProfile(project.canvas_data);
-  const rawNodes = Array.isArray(rawCanvas.nodes) ? rawCanvas.nodes : [];
-  const uniqueIds = Array.from(
-    new Set(
-      rawNodes
-        .map((rawNode) => toProfile(rawNode))
-        .map((node) => (typeof node.entityId === 'string' ? node.entityId.trim() : ''))
-        .filter((entityId) => entityId && entityId !== project._id),
-    ),
-  );
-
-  return uniqueIds
-    .map((entityId) => entitiesStore.byId(entityId))
-    .filter((entity): entity is Entity => Boolean(entity));
-});
-
-const projectEntityAggregatedFields = computed<Record<string, string[]>>(() => {
-  const aggregated: Record<string, string[]> = Object.fromEntries(
-    PROJECT_PROFILE_FIELD_KEYS.map((fieldKey) => [fieldKey, []]),
-  );
-
-  for (const entity of projectCanvasEntities.value) {
-    const metadata = toProfile(entity.ai_metadata);
-    for (const fieldKey of PROJECT_PROFILE_FIELD_KEYS) {
-      aggregated[fieldKey] = mergeProjectProfileValues(
-        fieldKey,
-        aggregated[fieldKey] || [],
-        normalizeProjectProfileFieldValues(fieldKey, metadata[fieldKey]),
-      );
-    }
-  }
-
-  return aggregated;
-});
-
 const projectProfileDescription = computed(() => {
   const project = activeProjectEntity.value;
   if (!project) return '';
@@ -700,12 +724,9 @@ const projectProfileDescription = computed(() => {
 const projectProfileFields = computed(() => {
   const project = activeProjectEntity.value;
   const metadata = toProfile(project?.ai_metadata);
-  const aggregated = projectEntityAggregatedFields.value;
 
   return PROJECT_PROFILE_FIELD_CONFIGS.map((field) => {
-    const ownValues = normalizeProjectProfileFieldValues(field.key, metadata[field.key]);
-    const aggregatedValues = normalizeProjectProfileFieldValues(field.key, aggregated[field.key] || []);
-    const values = mergeProjectProfileValues(field.key, ownValues, aggregatedValues);
+    const values = normalizeProjectProfileFieldValues(field.key, metadata[field.key]);
     return {
       key: field.key,
       label: field.label,
@@ -715,9 +736,166 @@ const projectProfileFields = computed(() => {
   });
 });
 
+function getProjectFieldPlaceholder(fieldKey: ProjectProfileFieldKey, label: string) {
+  const count = getProjectFieldValues(fieldKey).length;
+  return `${label}: ${count}`;
+}
+
 const projectProfileFilledFieldCount = computed(
   () => projectProfileFields.value.filter((field) => field.count > 0).length,
 );
+
+function getProjectFieldValues(fieldKey: ProjectProfileFieldKey) {
+  const project = activeProjectEntity.value;
+  if (!project) return [] as string[];
+  const metadata = toProfile(project.ai_metadata);
+  return normalizeProjectProfileFieldValues(fieldKey, metadata[fieldKey]);
+}
+
+function getProjectFieldDraft(fieldKey: ProjectProfileFieldKey) {
+  return projectFieldDrafts.value[fieldKey] || '';
+}
+
+function setProjectFieldInputRef(fieldKey: ProjectProfileFieldKey, element: unknown) {
+  if (typeof HTMLInputElement !== 'undefined' && element instanceof HTMLInputElement) {
+    projectFieldInputRefs.value[fieldKey] = element;
+    return;
+  }
+
+  if (element === null) {
+    delete projectFieldInputRefs.value[fieldKey];
+  }
+}
+
+function focusProjectFieldInput(fieldKey: ProjectProfileFieldKey, selectAll = false) {
+  void nextTick(() => {
+    const input = projectFieldInputRefs.value[fieldKey];
+    if (!input) return;
+    input.focus();
+    if (selectAll) {
+      input.select();
+    }
+  });
+}
+
+function queueProjectMetadataUpdate(patch: Record<string, unknown>) {
+  const project = activeProjectEntity.value;
+  if (!project) return;
+
+  const nextMetadata = {
+    ...toProfile(project.ai_metadata),
+    ...patch,
+  };
+
+  entitiesStore.queueEntityUpdate(
+    project._id,
+    {
+      ai_metadata: nextMetadata,
+    },
+    { delay: PROJECT_PROFILE_SYNC_DELAY },
+  );
+}
+
+function applyProjectFieldValues(fieldKey: ProjectProfileFieldKey, values: string[]) {
+  const patch: Record<string, unknown> = {
+    [fieldKey]: values,
+  };
+
+  if (fieldKey === 'importance') {
+    patch.importance_source = values.length ? 'manual' : 'auto';
+  }
+
+  queueProjectMetadataUpdate(patch);
+}
+
+function onProjectDescriptionInput(event: Event) {
+  const input = event.target as HTMLTextAreaElement | null;
+  if (!input) return;
+  queueProjectMetadataUpdate({
+    description: input.value.slice(0, PROJECT_DESCRIPTION_MAX_LENGTH),
+  });
+}
+
+function onProjectFieldDraftInput(fieldKey: ProjectProfileFieldKey, event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  if (!input) return;
+  projectFieldDrafts.value[fieldKey] = input.value.slice(0, getProjectFieldMaxLength(fieldKey));
+}
+
+function onProjectFieldDraftKeydown(fieldKey: ProjectProfileFieldKey, event: KeyboardEvent) {
+  if (event.key !== 'Escape') return;
+  event.preventDefault();
+  projectFieldDrafts.value[fieldKey] = '';
+  if (projectEditingFieldValue.value?.fieldKey === fieldKey) {
+    projectEditingFieldValue.value = null;
+  }
+}
+
+function startEditProjectFieldValue(fieldKey: ProjectProfileFieldKey, value: string) {
+  projectEditingFieldValue.value = {
+    fieldKey,
+    originalValue: value,
+  };
+  projectFieldDrafts.value[fieldKey] = value.slice(0, getProjectFieldMaxLength(fieldKey));
+  focusProjectFieldInput(fieldKey, true);
+}
+
+function addProjectFieldValue(fieldKey: ProjectProfileFieldKey) {
+  const rawDraft = getProjectFieldDraft(fieldKey);
+  const normalizedValue = normalizeProjectFieldInputValue(fieldKey, rawDraft);
+  if (!normalizedValue) return;
+
+  let baseValues = getProjectFieldValues(fieldKey);
+  const editing = projectEditingFieldValue.value;
+
+  if (editing && editing.fieldKey === fieldKey) {
+    const originalKey = editing.originalValue.trim().toLowerCase();
+    baseValues = baseValues.filter((item) => item.trim().toLowerCase() !== originalKey);
+  }
+
+  const nextValues = mergeProjectProfileValues(fieldKey, baseValues, [normalizedValue]);
+  applyProjectFieldValues(fieldKey, nextValues);
+  projectFieldDrafts.value[fieldKey] = '';
+  if (editing?.fieldKey === fieldKey) {
+    projectEditingFieldValue.value = null;
+  }
+}
+
+function removeProjectFieldValue(fieldKey: ProjectProfileFieldKey, value: string) {
+  const removeKey = value.trim().toLowerCase();
+  const nextValues = getProjectFieldValues(fieldKey).filter((item) => item.trim().toLowerCase() !== removeKey);
+  applyProjectFieldValues(fieldKey, nextValues);
+
+  const editing = projectEditingFieldValue.value;
+  if (editing && editing.fieldKey === fieldKey && editing.originalValue.trim().toLowerCase() === removeKey) {
+    projectEditingFieldValue.value = null;
+    projectFieldDrafts.value[fieldKey] = '';
+  }
+}
+
+function openProjectFieldLink(value: string) {
+  if (typeof window === 'undefined') return;
+  const normalized = normalizeProjectLinkValue(value);
+  if (!normalized) return;
+  window.open(normalized, '_blank', 'noopener,noreferrer');
+}
+
+function buildProjectMetadataResetPatch() {
+  const clearedFields = Object.fromEntries(PROJECT_PROFILE_FIELD_KEYS.map((fieldKey) => [fieldKey, []]));
+  return {
+    ...clearedFields,
+    description: '',
+    text_input: '',
+    voice_input: '',
+    documents: [],
+    chat_history: [],
+    description_history: [],
+    description_meta: {},
+    importance_history: [],
+    ai_last_analysis: {},
+    importance_source: 'auto',
+  } as Record<string, unknown>;
+}
 
 const inputPlaceholder = computed(() => {
   if (routeScopeType.value === 'project-canvas') {
@@ -725,6 +903,16 @@ const inputPlaceholder = computed(() => {
   }
   return `Запрос по категории "${ENTITY_TYPE_LABELS[collectionType.value]}"...`;
 });
+
+const clearConfirmTitle = computed(() =>
+  routeScopeType.value === 'project-canvas' ? 'Очистить чат и профиль проекта?' : 'Удалить историю чата?',
+);
+
+const clearConfirmText = computed(() =>
+  routeScopeType.value === 'project-canvas'
+    ? 'Будут удалены история этого чата, описание проекта и все поля профиля. Действие необратимо.'
+    : 'История общего LLM-чата будет удалена безвозвратно для текущего аккаунта.',
+);
 
 const scopedMessages = computed(() => {
   return messagesByScope.value[scopeKey.value] || [];
@@ -843,10 +1031,21 @@ async function saveRemoteHistory(scope: AgentChatRequestScope, messages: ChatMes
   });
 }
 
-async function clearRemoteHistory() {
+async function clearRemoteHistory(scope?: AgentChatRequestScope) {
+  if (!scope) {
+    await apiClient.delete('/ai/chat-history', {
+      params: {
+        all: 'true',
+      },
+    });
+    return;
+  }
+
   await apiClient.delete('/ai/chat-history', {
     params: {
-      all: 'true',
+      scopeType: scope.type,
+      entityType: scope.type === 'collection' ? scope.entityType : undefined,
+      projectId: scope.type === 'project' ? scope.projectId : undefined,
     },
   });
 }
@@ -1175,34 +1374,94 @@ function cancelClearHistoryConfirm() {
   isClearHistoryConfirmOpen.value = false;
 }
 
+async function clearCurrentScopeHistoryOnly() {
+  const activeScopeKey = scopeKey.value;
+  const scope = parseScopeFromScopeKey(activeScopeKey);
+  if (!scope) return;
+
+  const pendingTimer = pendingSaveTimersByScope.get(activeScopeKey);
+  if (pendingTimer) {
+    clearTimeout(pendingTimer);
+    pendingSaveTimersByScope.delete(activeScopeKey);
+  }
+  queuedResaveScopes.delete(activeScopeKey);
+  saveInFlightScopes.delete(activeScopeKey);
+  const activeController = saveControllersByScope.get(activeScopeKey);
+  if (activeController) {
+    try {
+      activeController.abort();
+    } catch {
+      // Ignore abort errors.
+    }
+    saveControllersByScope.delete(activeScopeKey);
+  }
+
+  const nextByScope = { ...messagesByScope.value };
+  delete nextByScope[activeScopeKey];
+  messagesByScope.value = nextByScope;
+  persistMessages();
+
+  await clearRemoteHistory(scope);
+}
+
+function resetProjectProfileLocally() {
+  projectFieldDrafts.value = buildProjectFieldDrafts();
+  projectEditingFieldValue.value = null;
+}
+
+function clearProjectProfileMetadata() {
+  const project = activeProjectEntity.value;
+  if (!project) return;
+
+  const resetPatch = buildProjectMetadataResetPatch();
+  entitiesStore.queueEntityUpdate(
+    project._id,
+    {
+      ai_metadata: {
+        ...toProfile(project.ai_metadata),
+        ...resetPatch,
+      },
+    },
+    { delay: 0 },
+  );
+
+  resetProjectProfileLocally();
+}
+
 async function confirmClearAllChatHistory() {
+  isClearHistoryConfirmOpen.value = false;
+
   isRemoteHistoryResetting.value = true;
   stopHistoryPolling();
 
-  if (typeof window !== 'undefined') {
-    try {
-      window.localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      // Ignore localStorage errors.
-    }
-  }
-
-  isClearHistoryConfirmOpen.value = false;
-
-  for (const timer of pendingSaveTimersByScope.values()) {
-    clearTimeout(timer);
-  }
-  pendingSaveTimersByScope.clear();
-  saveInFlightScopes.clear();
-  queuedResaveScopes.clear();
-  abortAllRemoteSaves();
-
-  messagesByScope.value = {};
   messageDraft.value = '';
   pendingUploads.value = [];
 
   try {
-    await clearRemoteHistory();
+    if (routeScopeType.value === 'project-canvas') {
+      await clearCurrentScopeHistoryOnly();
+      clearProjectProfileMetadata();
+      isProjectProfileExpanded.value = false;
+    } else {
+      if (typeof window !== 'undefined') {
+        try {
+          window.localStorage.removeItem(STORAGE_KEY);
+        } catch {
+          // Ignore localStorage errors.
+        }
+      }
+
+      for (const timer of pendingSaveTimersByScope.values()) {
+        clearTimeout(timer);
+      }
+      pendingSaveTimersByScope.clear();
+      saveInFlightScopes.clear();
+      queuedResaveScopes.clear();
+      abortAllRemoteSaves();
+
+      messagesByScope.value = {};
+      await clearRemoteHistory();
+    }
   } catch {
     // Ignore remote cleanup failures and keep local cleanup result.
   } finally {
@@ -1430,6 +1689,7 @@ watch(
     messageDraft.value = '';
     pendingUploads.value = [];
     isProjectProfileExpanded.value = false;
+    resetProjectProfileLocally();
     stopVoiceCapture();
     pendingComposerHeightReset.value = true;
     if (!isOpen.value) return;
@@ -1439,6 +1699,14 @@ watch(
       shouldAutoScrollToBottom.value = true;
       maybeScrollToBottom('auto', true);
     });
+  },
+  { immediate: true },
+);
+
+watch(
+  activeProjectEntity,
+  () => {
+    resetProjectProfileLocally();
   },
   { immediate: true },
 );
@@ -1555,9 +1823,14 @@ onBeforeUnmount(() => {
         </button>
 
         <div v-show="isProjectProfileExpanded" class="agent-project-profile-body">
-          <p v-if="projectProfileDescription" class="agent-project-description">
-            {{ projectProfileDescription }}
-          </p>
+          <textarea
+            class="agent-project-description-input"
+            rows="2"
+            maxlength="3000"
+            :value="projectProfileDescription"
+            placeholder="Описание"
+            @input="onProjectDescriptionInput"
+          />
 
           <div class="agent-project-fields-list">
             <div
@@ -1565,16 +1838,45 @@ onBeforeUnmount(() => {
               :key="field.key"
               class="agent-project-field-row"
             >
-              <div class="agent-project-field-label">{{ field.label }}: {{ field.count }}</div>
-              <div class="agent-project-field-values">
-                <span
+              <div class="agent-project-field-scroll">
+                <input
+                  :ref="(el) => setProjectFieldInputRef(field.key, el)"
+                  :value="getProjectFieldDraft(field.key)"
+                  type="text"
+                  class="agent-project-field-input"
+                  :maxlength="getProjectFieldMaxLength(field.key)"
+                  :placeholder="getProjectFieldPlaceholder(field.key, field.label)"
+                  @input="onProjectFieldDraftInput(field.key, $event)"
+                  @keydown.enter.prevent="addProjectFieldValue(field.key)"
+                  @keydown="onProjectFieldDraftKeydown(field.key, $event)"
+                />
+                <div
                   v-for="value in field.values"
                   :key="`${field.key}:${value}`"
-                  class="agent-project-field-chip"
-                  :title="field.key === 'links' ? value : ''"
+                  class="agent-project-field-chip-wrap"
                 >
-                  {{ field.key === 'links' ? getProjectLinkChipLabel(value) : value }}
-                </span>
+                  <button
+                    type="button"
+                    class="agent-project-field-chip-main"
+                    :class="{ link: field.key === 'links' }"
+                    :title="field.key === 'links' ? value : 'Редактировать'"
+                    @click="
+                      field.key === 'links'
+                        ? openProjectFieldLink(value)
+                        : startEditProjectFieldValue(field.key, value)
+                    "
+                  >
+                    {{ field.key === 'links' ? getProjectLinkChipLabel(value) : value }}
+                  </button>
+                  <button
+                    type="button"
+                    class="agent-project-field-chip-remove"
+                    title="Удалить"
+                    @click.stop="removeProjectFieldValue(field.key, value)"
+                  >
+                    ×
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -1719,9 +2021,9 @@ onBeforeUnmount(() => {
         @click="cancelClearHistoryConfirm"
       >
         <section class="agent-chat-confirm-dialog" @click.stop @pointerdown.stop>
-          <h3 class="agent-chat-confirm-title">Удалить историю чата?</h3>
+          <h3 class="agent-chat-confirm-title">{{ clearConfirmTitle }}</h3>
           <p class="agent-chat-confirm-text">
-            История общего LLM-чата будет удалена безвозвратно для текущего аккаунта.
+            {{ clearConfirmText }}
           </p>
           <div class="agent-chat-confirm-actions">
             <button
@@ -1736,7 +2038,7 @@ onBeforeUnmount(() => {
               class="agent-chat-confirm-btn agent-chat-confirm-btn-danger"
               @click="confirmClearAllChatHistory"
             >
-              Удалить
+              {{ routeScopeType === 'project-canvas' ? 'Очистить' : 'Удалить' }}
             </button>
           </div>
         </section>
@@ -1939,20 +2241,28 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 180px;
+  max-height: 220px;
   overflow: auto;
 }
 
-.agent-project-description {
-  margin: 0;
+.agent-project-description-input {
+  width: 100%;
+  min-height: 54px;
+  max-height: 156px;
+  resize: vertical;
+  outline: none;
   border: 1px solid #dbe4f3;
   border-radius: 9px;
-  background: #f8fbff;
-  color: #334155;
+  background: #ffffff;
+  color: #0f172a;
   font-size: 11px;
   line-height: 1.35;
-  padding: 6px 8px;
-  white-space: pre-wrap;
+  padding: 7px 9px;
+}
+
+.agent-project-description-input:focus {
+  border-color: #bfd5ff;
+  box-shadow: 0 0 0 2px rgba(16, 88, 255, 0.14);
 }
 
 .agent-project-fields-list {
@@ -1964,30 +2274,78 @@ onBeforeUnmount(() => {
 .agent-project-field-row {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0;
 }
 
-.agent-project-field-label {
-  color: #64748b;
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.agent-project-field-values {
+.agent-project-field-scroll {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 4px;
+  max-height: 92px;
+  overflow-y: auto;
+  padding: 2px;
 }
 
-.agent-project-field-chip {
+.agent-project-field-input {
+  width: 100%;
+  min-width: 130px;
+  border: 1px solid #dbe4f3;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  min-height: 24px;
+  padding: 2px 8px;
+  outline: none;
+}
+
+.agent-project-field-input:focus {
+  border-color: #bfd5ff;
+  box-shadow: 0 0 0 2px rgba(16, 88, 255, 0.12);
+}
+
+.agent-project-field-chip-wrap {
+  display: inline-flex;
+  align-items: center;
   border: 1px solid #dbe4f3;
   border-radius: 999px;
   background: #ffffff;
+  overflow: hidden;
+}
+
+.agent-project-field-chip-main {
+  border: none;
+  background: transparent;
   color: #334155;
   font-size: 10px;
   font-weight: 600;
   line-height: 1.2;
   padding: 3px 7px;
+  cursor: pointer;
+}
+
+.agent-project-field-chip-main.link {
+  color: #0f4de0;
+}
+
+.agent-project-field-chip-remove {
+  width: 15px;
+  height: 15px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  margin-right: 2px;
+}
+
+.agent-project-field-chip-remove:hover {
+  color: #b91c1c;
 }
 
 .agent-chat-feed {
