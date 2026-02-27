@@ -1578,8 +1578,8 @@ onBeforeUnmount(() => {
 }
 
 .agent-chat-resize-handle.touch {
-  width: 28px;
-  height: 28px;
+  width: 16px;
+  height: 16px;
 }
 
 .agent-chat-resize-handle span {
