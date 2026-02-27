@@ -229,6 +229,9 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'links', label: 'Ссылки' },
   ],
 };
+const ALL_METADATA_FIELD_KEYS = Array.from(
+  new Set(Object.values(ENTITY_CONTEXT_FIELDS).flatMap((fields) => fields.map((field) => field.key))),
+) as MetadataFieldKey[];
 
 const entitiesStore = useEntitiesStore();
 const authStore = useAuthStore();
@@ -419,6 +422,27 @@ function buildEntityFieldDrafts(type: EntityType) {
     fieldDrafts[field.key] = '';
   }
   return fieldDrafts;
+}
+
+function buildEntityMetadataResetPayload() {
+  const resetPayload: Record<string, unknown> = {
+    description: '',
+    text_input: '',
+    voice_input: '',
+    chat_history: [],
+    documents: [],
+    description_history: [],
+    description_meta: {},
+    importance_history: [],
+    ai_last_analysis: {},
+    importance_source: 'auto',
+  };
+
+  for (const key of ALL_METADATA_FIELD_KEYS) {
+    resetPayload[key] = [];
+  }
+
+  return resetPayload;
 }
 
 function createLocalAttachmentId() {
@@ -818,14 +842,42 @@ function closeClearChatConfirm() {
   isChatClearConfirmOpen.value = false;
 }
 
-function confirmClearChatHistory() {
-  if (!draft.value || isProjectActionBusy.value) return;
-  draft.value.chatHistory = [];
-  draft.value.textInput = '';
-  draft.value.pendingUploads = [];
-  isChatClearConfirmOpen.value = false;
-  resetChatInputSize();
-  scheduleSave();
+async function confirmClearChatHistory() {
+  const currentDraft = draft.value;
+  if (!currentDraft || isProjectActionBusy.value) return;
+
+  isProjectActionBusy.value = true;
+  clearSaveTimer();
+  stopVoiceCapture();
+
+  const resetMetadata = buildEntityMetadataResetPayload();
+
+  try {
+    await entitiesStore.updateEntity(currentDraft.entityId, {
+      ai_metadata: resetMetadata,
+    });
+
+    currentDraft.description = '';
+    currentDraft.textInput = '';
+    currentDraft.voiceInput = '';
+    currentDraft.documents = [];
+    currentDraft.pendingUploads = [];
+    currentDraft.chatHistory = [];
+    currentDraft.importanceSource = 'auto';
+    currentDraft.metadataValues = buildEntityMetadataValues(currentDraft.type, resetMetadata);
+    currentDraft.fieldDrafts = buildEntityFieldDrafts(currentDraft.type);
+    editingFieldValue.value = null;
+
+    isChatClearConfirmOpen.value = false;
+    resetChatInputSize();
+    syncDescriptionHeightFromContent(true);
+    scrollEntityChatToBottom('auto');
+    projectActionMessage.value = 'Данные очищены. Сохранены только имя и фото.';
+  } catch {
+    projectActionMessage.value = 'Не удалось очистить данные.';
+  } finally {
+    isProjectActionBusy.value = false;
+  }
 }
 
 const deleteConfirmName = computed(() => {
@@ -2181,8 +2233,8 @@ onBeforeUnmount(() => {
                 type="button"
                 class="entity-info-title-action-btn action-reset"
                 :disabled="isProjectActionBusy"
-                title="Очистить чат"
-                aria-label="Очистить чат"
+                title="Сбросить данные"
+                aria-label="Сбросить данные"
                 @click="openClearChatConfirm"
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -2677,8 +2729,11 @@ onBeforeUnmount(() => {
         @pointerdown.self="closeClearChatConfirm"
       >
         <div class="entity-delete-confirm-card entity-project-confirm-card" @pointerdown.stop>
-          <h3 class="entity-delete-confirm-title">Очистить чат?</h3>
-          <p class="entity-delete-confirm-text">История чата для этой записи будет удалена безвозвратно.</p>
+          <h3 class="entity-delete-confirm-title">Сбросить данные?</h3>
+          <p class="entity-delete-confirm-text">
+            Будут удалены описание, чат, документы, метки, теги и остальные поля записи.
+          </p>
+          <p class="entity-delete-confirm-text">Останутся только имя и фото.</p>
           <div class="entity-delete-confirm-actions">
             <button
               type="button"
@@ -2694,7 +2749,7 @@ onBeforeUnmount(() => {
               :disabled="isProjectActionBusy"
               @click="confirmClearChatHistory"
             >
-              Очистить
+              Сбросить
             </button>
           </div>
         </div>
