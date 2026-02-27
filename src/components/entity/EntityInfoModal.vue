@@ -295,6 +295,7 @@ const descriptionHeightPx = ref<number | null>(null);
 const isDescriptionResizing = ref(false);
 const descriptionResizePointerId = ref<number | null>(null);
 const descriptionResizeStart = ref<{ clientY: number; height: number } | null>(null);
+const isFieldsListExpanded = ref(false);
 
 function toProfile(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -606,6 +607,7 @@ function loadDraft(entityId: string) {
   projectActionMessage.value = '';
   isProjectActionBusy.value = false;
   editingFieldValue.value = null;
+  isFieldsListExpanded.value = false;
 
   pendingComposerHeightReset.value = true;
   void nextTick(() => {
@@ -1043,7 +1045,7 @@ const descriptionTextareaStyle = computed(() => {
 });
 
 function getDescriptionResizeBounds() {
-  const minHeight = 48;
+  const minHeight = 54;
   const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 900;
   const maxHeight = Math.max(180, Math.floor(viewportHeight * 0.55));
   return { minHeight, maxHeight };
@@ -1059,9 +1061,12 @@ function syncDescriptionHeightFromContent(force = false) {
   if (!textarea) return;
   if (descriptionHeightPx.value && !force) return;
 
-  const { minHeight, maxHeight } = getDescriptionResizeBounds();
-  const targetHeight = Math.max(minHeight, Math.min(maxHeight, textarea.scrollHeight));
-  descriptionHeightPx.value = Math.round(targetHeight);
+  const { minHeight } = getDescriptionResizeBounds();
+  descriptionHeightPx.value = Math.round(minHeight);
+}
+
+function toggleFieldsListExpanded() {
+  isFieldsListExpanded.value = !isFieldsListExpanded.value;
 }
 
 function stopDescriptionResize() {
@@ -2146,7 +2151,17 @@ onBeforeUnmount(() => {
             @pointerdown="onDescriptionResizePointerDown"
           />
 
-          <div class="entity-info-fields-list">
+          <button
+            type="button"
+            class="entity-info-fields-toggle"
+            :class="{ expanded: isFieldsListExpanded }"
+            @click="toggleFieldsListExpanded"
+          >
+            <span class="entity-info-fields-toggle-label">Поля</span>
+            <span class="entity-info-fields-toggle-chevron" aria-hidden="true"></span>
+          </button>
+
+          <div v-show="isFieldsListExpanded" class="entity-info-fields-list">
             <div
               v-for="field in activeFields"
               :key="field.key"
@@ -2865,7 +2880,7 @@ onBeforeUnmount(() => {
 }
 
 .entity-info-description {
-  min-height: 48px;
+  min-height: 54px;
   max-height: none;
   overflow-y: auto;
 }
@@ -2888,10 +2903,44 @@ onBeforeUnmount(() => {
   background: #cbd5e1;
 }
 
+.entity-info-fields-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  border: 1px solid #dbe4f3;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.entity-info-fields-toggle-label {
+  line-height: 1;
+}
+
+.entity-info-fields-toggle-chevron {
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid #64748b;
+  transition: transform 0.16s ease;
+}
+
+.entity-info-fields-toggle.expanded .entity-info-fields-toggle-chevron {
+  transform: rotate(180deg);
+}
+
 .entity-info-fields-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   max-height: 170px;
   overflow-y: auto;
   overflow-x: hidden;
@@ -2912,10 +2961,10 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
-  gap: 6px;
+  gap: 4px;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 6px 8px;
+  padding: 4px 6px;
 }
 
 .entity-info-field-scroll::-webkit-scrollbar {
@@ -2926,25 +2975,25 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   border: 1px solid #bfd5ff;
   border-radius: 999px;
   background: #eff6ff;
-  padding: 2px 4px 2px 8px;
+  padding: 1px 3px 1px 6px;
 }
 
 .entity-info-tag-main {
   border: none;
   background: transparent;
   color: #1e40af;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   line-height: 1.25;
   max-width: 220px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding: 3px 0;
+  padding: 2px 0;
   cursor: pointer;
 }
 
@@ -2954,13 +3003,13 @@ onBeforeUnmount(() => {
 }
 
 .entity-info-tag-remove {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   border: none;
   border-radius: 50%;
   background: rgba(30, 64, 175, 0.14);
   color: #1e3a8a;
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1;
   display: inline-flex;
   align-items: center;
@@ -2983,17 +3032,17 @@ onBeforeUnmount(() => {
 }
 
 .entity-info-tag-input {
-  flex: 0 0 140px;
-  min-width: 120px;
-  max-width: 200px;
+  flex: 0 0 126px;
+  min-width: 108px;
+  max-width: 180px;
   border: none;
   border-radius: 8px;
   background: transparent;
   color: #0f172a;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   outline: none;
-  padding: 6px 8px;
+  padding: 4px 6px;
   order: -1;
 }
 
@@ -3278,12 +3327,12 @@ onBeforeUnmount(() => {
   }
 
   .entity-info-field-scroll {
-    padding: 5px 7px;
+    padding: 4px 6px;
   }
 
   .entity-info-tag-input {
-    flex-basis: 128px;
-    min-width: 108px;
+    flex-basis: 118px;
+    min-width: 96px;
     font-size: 11px;
   }
 
