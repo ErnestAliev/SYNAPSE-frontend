@@ -257,7 +257,7 @@ const pendingComposerHeightReset = ref(false);
 const isVoiceListening = ref(false);
 const isAiRequestInFlight = ref(false);
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
-const isProjectPickerOpen = ref(false);
+const isProjectAddConfirmOpen = ref(false);
 const projectActionMessage = ref('');
 const isProjectActionBusy = ref(false);
 const selectedProjectId = ref('');
@@ -603,7 +603,7 @@ function loadDraft(entityId: string) {
     chatHistory: normalizeChatHistory(aiMetadata.chat_history),
   };
 
-  isProjectPickerOpen.value = false;
+  isProjectAddConfirmOpen.value = false;
   projectActionMessage.value = '';
   isProjectActionBusy.value = false;
   editingFieldValue.value = null;
@@ -703,22 +703,34 @@ function closeModal() {
   clearSaveTimer();
   stopVoiceCapture();
   selectedProjectId.value = '';
-  isProjectPickerOpen.value = false;
+  isProjectAddConfirmOpen.value = false;
   isDeleteConfirmOpen.value = false;
   closeProfileFooter();
   emit('close');
 }
 
-function toggleProjectPicker() {
+function openProjectAddConfirm() {
   if (!draft.value || isProjectActionBusy.value) return;
   if (!availableProjectOptions.value.length) {
     projectActionMessage.value = 'Нет доступных проектов для добавления.';
-    isProjectPickerOpen.value = false;
+    isProjectAddConfirmOpen.value = false;
     return;
   }
   projectActionMessage.value = '';
   selectedProjectId.value = '';
-  isProjectPickerOpen.value = !isProjectPickerOpen.value;
+  isDeleteConfirmOpen.value = false;
+  isProjectAddConfirmOpen.value = true;
+}
+
+function closeProjectAddConfirm() {
+  if (isProjectActionBusy.value) return;
+  isProjectAddConfirmOpen.value = false;
+  selectedProjectId.value = '';
+}
+
+async function confirmProjectAdd() {
+  if (!selectedProjectId.value || isProjectActionBusy.value) return;
+  await onAddToProject(selectedProjectId.value);
 }
 
 async function onAddToProject(projectId: string) {
@@ -741,7 +753,7 @@ async function onAddToProject(projectId: string) {
   if (canvasData.nodes.some((node) => node.entityId === entity._id)) {
     projectActionMessage.value = 'Запись уже добавлена в этот проект.';
     selectedProjectId.value = '';
-    isProjectPickerOpen.value = false;
+    isProjectAddConfirmOpen.value = false;
     return;
   }
 
@@ -771,7 +783,7 @@ async function onAddToProject(projectId: string) {
       ? `Добавлено в проект "${project.name || 'Без названия'}". Узел заблокирован для перемещения.`
       : `Добавлено в проект "${project.name || 'Без названия'}".`;
     selectedProjectId.value = '';
-    isProjectPickerOpen.value = false;
+    isProjectAddConfirmOpen.value = false;
   } catch {
     projectActionMessage.value = 'Не удалось добавить в проект.';
   } finally {
@@ -779,17 +791,9 @@ async function onAddToProject(projectId: string) {
   }
 }
 
-function onProjectPickerChange(event: Event) {
-  const select = event.target as HTMLSelectElement | null;
-  if (!select) return;
-
-  selectedProjectId.value = select.value;
-  if (!selectedProjectId.value) return;
-  void onAddToProject(selectedProjectId.value);
-}
-
 function openDeleteConfirm() {
   if (!draft.value || isProjectActionBusy.value) return;
+  isProjectAddConfirmOpen.value = false;
   isDeleteConfirmOpen.value = true;
 }
 
@@ -2079,56 +2083,52 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="entity-info-title">
-          <input
-            v-model="draft.name"
-            type="text"
-            maxlength="64"
-            class="entity-info-name-input"
-            @input="onNameInput"
-          />
+          <div class="entity-info-title-row">
+            <input
+              v-model="draft.name"
+              type="text"
+              maxlength="64"
+              class="entity-info-name-input"
+              @input="onNameInput"
+            />
+            <div class="entity-info-title-actions">
+              <button
+                type="button"
+                class="entity-info-title-action-btn"
+                :disabled="isProjectActionBusy"
+                title="Добавить в проект"
+                aria-label="Добавить в проект"
+                @click="openProjectAddConfirm"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 5v14" />
+                  <path d="M5 12h14" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="entity-info-title-action-btn danger"
+                :disabled="isProjectActionBusy"
+                title="Удалить"
+                aria-label="Удалить"
+                @click="openDeleteConfirm"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 7h16" />
+                  <path d="M9 7V5h6v2" />
+                  <path d="M10 11v6" />
+                  <path d="M14 11v6" />
+                  <path d="M6 7l1 12h10l1-12" />
+                </svg>
+              </button>
+            </div>
+          </div>
           <div class="entity-info-progress-meta">
             <span class="entity-info-progress-level">{{ profileProgressLevel }}</span>
             <span class="entity-info-progress-percent">{{ profileProgress }}%</span>
           </div>
         </div>
       </header>
-
-      <section class="entity-info-actions">
-        <button
-          type="button"
-          class="entity-info-action-btn"
-          :disabled="isProjectActionBusy"
-          @click="toggleProjectPicker"
-        >
-          Добавить в проект
-        </button>
-
-        <select
-          v-if="isProjectPickerOpen"
-          :value="selectedProjectId"
-          class="entity-info-project-select"
-          :disabled="isProjectActionBusy"
-          @change="onProjectPickerChange"
-        >
-          <option value="">Выберите проект</option>
-          <option
-            v-for="project in availableProjectOptions"
-            :key="project._id"
-            :value="project._id"
-          >
-            {{ project.name || 'Без названия' }}
-          </option>
-        </select>
-
-        <button
-          type="button"
-          class="entity-info-action-btn danger"
-          :disabled="isProjectActionBusy"
-          @click="openDeleteConfirm"
-        >
-          Удалить
-        </button>
-      </section>
 
       <p v-if="projectActionMessage" class="entity-info-action-message">
         {{ projectActionMessage }}
@@ -2552,6 +2552,41 @@ onBeforeUnmount(() => {
     </div>
 
     <div
+      v-if="isProjectAddConfirmOpen"
+      class="entity-delete-confirm-overlay"
+      @pointerdown.self="closeProjectAddConfirm"
+    >
+      <div class="entity-delete-confirm-card entity-project-confirm-card" @pointerdown.stop>
+        <h3 class="entity-delete-confirm-title">Добавить в проект</h3>
+        <p class="entity-delete-confirm-text">Выберите проект для добавления текущей записи.</p>
+        <select v-model="selectedProjectId" class="entity-info-project-select" :disabled="isProjectActionBusy">
+          <option value="">Выберите проект</option>
+          <option v-for="project in availableProjectOptions" :key="project._id" :value="project._id">
+            {{ project.name || 'Без названия' }}
+          </option>
+        </select>
+        <div class="entity-delete-confirm-actions">
+          <button
+            type="button"
+            class="entity-delete-confirm-btn secondary"
+            :disabled="isProjectActionBusy"
+            @click="closeProjectAddConfirm"
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            class="entity-delete-confirm-btn primary"
+            :disabled="isProjectActionBusy || !selectedProjectId"
+            @click="confirmProjectAdd"
+          >
+            Подтвердить
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
       v-if="isDeleteConfirmOpen"
       class="entity-delete-confirm-overlay"
       @pointerdown.self="closeDeleteConfirm"
@@ -2737,8 +2772,16 @@ onBeforeUnmount(() => {
   gap: 5px;
 }
 
+.entity-info-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .entity-info-name-input {
-  width: 100%;
+  width: min(100%, 220px);
+  flex: 1 1 auto;
+  min-width: 0;
   border: 1px solid #dbe4f3;
   border-radius: 10px;
   padding: 8px 10px;
@@ -2751,6 +2794,63 @@ onBeforeUnmount(() => {
 .entity-info-name-input:focus {
   border-color: #bfdbfe;
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.14);
+}
+
+.entity-info-title-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.entity-info-title-action-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  border: 1px solid #dbe4f3;
+  background: #f8fafc;
+  color: #475569;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.entity-info-title-action-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.entity-info-title-action-btn:hover:not(:disabled) {
+  color: #1058ff;
+  border-color: #bfd5ff;
+  background: #eef4ff;
+}
+
+.entity-info-title-action-btn.danger {
+  color: #b91c1c;
+  border-color: #fecaca;
+  background: #fff1f2;
+}
+
+.entity-info-title-action-btn.danger:hover:not(:disabled) {
+  color: #991b1b;
+  border-color: #fca5a5;
+  background: #ffe4e6;
+}
+
+.entity-info-title-action-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .entity-info-progress-meta {
@@ -2773,56 +2873,9 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 
-.entity-info-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.entity-info-action-btn {
-  height: 32px;
-  border-radius: 10px;
-  border: 1px solid #dbe4f3;
-  background: #f8fafc;
-  color: #1e293b;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 0 12px;
-  cursor: pointer;
-  transition:
-    background-color 0.16s ease,
-    border-color 0.16s ease,
-    color 0.16s ease;
-}
-
-.entity-info-action-btn:hover:not(:disabled) {
-  background: #eef4ff;
-  border-color: #bfd5ff;
-  color: #1058ff;
-}
-
-.entity-info-action-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.entity-info-action-btn.danger {
-  margin-left: auto;
-  color: #b91c1c;
-  border-color: #fecaca;
-  background: #fff1f2;
-}
-
-.entity-info-action-btn.danger:hover:not(:disabled) {
-  color: #991b1b;
-  border-color: #fca5a5;
-  background: #ffe4e6;
-}
-
 .entity-info-project-select {
-  flex: 1;
-  min-width: 180px;
+  width: 100%;
+  min-width: 0;
   height: 32px;
   border-radius: 10px;
   border: 1px solid #dbe4f3;
@@ -3305,6 +3358,8 @@ onBeforeUnmount(() => {
   .entity-info-name-input {
     font-size: 14px;
     padding: 7px 9px;
+    width: 100%;
+    max-width: none;
   }
 
   .entity-info-progress-level {
@@ -3315,10 +3370,14 @@ onBeforeUnmount(() => {
     font-size: 11px;
   }
 
-  .entity-info-action-btn,
   .entity-info-project-select {
     height: 30px;
     font-size: 11px;
+  }
+
+  .entity-info-title-action-btn {
+    width: 28px;
+    height: 28px;
   }
 
   .entity-info-textarea,
@@ -3757,6 +3816,17 @@ onBeforeUnmount(() => {
   font-weight: 700;
   padding: 0 12px;
   cursor: pointer;
+}
+
+.entity-delete-confirm-btn.primary {
+  border-color: #1058ff;
+  background: #1058ff;
+  color: #ffffff;
+}
+
+.entity-delete-confirm-btn.primary:hover:not(:disabled) {
+  border-color: #0d48d4;
+  background: #0d48d4;
 }
 
 .entity-delete-confirm-btn.secondary:hover:not(:disabled) {
