@@ -35,11 +35,19 @@ interface AgentChatResponse {
   debug?: Record<string, unknown>;
 }
 
+interface AgentChatHistoryResponse {
+  scopeKey?: string;
+  messages?: unknown;
+  updatedAt?: string | null;
+}
+
 const STORAGE_KEY = 'synapse12.agent-chat.v2';
 const PANEL_SIZE_STORAGE_KEY = 'synapse12.agent-chat.panel-size.v1';
 const PANEL_TOP_OFFSET_PX = 60;
 const AI_ATTACHMENT_MAX_INLINE_BYTES = 2_000_000;
 const AI_ATTACHMENT_MAX_INLINE_DATA_URL_LENGTH = 2_800_000;
+const MAX_MESSAGES_PER_SCOPE = 140;
+const REMOTE_HISTORY_POLL_INTERVAL_MS = 4500;
 const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   project: 'Проекты',
   connection: 'Подключение',
@@ -80,8 +88,13 @@ const resizeStart = ref<{
   width: number;
   height: number;
 } | null>(null);
+const historyPollingTimer = ref<ReturnType<typeof setInterval> | null>(null);
+const activeSyncVersion = ref(0);
 
 const messagesByScope = ref<Record<string, ChatMessage[]>>(loadStoredMessages());
+const pendingSaveTimersByScope = new Map<string, ReturnType<typeof setTimeout>>();
+const saveInFlightScopes = new Set<string>();
+const queuedResaveScopes = new Set<string>();
 
 function toProfile(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -123,6 +136,61 @@ function normalizeType(value: unknown): EntityType {
   return 'project';
 }
 
+function normalizeChatMessage(rawMessage: unknown): ChatMessage | null {
+  const record = toProfile(rawMessage);
+  const id = typeof record.id === 'string' ? record.id : createMessageId();
+  const role = record.role === 'assistant' ? 'assistant' : 'user';
+  const text = typeof record.text === 'string' ? record.text : '';
+  const createdAtRaw = typeof record.createdAt === 'string' ? record.createdAt : getIsoNow();
+  const createdAtMs = Date.parse(createdAtRaw);
+  const createdAt = Number.isFinite(createdAtMs) ? new Date(createdAtMs).toISOString() : getIsoNow();
+  const rawAttachments = Array.isArray(record.attachments) ? record.attachments : [];
+
+  const attachments: EntityAttachment[] = rawAttachments
+    .map((rawAttachment) => {
+      const attachment = toProfile(rawAttachment);
+      const data = typeof attachment.data === 'string' ? attachment.data : '';
+      if (!data) return null;
+      return {
+        id: typeof attachment.id === 'string' ? attachment.id : createAttachmentId(),
+        name: typeof attachment.name === 'string' ? attachment.name : 'Файл',
+        mime: typeof attachment.mime === 'string' ? attachment.mime : '',
+        size: typeof attachment.size === 'number' ? attachment.size : 0,
+        data,
+      };
+    })
+    .filter((item): item is EntityAttachment => Boolean(item));
+
+  if (!text.trim() && !attachments.length) {
+    return null;
+  }
+
+  return {
+    id,
+    role,
+    text,
+    createdAt,
+    attachments,
+  };
+}
+
+function normalizeChatMessages(rawMessages: unknown): ChatMessage[] {
+  if (!Array.isArray(rawMessages)) return [];
+
+  const dedup = new Set<string>();
+  const normalized = rawMessages
+    .map((rawMessage) => normalizeChatMessage(rawMessage))
+    .filter((message): message is ChatMessage => Boolean(message))
+    .filter((message) => {
+      if (dedup.has(message.id)) return false;
+      dedup.add(message.id);
+      return true;
+    })
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+
+  return normalized.slice(-MAX_MESSAGES_PER_SCOPE);
+}
+
 function normalizeStoredMessages(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {} as Record<string, ChatMessage[]>;
@@ -130,47 +198,7 @@ function normalizeStoredMessages(value: unknown) {
 
   const result: Record<string, ChatMessage[]> = {};
   for (const [scope, rawMessages] of Object.entries(value as Record<string, unknown>)) {
-    if (!Array.isArray(rawMessages)) continue;
-
-    const messages = rawMessages
-      .map((rawMessage) => {
-        const record = toProfile(rawMessage);
-        const id = typeof record.id === 'string' ? record.id : createMessageId();
-        const role = record.role === 'assistant' ? 'assistant' : 'user';
-        const text = typeof record.text === 'string' ? record.text : '';
-        const createdAt = typeof record.createdAt === 'string' ? record.createdAt : getIsoNow();
-        const rawAttachments = Array.isArray(record.attachments) ? record.attachments : [];
-
-        const attachments: EntityAttachment[] = rawAttachments
-          .map((rawAttachment) => {
-            const attachment = toProfile(rawAttachment);
-            const data = typeof attachment.data === 'string' ? attachment.data : '';
-            if (!data) return null;
-            return {
-              id: typeof attachment.id === 'string' ? attachment.id : createAttachmentId(),
-              name: typeof attachment.name === 'string' ? attachment.name : 'Файл',
-              mime: typeof attachment.mime === 'string' ? attachment.mime : '',
-              size: typeof attachment.size === 'number' ? attachment.size : 0,
-              data,
-            };
-          })
-          .filter((item): item is EntityAttachment => Boolean(item));
-
-        if (!text.trim() && !attachments.length) {
-          return null;
-        }
-
-        return {
-          id,
-          role,
-          text,
-          createdAt,
-          attachments,
-        } satisfies ChatMessage;
-      })
-      .filter((message): message is ChatMessage => Boolean(message));
-
-    result[scope] = messages;
+    result[scope] = normalizeChatMessages(rawMessages);
   }
 
   return result;
@@ -444,6 +472,195 @@ function buildRequestScope(): AgentChatRequestScope | null {
   };
 }
 
+function parseScopeFromScopeKey(key: string): AgentChatRequestScope | null {
+  if (typeof key !== 'string' || !key.trim()) return null;
+
+  if (key.startsWith('collection:')) {
+    const entityType = normalizeType(key.slice('collection:'.length));
+    return {
+      type: 'collection',
+      entityType,
+    };
+  }
+
+  if (key.startsWith('project-canvas:')) {
+    const projectId = key.slice('project-canvas:'.length).trim();
+    if (!projectId) return null;
+    return {
+      type: 'project',
+      projectId,
+    };
+  }
+
+  return null;
+}
+
+function normalizeMessagesForCompare(messages: ChatMessage[]) {
+  return normalizeChatMessages(messages).map((message) => ({
+    id: message.id,
+    role: message.role,
+    text: message.text,
+    createdAt: message.createdAt,
+    attachments: message.attachments.map((attachment) => ({
+      id: attachment.id,
+      name: attachment.name,
+      mime: attachment.mime,
+      size: attachment.size,
+      data: attachment.data,
+    })),
+  }));
+}
+
+function areMessagesEqual(left: ChatMessage[], right: ChatMessage[]) {
+  const leftNormalized = normalizeMessagesForCompare(left);
+  const rightNormalized = normalizeMessagesForCompare(right);
+  return JSON.stringify(leftNormalized) === JSON.stringify(rightNormalized);
+}
+
+function mergeMessages(local: ChatMessage[], remote: ChatMessage[]) {
+  const mergedById = new Map<string, ChatMessage>();
+  for (const message of [...remote, ...local]) {
+    mergedById.set(message.id, message);
+  }
+
+  const merged = Array.from(mergedById.values()).sort(
+    (a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt),
+  );
+  return normalizeChatMessages(merged).slice(-MAX_MESSAGES_PER_SCOPE);
+}
+
+async function fetchRemoteHistory(scope: AgentChatRequestScope) {
+  const params: Record<string, string> = {
+    scopeType: scope.type,
+  };
+  if (scope.type === 'collection') {
+    params.entityType = normalizeType(scope.entityType);
+  } else {
+    params.projectId = String(scope.projectId || '').trim();
+  }
+
+  const { data } = await apiClient.get<AgentChatHistoryResponse>('/ai/chat-history', {
+    params,
+  });
+  return normalizeChatMessages(data?.messages);
+}
+
+async function saveRemoteHistory(scope: AgentChatRequestScope, messages: ChatMessage[]) {
+  await apiClient.put('/ai/chat-history', {
+    scope,
+    messages: normalizeChatMessages(messages),
+  });
+}
+
+async function clearRemoteHistory() {
+  await apiClient.delete('/ai/chat-history', {
+    data: {
+      all: true,
+    },
+  });
+}
+
+function setScopeMessages(nextScopeKey: string, nextMessages: ChatMessage[]) {
+  messagesByScope.value = {
+    ...messagesByScope.value,
+    [nextScopeKey]: normalizeChatMessages(nextMessages),
+  };
+  persistMessages();
+}
+
+async function flushRemoteScopeSave(targetScopeKey: string) {
+  const scope = parseScopeFromScopeKey(targetScopeKey);
+  if (!scope) return;
+
+  if (saveInFlightScopes.has(targetScopeKey)) {
+    queuedResaveScopes.add(targetScopeKey);
+    return;
+  }
+
+  const queuedTimer = pendingSaveTimersByScope.get(targetScopeKey);
+  if (queuedTimer) {
+    clearTimeout(queuedTimer);
+    pendingSaveTimersByScope.delete(targetScopeKey);
+  }
+
+  saveInFlightScopes.add(targetScopeKey);
+  try {
+    const currentMessages = normalizeChatMessages(messagesByScope.value[targetScopeKey] || []);
+    await saveRemoteHistory(scope, currentMessages);
+  } catch {
+    // Remote sync errors should not block local chat usage.
+  } finally {
+    saveInFlightScopes.delete(targetScopeKey);
+    if (queuedResaveScopes.has(targetScopeKey)) {
+      queuedResaveScopes.delete(targetScopeKey);
+      void flushRemoteScopeSave(targetScopeKey);
+    }
+  }
+}
+
+function scheduleRemoteScopeSave(targetScopeKey: string, delayMs = 380) {
+  const scope = parseScopeFromScopeKey(targetScopeKey);
+  if (!scope) return;
+
+  const currentTimer = pendingSaveTimersByScope.get(targetScopeKey);
+  if (currentTimer) {
+    clearTimeout(currentTimer);
+  }
+
+  const nextTimer = setTimeout(() => {
+    pendingSaveTimersByScope.delete(targetScopeKey);
+    void flushRemoteScopeSave(targetScopeKey);
+  }, delayMs);
+
+  pendingSaveTimersByScope.set(targetScopeKey, nextTimer);
+}
+
+async function syncScopeHistoryFromServer(targetScopeKey = scopeKey.value) {
+  const scope = parseScopeFromScopeKey(targetScopeKey);
+  if (!scope) return;
+
+  const syncVersion = activeSyncVersion.value + 1;
+  activeSyncVersion.value = syncVersion;
+
+  try {
+    const remoteMessages = await fetchRemoteHistory(scope);
+    if (activeSyncVersion.value !== syncVersion) return;
+
+    const localMessages = normalizeChatMessages(messagesByScope.value[targetScopeKey] || []);
+    const mergedMessages = mergeMessages(localMessages, remoteMessages);
+
+    if (!areMessagesEqual(localMessages, mergedMessages)) {
+      setScopeMessages(targetScopeKey, mergedMessages);
+    }
+
+    if (!areMessagesEqual(remoteMessages, mergedMessages)) {
+      await saveRemoteHistory(scope, mergedMessages);
+    }
+  } catch {
+    // Ignore sync failures (offline / temporary network issues).
+  } finally {
+    if (isOpen.value) {
+      void nextTick(() => {
+        scrollToBottom('auto');
+      });
+    }
+  }
+}
+
+function stopHistoryPolling() {
+  if (!historyPollingTimer.value) return;
+  clearInterval(historyPollingTimer.value);
+  historyPollingTimer.value = null;
+}
+
+function startHistoryPolling() {
+  stopHistoryPolling();
+  historyPollingTimer.value = setInterval(() => {
+    if (!isOpen.value) return;
+    void syncScopeHistoryFromServer(scopeKey.value);
+  }, REMOTE_HISTORY_POLL_INTERVAL_MS);
+}
+
 function buildHistoryPayload(messages: ChatMessage[]) {
   return messages
     .slice(-12)
@@ -532,9 +749,12 @@ function pushMessage(role: ChatRole, text: string, attachments: EntityAttachment
 
   messagesByScope.value = {
     ...messagesByScope.value,
-    [targetScope]: [...(messagesByScope.value[targetScope] || []), nextMessage],
+    [targetScope]: normalizeChatMessages([...(messagesByScope.value[targetScope] || []), nextMessage]).slice(
+      -MAX_MESSAGES_PER_SCOPE,
+    ),
   };
   persistMessages();
+  scheduleRemoteScopeSave(targetScope);
 }
 
 function openChatAttachment(attachment: EntityAttachment) {
@@ -578,6 +798,8 @@ function toggleChat() {
   if (isOpen.value) {
     isClearHistoryConfirmOpen.value = false;
     panelSize.value = resolvedPanelSize.value;
+    startHistoryPolling();
+    void syncScopeHistoryFromServer(scopeKey.value);
     pendingComposerHeightReset.value = true;
     void nextTick(() => {
       autoResizeComposer();
@@ -585,6 +807,7 @@ function toggleChat() {
     });
   } else {
     isClearHistoryConfirmOpen.value = false;
+    stopHistoryPolling();
     stopVoiceCapture();
     pendingUploads.value = [];
   }
@@ -598,7 +821,7 @@ function cancelClearHistoryConfirm() {
   isClearHistoryConfirmOpen.value = false;
 }
 
-function confirmClearAllChatHistory() {
+async function confirmClearAllChatHistory() {
   if (typeof window !== 'undefined') {
     try {
       window.localStorage.removeItem(STORAGE_KEY);
@@ -608,9 +831,24 @@ function confirmClearAllChatHistory() {
   }
 
   isClearHistoryConfirmOpen.value = false;
+
+  for (const timer of pendingSaveTimersByScope.values()) {
+    clearTimeout(timer);
+  }
+  pendingSaveTimersByScope.clear();
+  saveInFlightScopes.clear();
+  queuedResaveScopes.clear();
+
   messagesByScope.value = {};
   messageDraft.value = '';
   pendingUploads.value = [];
+
+  try {
+    await clearRemoteHistory();
+  } catch {
+    // Ignore remote cleanup failures and keep local cleanup result.
+  }
+
   void nextTick(() => {
     autoResizeComposer();
     scrollToBottom('auto');
@@ -823,12 +1061,13 @@ function toDisplayTime(iso: string) {
 
 watch(
   scopeKey,
-  () => {
+  (nextScopeKey) => {
     messageDraft.value = '';
     pendingUploads.value = [];
     stopVoiceCapture();
     pendingComposerHeightReset.value = true;
     if (!isOpen.value) return;
+    void syncScopeHistoryFromServer(nextScopeKey);
     void nextTick(() => {
       autoResizeComposer();
       scrollToBottom('auto');
@@ -864,7 +1103,14 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   stopPanelResize();
+  stopHistoryPolling();
   stopVoiceCapture();
+  for (const timer of pendingSaveTimersByScope.values()) {
+    clearTimeout(timer);
+  }
+  pendingSaveTimersByScope.clear();
+  saveInFlightScopes.clear();
+  queuedResaveScopes.clear();
   if (typeof window === 'undefined') return;
   window.removeEventListener('resize', updateViewportSize);
   window.removeEventListener('orientationchange', updateViewportSize);
