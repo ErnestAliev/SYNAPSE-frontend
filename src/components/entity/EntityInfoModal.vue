@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import ruEmojiData from 'emojibase-data/ru/data.json';
 import AppIcon from '../ui/AppIcon.vue';
 import ProfileProgressRing from '../ui/ProfileProgressRing.vue';
@@ -243,6 +243,7 @@ const draft = ref<{
 
 const docInputRef = ref<HTMLInputElement | null>(null);
 const chatInputRef = ref<HTMLTextAreaElement | null>(null);
+const descriptionTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const chatFeedRef = ref<HTMLElement | null>(null);
 const infoSaveTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const pendingComposerHeightReset = ref(false);
@@ -283,6 +284,10 @@ const footerCropPointer = ref<{
 const isFooterCropBusy = ref(false);
 const fieldInputRefs = ref<Record<string, HTMLInputElement | null>>({});
 const editingFieldValue = ref<{ fieldKey: string; originalValue: string } | null>(null);
+const descriptionHeightPx = ref<number | null>(null);
+const isDescriptionResizing = ref(false);
+const descriptionResizePointerId = ref<number | null>(null);
+const descriptionResizeStart = ref<{ clientY: number; height: number } | null>(null);
 
 function toProfile(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -597,6 +602,7 @@ function loadDraft(entityId: string) {
 
   pendingComposerHeightReset.value = true;
   void nextTick(() => {
+    syncDescriptionHeightFromContent(true);
     autoResizeChatInput();
     scrollEntityChatToBottom('auto');
   });
@@ -1015,6 +1021,108 @@ function onDescriptionInput() {
     draft.value.importanceSource = 'auto';
   }
   scheduleSave();
+}
+
+const descriptionTextareaStyle = computed(() => {
+  if (!descriptionHeightPx.value) return undefined;
+  return {
+    height: `${descriptionHeightPx.value}px`,
+  };
+});
+
+function getDescriptionResizeBounds() {
+  const minHeight = 48;
+  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 900;
+  const maxHeight = Math.max(180, Math.floor(viewportHeight * 0.55));
+  return { minHeight, maxHeight };
+}
+
+function applyDescriptionHeight(nextHeight: number) {
+  const { minHeight, maxHeight } = getDescriptionResizeBounds();
+  descriptionHeightPx.value = Math.max(minHeight, Math.min(maxHeight, Math.round(nextHeight)));
+}
+
+function syncDescriptionHeightFromContent(force = false) {
+  const textarea = descriptionTextareaRef.value;
+  if (!textarea) return;
+  if (descriptionHeightPx.value && !force) return;
+
+  const { minHeight, maxHeight } = getDescriptionResizeBounds();
+  const targetHeight = Math.max(minHeight, Math.min(maxHeight, textarea.scrollHeight));
+  descriptionHeightPx.value = Math.round(targetHeight);
+}
+
+function stopDescriptionResize() {
+  if (!isDescriptionResizing.value && !descriptionResizeStart.value) return;
+  isDescriptionResizing.value = false;
+  descriptionResizePointerId.value = null;
+  descriptionResizeStart.value = null;
+  if (typeof window === 'undefined') return;
+  window.removeEventListener('pointermove', onDescriptionResizePointerMove);
+  window.removeEventListener('pointerup', onDescriptionResizePointerUp);
+  window.removeEventListener('pointercancel', onDescriptionResizePointerUp);
+}
+
+function onDescriptionResizePointerMove(event: PointerEvent) {
+  if (!isDescriptionResizing.value || !descriptionResizeStart.value) return;
+  if (
+    descriptionResizePointerId.value !== null &&
+    event.pointerId !== descriptionResizePointerId.value
+  ) {
+    return;
+  }
+
+  if (event.cancelable) {
+    event.preventDefault();
+  }
+
+  const deltaY = event.clientY - descriptionResizeStart.value.clientY;
+  applyDescriptionHeight(descriptionResizeStart.value.height + deltaY);
+}
+
+function onDescriptionResizePointerUp(event: PointerEvent) {
+  if (!isDescriptionResizing.value) return;
+  if (
+    descriptionResizePointerId.value !== null &&
+    event.pointerId !== descriptionResizePointerId.value
+  ) {
+    return;
+  }
+
+  stopDescriptionResize();
+}
+
+function onDescriptionResizePointerDown(event: PointerEvent) {
+  if (event.pointerType === 'mouse' && event.button !== 0) return;
+  if (event.cancelable) {
+    event.preventDefault();
+  }
+  event.stopPropagation();
+
+  const textarea = descriptionTextareaRef.value;
+  if (!textarea) return;
+
+  const currentHeight =
+    descriptionHeightPx.value ||
+    Math.max(getDescriptionResizeBounds().minHeight, Math.round(textarea.getBoundingClientRect().height));
+
+  descriptionResizeStart.value = {
+    clientY: event.clientY,
+    height: currentHeight,
+  };
+  descriptionResizePointerId.value = event.pointerId;
+  isDescriptionResizing.value = true;
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pointermove', onDescriptionResizePointerMove, { passive: false });
+    window.addEventListener('pointerup', onDescriptionResizePointerUp);
+    window.addEventListener('pointercancel', onDescriptionResizePointerUp);
+  }
+}
+
+function onDescriptionViewportResize() {
+  if (!descriptionHeightPx.value) return;
+  applyDescriptionHeight(descriptionHeightPx.value);
 }
 
 function autoResizeChatInput() {
@@ -1877,6 +1985,13 @@ watch(
   },
 );
 
+onMounted(() => {
+  if (typeof window === 'undefined') return;
+  window.addEventListener('resize', onDescriptionViewportResize);
+  window.addEventListener('orientationchange', onDescriptionViewportResize);
+  window.visualViewport?.addEventListener('resize', onDescriptionViewportResize);
+});
+
 onBeforeUnmount(() => {
   const currentDraft = draft.value;
   if (currentDraft) {
@@ -1884,6 +1999,12 @@ onBeforeUnmount(() => {
   }
   clearSaveTimer();
   stopVoiceCapture();
+  stopDescriptionResize();
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('resize', onDescriptionViewportResize);
+    window.removeEventListener('orientationchange', onDescriptionViewportResize);
+    window.visualViewport?.removeEventListener('resize', onDescriptionViewportResize);
+  }
 });
 </script>
 
@@ -1999,11 +2120,18 @@ onBeforeUnmount(() => {
       <div class="entity-info-fixed">
         <section class="entity-info-section">
           <textarea
+            ref="descriptionTextareaRef"
             v-model="draft.description"
             class="entity-info-textarea entity-info-description"
+            :style="descriptionTextareaStyle"
             rows="2"
             placeholder="Описание"
             @input="onDescriptionInput"
+          />
+          <div
+            class="entity-info-description-resize-handle"
+            title="Изменить высоту описания"
+            @pointerdown="onDescriptionResizePointerDown"
           />
 
           <div class="entity-info-fields-list">
@@ -2726,7 +2854,26 @@ onBeforeUnmount(() => {
 
 .entity-info-description {
   min-height: 48px;
-  max-height: 156px;
+  max-height: none;
+  overflow-y: auto;
+}
+
+.entity-info-description-resize-handle {
+  width: 100%;
+  height: 14px;
+  margin-top: -6px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.entity-info-description-resize-handle::before {
+  content: '';
+  display: block;
+  width: 44px;
+  height: 4px;
+  margin: 4px auto 0;
+  border-radius: 999px;
+  background: #cbd5e1;
 }
 
 .entity-info-fields-list {

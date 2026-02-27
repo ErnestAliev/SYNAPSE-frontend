@@ -77,12 +77,15 @@ const chatFeedRef = ref<HTMLElement | null>(null);
 const chatInputRef = ref<HTMLTextAreaElement | null>(null);
 const docInputRef = ref<HTMLInputElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
-const resizeHandleRef = ref<HTMLElement | null>(null);
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
 const pendingComposerHeightReset = ref(false);
 const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1366);
 const viewportHeight = ref(typeof window !== 'undefined' ? window.innerHeight : 768);
 const panelSize = ref<{ width: number; height: number } | null>(loadStoredPanelSize());
+const panelSizeBeforeMaximize = ref<{ width: number; height: number } | null>(null);
+const isPanelMaximized = ref(false);
+const lastTitleTapAt = ref(0);
+const touchResizeMoved = ref(false);
 const resizePointerId = ref<number | null>(null);
 const resizeStart = ref<{
   clientX: number;
@@ -267,16 +270,6 @@ function persistPanelSize() {
 }
 
 const isPhoneViewport = computed(() => viewportWidth.value <= 700);
-const isIPadLikeDevice = computed(() => {
-  if (typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent || '';
-  const platform = navigator.platform || '';
-  return /iPad/i.test(ua) || (platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-});
-const isTouchDevice = computed(() => {
-  if (typeof navigator === 'undefined') return false;
-  return navigator.maxTouchPoints > 0;
-});
 const canResizePanel = computed(() => true);
 const panelEdgeMarginPx = computed(() => (isPhoneViewport.value ? 10 : 18));
 
@@ -319,12 +312,34 @@ const resolvedPanelSize = computed(() => {
   return clampPanelSize(raw);
 });
 
-const panelStyle = computed(() => ({
-  width: `${resolvedPanelSize.value.width}px`,
-  height: `${resolvedPanelSize.value.height}px`,
-  maxWidth: `${panelConstraints.value.maxWidth}px`,
-  maxHeight: `${panelConstraints.value.maxHeight}px`,
-}));
+const panelStyle = computed(() => {
+  if (isPanelMaximized.value) {
+    if (isPhoneViewport.value) {
+      return {
+        inset: '0px',
+        width: 'auto',
+        height: 'auto',
+        maxWidth: '100vw',
+        maxHeight: '100dvh',
+        borderRadius: '0px',
+      };
+    }
+
+    return {
+      width: `${panelConstraints.value.maxWidth}px`,
+      height: `${panelConstraints.value.maxHeight}px`,
+      maxWidth: `${panelConstraints.value.maxWidth}px`,
+      maxHeight: `${panelConstraints.value.maxHeight}px`,
+    };
+  }
+
+  return {
+    width: `${resolvedPanelSize.value.width}px`,
+    height: `${resolvedPanelSize.value.height}px`,
+    maxWidth: `${panelConstraints.value.maxWidth}px`,
+    maxHeight: `${panelConstraints.value.maxHeight}px`,
+  };
+});
 
 function updateViewportSize() {
   if (typeof window === 'undefined') return;
@@ -347,6 +362,7 @@ function stopPanelResize() {
 
 function onPanelResizePointerMove(event: PointerEvent) {
   if (!isResizingPanel.value || !resizeStart.value) return;
+  isPanelMaximized.value = false;
 
   const deltaX = event.clientX - resizeStart.value.clientX;
   const deltaY = event.clientY - resizeStart.value.clientY;
@@ -361,6 +377,27 @@ function onPanelResizePointerMove(event: PointerEvent) {
 function onPanelResizePointerUp() {
   if (!isResizingPanel.value) return;
   stopPanelResize();
+  persistPanelSize();
+}
+
+function togglePanelMaximize() {
+  if (!canResizePanel.value || isResizingPanel.value) return;
+
+  if (isPanelMaximized.value) {
+    isPanelMaximized.value = false;
+    if (panelSizeBeforeMaximize.value) {
+      panelSize.value = clampPanelSize(panelSizeBeforeMaximize.value);
+    }
+    persistPanelSize();
+    return;
+  }
+
+  panelSizeBeforeMaximize.value = resolvedPanelSize.value;
+  isPanelMaximized.value = true;
+  panelSize.value = {
+    width: panelConstraints.value.maxWidth,
+    height: panelConstraints.value.maxHeight,
+  };
   persistPanelSize();
 }
 
@@ -382,13 +419,6 @@ function onPanelResizeHandlePointerDown(event: PointerEvent) {
   };
   isResizingPanel.value = true;
   resizePointerId.value = event.pointerId;
-  if (resizeHandleRef.value && typeof resizeHandleRef.value.setPointerCapture === 'function') {
-    try {
-      resizeHandleRef.value.setPointerCapture(event.pointerId);
-    } catch {
-      // Ignore pointer capture errors in browsers that partially support it.
-    }
-  }
 
   window.addEventListener('pointermove', onPanelResizePointerMove, { passive: true });
   window.addEventListener('pointerup', onPanelResizePointerUp);
@@ -401,9 +431,13 @@ function onPanelResizeTouchMove(event: TouchEvent) {
   if (!touch) return;
 
   event.preventDefault();
+  isPanelMaximized.value = false;
 
   const deltaX = touch.clientX - resizeStart.value.clientX;
   const deltaY = touch.clientY - resizeStart.value.clientY;
+  if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+    touchResizeMoved.value = true;
+  }
   const nextWidth = resizeStart.value.width - deltaX;
   const nextHeight = resizeStart.value.height - deltaY;
   panelSize.value = clampPanelSize({
@@ -414,8 +448,19 @@ function onPanelResizeTouchMove(event: TouchEvent) {
 
 function onPanelResizeTouchEnd() {
   if (!isResizingPanel.value) return;
+  const wasTap = !touchResizeMoved.value;
   stopPanelResize();
   persistPanelSize();
+
+  if (!wasTap) return;
+
+  const now = Date.now();
+  if (now - lastTitleTapAt.value <= 320) {
+    lastTitleTapAt.value = 0;
+    togglePanelMaximize();
+    return;
+  }
+  lastTitleTapAt.value = now;
 }
 
 function onPanelResizeHandleTouchStart(event: TouchEvent) {
@@ -434,11 +479,18 @@ function onPanelResizeHandleTouchStart(event: TouchEvent) {
     width: rect.width,
     height: rect.height,
   };
+  touchResizeMoved.value = false;
   isResizingPanel.value = true;
 
   window.addEventListener('touchmove', onPanelResizeTouchMove, { passive: false });
   window.addEventListener('touchend', onPanelResizeTouchEnd);
   window.addEventListener('touchcancel', onPanelResizeTouchEnd);
+}
+
+function onTitleWrapDoubleClick(event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  togglePanelMaximize();
 }
 
 const routeScopeType = computed<'collection' | 'project-canvas'>(() => {
@@ -945,6 +997,9 @@ function toggleChat() {
     stopHistoryPolling();
     stopVoiceCapture();
     pendingUploads.value = [];
+    isPanelMaximized.value = false;
+    lastTitleTapAt.value = 0;
+    touchResizeMoved.value = false;
   }
 }
 
@@ -1231,6 +1286,7 @@ watch(scopedMessages, () => {
 });
 
 watch(panelConstraints, () => {
+  if (isPanelMaximized.value) return;
   panelSize.value = resolvedPanelSize.value;
 });
 
@@ -1290,21 +1346,13 @@ onBeforeUnmount(() => {
       :style="panelStyle"
       @pointerdown.stop
     >
-      <button
-        v-if="canResizePanel"
-        ref="resizeHandleRef"
-        type="button"
-        class="agent-chat-resize-handle"
-        :class="{ touch: isTouchDevice || isPhoneViewport || isIPadLikeDevice }"
-        title="Изменить размер окна"
-        aria-label="Изменить размер окна"
-        @pointerdown="onPanelResizeHandlePointerDown"
-        @touchstart="onPanelResizeHandleTouchStart"
-      >
-        <span />
-      </button>
       <header class="agent-chat-header">
-        <div class="agent-chat-title-wrap">
+        <div
+          class="agent-chat-title-wrap"
+          @pointerdown="onPanelResizeHandlePointerDown"
+          @touchstart="onPanelResizeHandleTouchStart"
+          @dblclick="onTitleWrapDoubleClick"
+        >
           <div class="agent-chat-title">{{ scopeTitle }}</div>
           <div class="agent-chat-summary">{{ scopeSummary }}</div>
         </div>
@@ -1556,40 +1604,6 @@ onBeforeUnmount(() => {
   min-width: 320px;
 }
 
-.agent-chat-resize-handle {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 16px;
-  height: 16px;
-  border: none;
-  border-radius: 0;
-  background: #1058ff;
-  clip-path: polygon(0 0, 100% 0, 0 100%);
-  color: #1058ff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: nwse-resize;
-  touch-action: none;
-  z-index: 3;
-  padding: 0;
-  box-shadow: none;
-}
-
-.agent-chat-resize-handle.touch {
-  width: 16px;
-  height: 16px;
-}
-
-.agent-chat-resize-handle span {
-  display: none;
-}
-
-.agent-chat-resize-handle:hover {
-  background: #0b4bdd;
-}
-
 .agent-chat-header {
   display: flex;
   align-items: flex-start;
@@ -1604,6 +1618,10 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  cursor: nwse-resize;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
 }
 
 .agent-chat-title {
