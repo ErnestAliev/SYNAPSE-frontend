@@ -1224,6 +1224,50 @@ function buildDebugAttachment(debug: Record<string, unknown>) {
   } satisfies EntityAttachment;
 }
 
+function buildLlmErrorDebugPayload(error: unknown, requestPayload: Record<string, unknown>) {
+  const payload: Record<string, unknown> = {
+    timestamp: new Date().toISOString(),
+    request: requestPayload,
+    error: {
+      message: parseRequestError(error),
+    },
+  };
+
+  if (typeof error === 'object' && error && 'response' in error) {
+    const axiosError = error as {
+      response?: { status?: number; data?: unknown };
+      code?: string;
+      message?: string;
+      stack?: string;
+    };
+    payload.error = {
+      ...(payload.error as Record<string, unknown>),
+      status: axiosError.response?.status ?? null,
+      code: axiosError.code || '',
+      responseData: axiosError.response?.data ?? null,
+      rawMessage: axiosError.message || '',
+      stack: axiosError.stack || '',
+    };
+    return payload;
+  }
+
+  if (error instanceof Error) {
+    payload.error = {
+      ...(payload.error as Record<string, unknown>),
+      name: error.name,
+      stack: error.stack || '',
+    };
+    return payload;
+  }
+
+  payload.error = {
+    ...(payload.error as Record<string, unknown>),
+    raw: error,
+  };
+
+  return payload;
+}
+
 function parseRequestError(error: unknown) {
   if (typeof error === 'object' && error && 'response' in error) {
     const axiosError = error as {
@@ -1281,21 +1325,22 @@ async function onSendInput() {
   if (!activeDraft) return;
 
   isAiRequestInFlight.value = true;
+  const requestPayload = {
+    entityId: activeDraft.entityId,
+    message,
+    voiceInput: activeDraft.voiceInput,
+    history: activeDraft.chatHistory
+      .slice(-12)
+      .map((item) => ({
+        role: item.role,
+        text: item.text,
+      })),
+    attachments: attachments.map(toAiAttachmentPayload),
+    documents: activeDraft.documents.slice(-8).map(toAiAttachmentPayload),
+    debug: true,
+  };
   try {
-    const response = await analyzeEntityWithAi({
-      entityId: activeDraft.entityId,
-      message,
-      voiceInput: activeDraft.voiceInput,
-      history: activeDraft.chatHistory
-        .slice(-12)
-        .map((item) => ({
-          role: item.role,
-          text: item.text,
-        })),
-      attachments: attachments.map(toAiAttachmentPayload),
-      documents: activeDraft.documents.slice(-8).map(toAiAttachmentPayload),
-      debug: import.meta.env.DEV,
-    });
+    const response = await analyzeEntityWithAi(requestPayload);
 
     if (!draft.value || draft.value.entityId !== activeDraft.entityId) {
       return;
@@ -1325,7 +1370,8 @@ async function onSendInput() {
     await nextTick();
     scrollEntityChatToBottom('auto');
   } catch (error: unknown) {
-    pushChatMessage('assistant', `Не удалось получить ответ от LLM. ${parseRequestError(error)}`);
+    const debugAttachments = [buildDebugAttachment(buildLlmErrorDebugPayload(error, requestPayload))];
+    pushChatMessage('assistant', `Не удалось получить ответ от LLM. ${parseRequestError(error)}`, debugAttachments);
     await nextTick();
     scrollEntityChatToBottom('auto');
     scheduleSave();
