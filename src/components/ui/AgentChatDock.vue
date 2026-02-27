@@ -62,6 +62,7 @@ const pendingUploads = ref<EntityAttachment[]>([]);
 const isVoiceListening = ref(false);
 const isSending = ref(false);
 const isResizingPanel = ref(false);
+const isClearHistoryConfirmOpen = ref(false);
 
 const chatFeedRef = ref<HTMLElement | null>(null);
 const chatInputRef = ref<HTMLTextAreaElement | null>(null);
@@ -575,6 +576,7 @@ function autoResizeComposer() {
 function toggleChat() {
   isOpen.value = !isOpen.value;
   if (isOpen.value) {
+    isClearHistoryConfirmOpen.value = false;
     panelSize.value = resolvedPanelSize.value;
     pendingComposerHeightReset.value = true;
     void nextTick(() => {
@@ -582,15 +584,22 @@ function toggleChat() {
       scrollToBottom('auto');
     });
   } else {
+    isClearHistoryConfirmOpen.value = false;
     stopVoiceCapture();
     pendingUploads.value = [];
   }
 }
 
-function clearAllChatHistory() {
+function openClearHistoryConfirm() {
+  isClearHistoryConfirmOpen.value = true;
+}
+
+function cancelClearHistoryConfirm() {
+  isClearHistoryConfirmOpen.value = false;
+}
+
+function confirmClearAllChatHistory() {
   if (typeof window !== 'undefined') {
-    const confirmed = window.confirm('Очистить всю историю общего LLM-чата? Действие необратимо.');
-    if (!confirmed) return;
     try {
       window.localStorage.removeItem(STORAGE_KEY);
     } catch {
@@ -598,6 +607,7 @@ function clearAllChatHistory() {
     }
   }
 
+  isClearHistoryConfirmOpen.value = false;
   messagesByScope.value = {};
   messageDraft.value = '';
   pendingUploads.value = [];
@@ -907,7 +917,7 @@ onBeforeUnmount(() => {
             class="agent-chat-clear"
             title="Очистить историю"
             aria-label="Очистить историю"
-            @click="clearAllChatHistory"
+            @click="openClearHistoryConfirm"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M3 6h18" />
@@ -1054,6 +1064,35 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </section>
+
+      <div
+        v-if="isClearHistoryConfirmOpen"
+        class="agent-chat-confirm-overlay"
+        @click="cancelClearHistoryConfirm"
+      >
+        <section class="agent-chat-confirm-dialog" @click.stop @pointerdown.stop>
+          <h3 class="agent-chat-confirm-title">Удалить историю чата?</h3>
+          <p class="agent-chat-confirm-text">
+            История общего LLM-чата будет удалена безвозвратно для текущего аккаунта.
+          </p>
+          <div class="agent-chat-confirm-actions">
+            <button
+              type="button"
+              class="agent-chat-confirm-btn agent-chat-confirm-btn-cancel"
+              @click="cancelClearHistoryConfirm"
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              class="agent-chat-confirm-btn agent-chat-confirm-btn-danger"
+              @click="confirmClearAllChatHistory"
+            >
+              Удалить
+            </button>
+          </div>
+        </section>
+      </div>
     </section>
   </div>
 </template>
@@ -1482,6 +1521,78 @@ onBeforeUnmount(() => {
   height: 0;
   opacity: 0;
   pointer-events: none;
+}
+
+.agent-chat-confirm-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px;
+  z-index: 12;
+}
+
+.agent-chat-confirm-dialog {
+  width: min(340px, 100%);
+  border-radius: 14px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  padding: 14px;
+  box-shadow: 0 18px 32px rgba(15, 23, 42, 0.24);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agent-chat-confirm-title {
+  margin: 0;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.agent-chat-confirm-text {
+  margin: 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.agent-chat-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.agent-chat-confirm-btn {
+  min-height: 30px;
+  border-radius: 8px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.agent-chat-confirm-btn-cancel:hover {
+  border-color: #bfd5ff;
+  color: #1058ff;
+  background: #eef4ff;
+}
+
+.agent-chat-confirm-btn-danger {
+  border-color: #f8c6c6;
+  color: #b91c1c;
+  background: #fff3f3;
+}
+
+.agent-chat-confirm-btn-danger:hover {
+  border-color: #f39a9a;
+  background: #ffe3e3;
 }
 
 @keyframes agentThinkingPulse {
