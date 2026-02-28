@@ -1396,10 +1396,12 @@ function stopQuizThinkingIndicator() {
   isQuizThinkingVisible.value = false;
 }
 
-function startQuizThinkingIndicator(action: 'start' | 'answer') {
+function startQuizThinkingIndicator(action: 'start' | 'answer', questionId = '') {
   stopQuizThinkingIndicator();
   if (action !== 'answer') return;
-  quizThinkingText.value = 'Готовлю следующий вопрос...';
+  quizThinkingText.value = isQuizProfileSummaryQuestion(questionId)
+    ? 'Завершаю обработку...'
+    : 'Думаю...';
   quizThinkingTimer.value = setTimeout(() => {
     isQuizThinkingVisible.value = true;
   }, QUIZ_THINKING_INDICATOR_DELAY_MS);
@@ -1726,7 +1728,7 @@ async function runEntityQuizStep(payload: {
   if (!currentDraft) return;
   if (isQuizRequestInFlight.value || isAiRequestInFlight.value) return;
 
-  startQuizThinkingIndicator(payload.action);
+  startQuizThinkingIndicator(payload.action, payload.questionId || '');
   isQuizRequestInFlight.value = true;
   const requestPayload = {
     entityId: currentDraft.entityId,
