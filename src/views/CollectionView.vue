@@ -379,8 +379,39 @@ function normalizeType(value: unknown): EntityType {
 }
 
 const activeType = computed<EntityType>(() => normalizeType(props.type));
+const CREATE_BUTTON_LABELS: Record<EntityType, string> = {
+  project: 'Создать проект',
+  connection: 'Подключить WhatsApp',
+  person: 'Создать персону',
+  company: 'Создать компанию',
+  event: 'Создать событие',
+  resource: 'Создать ресурс',
+  goal: 'Создать цель',
+  result: 'Создать результат',
+  task: 'Создать задачу',
+  shape: 'Создать элемент',
+};
+const CREATE_ENTITY_NAME_TEMPLATES: Record<EntityType, string> = {
+  project: 'Новый проект',
+  connection: 'Новое подключение',
+  person: 'Новая персона',
+  company: 'Новая компания',
+  event: 'Новое событие',
+  resource: 'Новый ресурс',
+  goal: 'Новая цель',
+  result: 'Новый результат',
+  task: 'Новая задача',
+  shape: 'Новый элемент',
+};
+
+const createButtonLabel = computed(() => CREATE_BUTTON_LABELS[activeType.value] || 'Создать');
 
 const typedEntities = computed(() => entitiesStore.byType(activeType.value));
+
+function buildDefaultEntityName(type: EntityType, nextNumber: number) {
+  const base = CREATE_ENTITY_NAME_TEMPLATES[type] || 'Новая сущность';
+  return `${base} ${nextNumber}`;
+}
 
 function normalizeProjectPreview(entity: Entity): ProjectPreview | null {
   const rawCanvas = entity.canvas_data;
@@ -952,10 +983,7 @@ async function createEntity() {
     canvas_data?: { nodes: []; edges: [] };
   } = {
     type: activeType.value,
-    name:
-      activeType.value === 'project'
-        ? `Новый проект ${nextEntityNumber}`
-        : `Новый узел ${nextEntityNumber}`,
+    name: buildDefaultEntityName(activeType.value, nextEntityNumber),
     profile: {},
     ai_metadata: {},
   };
@@ -1799,7 +1827,7 @@ function closeEntityInfoModal() {
       <div v-else class="grid-layout">
         <button class="create-card" :disabled="isCreateBusy" @click="createEntity">
           <AppIcon name="plus" />
-          <span class="create-card-label">{{ activeType === 'connection' ? 'Добавить' : 'Создать' }}</span>
+          <span class="create-card-label">{{ createButtonLabel }}</span>
         </button>
 
         <template v-if="firstEntity">
