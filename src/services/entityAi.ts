@@ -59,3 +59,50 @@ export async function analyzeEntityWithAi(payload: EntityAiAnalyzePayload) {
   });
   return data;
 }
+
+export interface EntityQuizOption {
+  id: string;
+  text: string;
+}
+
+export interface EntityQuizStepState {
+  facts: Record<string, unknown>;
+  missing: string[];
+  confidence: number;
+}
+
+export interface EntityQuizDraftUpdate {
+  description: string;
+  fieldsPatch: Record<string, string[]>;
+}
+
+export interface EntityQuizStepPayload {
+  entityId: string;
+  action: 'start' | 'answer';
+  answerText?: string;
+  optionId?: string;
+  debug?: boolean;
+}
+
+export interface EntityQuizStepResponse {
+  mode: 'quiz_step' | 'quiz_stop_check' | 'quiz_completed';
+  entityType: string;
+  questionId: string;
+  questionText: string;
+  options: EntityQuizOption[];
+  expects?: { type?: string };
+  state: EntityQuizStepState;
+  draftUpdate: EntityQuizDraftUpdate;
+  stopCheck?: Record<string, unknown> | null;
+  model?: string;
+  usage?: unknown;
+  resumed?: boolean;
+  debug?: Record<string, unknown>;
+}
+
+export async function entityQuizStep(payload: EntityQuizStepPayload) {
+  const { data } = await apiClient.post<EntityQuizStepResponse>('/ai/entity-quiz-step', payload, {
+    timeout: 90_000,
+  });
+  return data;
+}

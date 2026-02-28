@@ -6,7 +6,7 @@ import ProfileProgressRing from '../ui/ProfileProgressRing.vue';
 import { useEntitiesStore } from '../../stores/entities';
 import { useAuthStore } from '../../stores/auth';
 import { calculateEntityProfileProgress } from '../../utils/profileProgress';
-import { analyzeEntityWithAi } from '../../services/entityAi';
+import { analyzeEntityWithAi, entityQuizStep, type EntityQuizStepResponse } from '../../services/entityAi';
 import {
   SYSTEM_SOCIAL_LOGOS,
   addCustomLogo,
@@ -259,6 +259,8 @@ const infoSaveTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const pendingComposerHeightReset = ref(false);
 const isVoiceListening = ref(false);
 const isAiRequestInFlight = ref(false);
+const isQuizRequestInFlight = ref(false);
+const currentQuizStep = ref<EntityQuizStepResponse | null>(null);
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
 const voiceRestartTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const voiceShouldRestart = ref(false);
@@ -631,6 +633,7 @@ function loadDraft(entityId: string) {
     pendingUploads: [],
     chatHistory: normalizeChatHistory(aiMetadata.chat_history),
   };
+  currentQuizStep.value = null;
 
   isProjectAddConfirmOpen.value = false;
   projectActionMessage.value = '';
@@ -735,6 +738,7 @@ function closeModal() {
   isProjectAddConfirmOpen.value = false;
   isDeleteConfirmOpen.value = false;
   isChatClearConfirmOpen.value = false;
+  currentQuizStep.value = null;
   closeProfileFooter();
   emit('close');
 }
@@ -867,6 +871,7 @@ async function confirmClearChatHistory() {
     currentDraft.documents = [];
     currentDraft.pendingUploads = [];
     currentDraft.chatHistory = [];
+    currentQuizStep.value = null;
     currentDraft.importanceSource = 'auto';
     currentDraft.metadataValues = buildEntityMetadataValues(currentDraft.type, resetMetadata);
     currentDraft.fieldDrafts = buildEntityFieldDrafts(currentDraft.type);
@@ -1368,6 +1373,153 @@ function parseRequestError(error: unknown) {
   return 'LLM request failed';
 }
 
+function mapPatchKeyToFieldKey(key: string) {
+  return key.endsWith('Add') ? key.slice(0, -3) : key;
+}
+
+function normalizeQuizFieldValue(fieldKey: string, value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+
+  if (fieldKey === 'links') {
+    return normalizeLinkForOpen(trimmed);
+  }
+
+  if (fieldKey === 'importance') {
+    return normalizeImportanceLabel(trimmed);
+  }
+
+  return trimmed.slice(0, getMetadataFieldMaxLength(fieldKey));
+}
+
+function mergeQuizFieldValues(fieldKey: string, existing: string[], patchValues: string[]) {
+  const dedup = new Set<string>();
+  const nextValues: string[] = [];
+  const maxItems = fieldKey === 'importance' ? 1 : 24;
+
+  const pushValue = (rawValue: string) => {
+    const normalized = normalizeQuizFieldValue(fieldKey, rawValue);
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (dedup.has(key)) return;
+    dedup.add(key);
+    nextValues.push(normalized);
+  };
+
+  for (const value of existing) {
+    pushValue(value);
+    if (nextValues.length >= maxItems) return nextValues;
+  }
+  for (const value of patchValues) {
+    pushValue(value);
+    if (nextValues.length >= maxItems) return nextValues;
+  }
+
+  return nextValues;
+}
+
+function applyQuizDraftUpdate(response: EntityQuizStepResponse) {
+  if (!draft.value) return;
+  const update = response?.draftUpdate;
+  if (!update || typeof update !== 'object') return;
+
+  const nextDescription = typeof update.description === 'string' ? update.description.trim() : '';
+  if (nextDescription) {
+    draft.value.description = nextDescription;
+  }
+
+  const fieldsPatch = update.fieldsPatch && typeof update.fieldsPatch === 'object' ? update.fieldsPatch : {};
+  for (const [patchKey, rawValues] of Object.entries(fieldsPatch)) {
+    const fieldKey = mapPatchKeyToFieldKey(patchKey);
+    if (!Object.prototype.hasOwnProperty.call(draft.value.metadataValues, fieldKey)) continue;
+    const patchValues = Array.isArray(rawValues)
+      ? rawValues.filter((item): item is string => typeof item === 'string')
+      : [];
+    if (!patchValues.length) continue;
+
+    const existing = Array.isArray(draft.value.metadataValues[fieldKey])
+      ? draft.value.metadataValues[fieldKey]
+      : [];
+    draft.value.metadataValues[fieldKey] = mergeQuizFieldValues(fieldKey, existing, patchValues);
+    if (fieldKey === 'importance' && draft.value.metadataValues[fieldKey].length) {
+      draft.value.importanceSource = 'manual';
+    }
+  }
+
+  scheduleSave();
+}
+
+function formatQuizQuestionForChat(step: EntityQuizStepResponse) {
+  return step.questionText.trim();
+}
+
+function setQuizStep(response: EntityQuizStepResponse | null) {
+  currentQuizStep.value = response;
+  if (response?.mode === 'quiz_completed') {
+    currentQuizStep.value = null;
+  }
+}
+
+async function runEntityQuizStep(payload: {
+  action: 'start' | 'answer';
+  answerText?: string;
+  optionId?: string;
+}) {
+  const currentDraft = draft.value;
+  if (!currentDraft) return;
+  if (isQuizRequestInFlight.value || isAiRequestInFlight.value) return;
+
+  isQuizRequestInFlight.value = true;
+  const requestPayload = {
+    entityId: currentDraft.entityId,
+    action: payload.action,
+    answerText: payload.answerText || '',
+    optionId: payload.optionId || '',
+    debug: true,
+  };
+
+  try {
+    const response = await entityQuizStep(requestPayload);
+    if (!draft.value || draft.value.entityId !== currentDraft.entityId) {
+      return;
+    }
+
+    applyQuizDraftUpdate(response);
+    const debugAttachments = response.debug ? [buildDebugAttachment(response.debug)] : [];
+    pushChatMessage('assistant', formatQuizQuestionForChat(response), debugAttachments);
+    scheduleSave();
+    setQuizStep(response);
+    await nextTick();
+    scrollEntityChatToBottom('auto');
+  } catch (error) {
+    const debugAttachments = [buildDebugAttachment(buildLlmErrorDebugPayload(error, requestPayload))];
+    pushChatMessage('assistant', `Не удалось получить шаг квиза. ${parseRequestError(error)}`, debugAttachments);
+    await nextTick();
+    scrollEntityChatToBottom('auto');
+    scheduleSave();
+  } finally {
+    isQuizRequestInFlight.value = false;
+  }
+}
+
+function startEntityQuiz() {
+  if (!draft.value) return;
+  void runEntityQuizStep({ action: 'start' });
+}
+
+function onQuizOptionSelect(optionId: string) {
+  if (!currentQuizStep.value || !draft.value) return;
+  const option = (currentQuizStep.value.options || []).find((item) => item.id === optionId);
+  const optionText = option?.text || `Ответ ${optionId}`;
+  pushChatMessage('user', optionText);
+  scheduleSave();
+  void runEntityQuizStep({
+    action: 'answer',
+    optionId,
+    answerText: optionText,
+  });
+}
+
 function openChatAttachment(attachment: EntityAttachment) {
   if (typeof window === 'undefined') return;
   if (!attachment.data) return;
@@ -1384,11 +1536,31 @@ function openChatAttachment(attachment: EntityAttachment) {
 
 async function onSendInput() {
   if (!draft.value) return;
-  if (isAiRequestInFlight.value) return;
+  if (isAiRequestInFlight.value || isQuizRequestInFlight.value) return;
 
   const message = normalizeChatText(draft.value.textInput);
   const attachments = [...draft.value.pendingUploads];
   if (!message && !attachments.length) return;
+
+  if (currentQuizStep.value) {
+    if (!message) return;
+    pushChatMessage('user', message, attachments);
+    draft.value.pendingUploads = [];
+    draft.value.documents = Array.from(
+      new Map([...draft.value.documents, ...attachments].map((attachment) => [attachment.id, attachment])).values(),
+    );
+    draft.value.textInput = '';
+    resetChatInputSize();
+    scheduleSave();
+    void nextTick(() => {
+      scrollEntityChatToBottom('auto');
+    });
+    void runEntityQuizStep({
+      action: 'answer',
+      answerText: message,
+    });
+    return;
+  }
 
   pushChatMessage('user', message, attachments);
   draft.value.pendingUploads = [];
@@ -2454,11 +2626,27 @@ onBeforeUnmount(() => {
             v-model="draft.textInput"
             class="entity-info-chat-input"
             :placeholder="chatPlaceholder"
-            :disabled="isAiRequestInFlight"
+            :disabled="isAiRequestInFlight || isQuizRequestInFlight"
             rows="1"
             @input="onTextInput"
             @keydown="onChatComposerKeydown"
           />
+        </div>
+
+        <div
+          v-if="currentQuizStep && currentQuizStep.options && currentQuizStep.options.length"
+          class="entity-info-quiz-options"
+        >
+          <button
+            v-for="option in currentQuizStep.options"
+            :key="`${currentQuizStep.questionId}:${option.id}`"
+            type="button"
+            class="entity-info-quiz-option-btn"
+            :disabled="isAiRequestInFlight || isQuizRequestInFlight"
+            @click="onQuizOptionSelect(option.id)"
+          >
+            {{ option.id }}. {{ option.text }}
+          </button>
         </div>
 
         <div class="entity-info-chat-tools">
@@ -2467,7 +2655,7 @@ onBeforeUnmount(() => {
               type="button"
               class="entity-info-chat-icon-btn"
               title="Загрузка документа"
-              :disabled="isAiRequestInFlight"
+              :disabled="isAiRequestInFlight || isQuizRequestInFlight"
               @click="docInputRef?.click()"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -2489,7 +2677,7 @@ onBeforeUnmount(() => {
               class="entity-info-chat-icon-btn"
               :class="{ active: isVoiceListening }"
               title="Голосовой ввод"
-              :disabled="isAiRequestInFlight"
+              :disabled="isAiRequestInFlight || isQuizRequestInFlight"
               @click="onVoiceToggle"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -2497,6 +2685,21 @@ onBeforeUnmount(() => {
                 <path d="M5 11a7 7 0 0 0 14 0" />
                 <path d="M12 18v3" />
                 <path d="M8 21h8" />
+              </svg>
+            </button>
+
+            <button
+              type="button"
+              class="entity-info-chat-icon-btn"
+              :class="{ active: Boolean(currentQuizStep) }"
+              title="Квиз"
+              :disabled="isAiRequestInFlight || isQuizRequestInFlight"
+              @click="startEntityQuiz"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M9.5 9a2.5 2.5 0 1 1 4.3 1.7c-.8.8-1.8 1.3-1.8 2.8" />
+                <circle cx="12" cy="17.2" r="1" />
+                <circle cx="12" cy="12" r="9" />
               </svg>
             </button>
           </div>
@@ -2550,7 +2753,7 @@ onBeforeUnmount(() => {
             type="button"
             class="entity-info-chat-icon-btn send entity-info-chat-tools-send"
             title="Отправить"
-            :disabled="isAiRequestInFlight"
+            :disabled="isAiRequestInFlight || isQuizRequestInFlight"
             @click="onSendInput"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -3528,6 +3731,41 @@ onBeforeUnmount(() => {
   padding: 4px 8px;
 }
 
+.entity-info-quiz-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.entity-info-quiz-option-btn {
+  min-height: 30px;
+  border-radius: 10px;
+  border: 1px solid #dbe4f3;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 6px 8px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.entity-info-quiz-option-btn:hover:not(:disabled) {
+  color: #1058ff;
+  border-color: #bfd5ff;
+  background: #eef4ff;
+}
+
+.entity-info-quiz-option-btn:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .entity-info-chat-tools {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
@@ -3687,6 +3925,10 @@ onBeforeUnmount(() => {
   .entity-info-chat-feed {
     padding: 8px;
     gap: 7px;
+  }
+
+  .entity-info-quiz-options {
+    grid-template-columns: 1fr;
   }
 
   .entity-info-menu-footer {
