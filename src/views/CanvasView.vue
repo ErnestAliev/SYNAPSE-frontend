@@ -4007,6 +4007,17 @@ async function onMenuTypeChange(payload: { type: EntityType }) {
   }
 
   if (currentEntity.type === payload.type) {
+    // Явная фиксация "Элемента": повторный выбор shape блокирует смену категории.
+    if (payload.type === 'shape' && !isCategoryLocked(currentEntity)) {
+      entitiesStore.queueEntityUpdate(
+        currentEntity._id,
+        {
+          profile: withCategoryLock(currentEntity.profile, true),
+        },
+        { delay: 0 },
+      );
+    }
+
     closeContextMenu();
     return;
   }
