@@ -80,6 +80,11 @@ export interface EntityQuizStepPayload {
   entityId: string;
   action: 'start' | 'answer';
   questionId?: string;
+  input?: {
+    activeQuestion?: {
+      questionId?: string;
+    };
+  };
   answerText?: string;
   optionId?: string;
   debug?: boolean;

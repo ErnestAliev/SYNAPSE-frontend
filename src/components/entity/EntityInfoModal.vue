@@ -1698,6 +1698,11 @@ async function runEntityQuizStep(payload: {
     entityId: currentDraft.entityId,
     action: payload.action,
     questionId: payload.questionId || '',
+    input: {
+      activeQuestion: {
+        questionId: payload.questionId || '',
+      },
+    },
     answerText: payload.answerText || '',
     optionId: payload.optionId || '',
     debug: true,
