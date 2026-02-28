@@ -449,6 +449,7 @@ function buildEntityMetadataResetPayload() {
     text_input: '',
     voice_input: '',
     chat_history: [],
+    quiz_state: null,
     documents: [],
     description_history: [],
     description_meta: {},
