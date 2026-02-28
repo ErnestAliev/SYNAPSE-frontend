@@ -1755,6 +1755,9 @@ async function runEntityQuizStep(payload: {
     pushChatMessage('assistant', formatQuizQuestionForChat(response), debugAttachments, quizState);
     scheduleSave();
     setQuizStep(response);
+    if (response.mode === 'quiz_completed') {
+      stopVoiceCapture();
+    }
     shouldAutostartVoiceForProfileSummary =
       response.mode === 'quiz_step' &&
       isQuizProfileSummaryQuestion(typeof response.questionId === 'string' ? response.questionId : '');
@@ -1836,6 +1839,9 @@ async function onSendInput() {
 
   if (currentQuizStep.value) {
     if (!message) return;
+    if (isVoiceListening.value) {
+      stopVoiceCapture();
+    }
     const activeQuestionId = activeQuizMessageId.value;
     const activeQuestionMessage = activeQuestionId ? findChatMessage(activeQuestionId) : null;
     if (activeQuestionMessage?.quiz && !activeQuestionMessage.quiz.answered) {
