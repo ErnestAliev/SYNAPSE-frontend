@@ -6,7 +6,7 @@ import ProfileProgressRing from '../ui/ProfileProgressRing.vue';
 import { useEntitiesStore } from '../../stores/entities';
 import { useAuthStore } from '../../stores/auth';
 import { calculateEntityProfileProgress } from '../../utils/profileProgress';
-import { analyzeEntityWithAi, entityQuizStep, type EntityQuizStepResponse } from '../../services/entityAi';
+import { analyzeEntityWithAi, entityQuizStep, type EntityQuizOption, type EntityQuizStepResponse } from '../../services/entityAi';
 import {
   SYSTEM_SOCIAL_LOGOS,
   addCustomLogo,
@@ -66,6 +66,16 @@ interface EntityChatMessage {
   text: string;
   createdAt: string;
   attachments: EntityAttachment[];
+  quiz: EntityChatQuizState | null;
+}
+
+interface EntityChatQuizState {
+  questionId: string;
+  mode: 'quiz_step' | 'quiz_stop_check';
+  options: EntityQuizOption[];
+  answered: boolean;
+  selectedOptionId: string;
+  selectedText: string;
 }
 
 interface EmojiRecord {
@@ -261,6 +271,9 @@ const isVoiceListening = ref(false);
 const isAiRequestInFlight = ref(false);
 const isQuizRequestInFlight = ref(false);
 const currentQuizStep = ref<EntityQuizStepResponse | null>(null);
+const activeQuizCustomInputMessageId = ref('');
+const activeQuizCustomInputText = ref('');
+const quizCustomInputRefs = ref<Record<string, HTMLInputElement | null>>({});
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
 const voiceRestartTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const voiceShouldRestart = ref(false);
@@ -488,6 +501,52 @@ function normalizeChatHistory(value: unknown) {
     return [] as EntityChatMessage[];
   }
 
+  const normalizeQuizOptions = (rawOptions: unknown) => {
+    const source = Array.isArray(rawOptions) ? rawOptions : [];
+    const normalized = source
+      .slice(0, 4)
+      .map((item, index) => {
+        const record = toProfile(item);
+        const text = typeof record.text === 'string' ? record.text.trim() : '';
+        if (!text) return null;
+        return {
+          id: String(index + 1),
+          text,
+        } satisfies EntityQuizOption;
+      })
+      .filter((item): item is EntityQuizOption => Boolean(item));
+
+    while (normalized.length < 4) {
+      const nextIndex = normalized.length + 1;
+      normalized.push({
+        id: String(nextIndex),
+        text: nextIndex === 4 ? 'Свой вариант' : `Вариант ${nextIndex}`,
+      });
+    }
+    normalized[3] = { id: '4', text: 'Свой вариант' };
+    return normalized;
+  };
+
+  const normalizeQuizState = (rawQuiz: unknown) => {
+    const quiz = toProfile(rawQuiz);
+    const questionId = typeof quiz.questionId === 'string' ? quiz.questionId.trim() : '';
+    if (!questionId) return null;
+    const modeRaw = typeof quiz.mode === 'string' ? quiz.mode.trim().toLowerCase() : '';
+    const mode = modeRaw === 'quiz_stop_check' ? 'quiz_stop_check' : 'quiz_step';
+    const options = normalizeQuizOptions(quiz.options);
+    const selectedOptionId = typeof quiz.selectedOptionId === 'string' ? quiz.selectedOptionId.trim() : '';
+    const selectedText = typeof quiz.selectedText === 'string' ? quiz.selectedText.trim() : '';
+
+    return {
+      questionId,
+      mode,
+      options,
+      answered: quiz.answered === true,
+      selectedOptionId,
+      selectedText,
+    } satisfies EntityChatQuizState;
+  };
+
   return value
     .map((item) => {
       const record = toProfile(item);
@@ -522,6 +581,7 @@ function normalizeChatHistory(value: unknown) {
         text,
         createdAt,
         attachments,
+        quiz: normalizeQuizState(record.quiz),
       } satisfies EntityChatMessage;
     })
     .filter((message): message is EntityChatMessage => Boolean(message));
@@ -634,6 +694,8 @@ function loadDraft(entityId: string) {
     chatHistory: normalizeChatHistory(aiMetadata.chat_history),
   };
   currentQuizStep.value = null;
+  closeQuizCustomInput();
+  quizCustomInputRefs.value = {};
 
   isProjectAddConfirmOpen.value = false;
   projectActionMessage.value = '';
@@ -674,6 +736,21 @@ function persistDraft(entityId: string) {
         size: attachment.size,
         data: attachment.data,
       })),
+      ...(message.quiz
+        ? {
+            quiz: {
+              questionId: message.quiz.questionId,
+              mode: message.quiz.mode,
+              options: message.quiz.options.map((option) => ({
+                id: option.id,
+                text: option.text,
+              })),
+              answered: message.quiz.answered,
+              selectedOptionId: message.quiz.selectedOptionId,
+              selectedText: message.quiz.selectedText,
+            },
+          }
+        : {}),
     })),
     documents: currentDraft.documents.map((doc) => ({
       id: doc.id,
@@ -739,6 +816,8 @@ function closeModal() {
   isDeleteConfirmOpen.value = false;
   isChatClearConfirmOpen.value = false;
   currentQuizStep.value = null;
+  closeQuizCustomInput();
+  quizCustomInputRefs.value = {};
   closeProfileFooter();
   emit('close');
 }
@@ -872,6 +951,8 @@ async function confirmClearChatHistory() {
     currentDraft.pendingUploads = [];
     currentDraft.chatHistory = [];
     currentQuizStep.value = null;
+    closeQuizCustomInput();
+    quizCustomInputRefs.value = {};
     currentDraft.importanceSource = 'auto';
     currentDraft.metadataValues = buildEntityMetadataValues(currentDraft.type, resetMetadata);
     currentDraft.fieldDrafts = buildEntityFieldDrafts(currentDraft.type);
@@ -1266,7 +1347,51 @@ function normalizeChatText(value: string) {
   return value.replace(/\r\n/g, '\n').trim();
 }
 
-function pushChatMessage(role: EntityChatRole, text: string, attachments: EntityAttachment[] = []) {
+function normalizeQuizStepOptions(rawOptions: EntityQuizOption[] | undefined) {
+  const source = Array.isArray(rawOptions) ? rawOptions : [];
+  const normalized = source
+    .slice(0, 4)
+    .map((item, index) => {
+      const text = typeof item?.text === 'string' ? item.text.trim() : '';
+      if (!text) return null;
+      return {
+        id: String(index + 1),
+        text,
+      } satisfies EntityQuizOption;
+    })
+    .filter((item): item is EntityQuizOption => Boolean(item));
+  while (normalized.length < 4) {
+    const nextIndex = normalized.length + 1;
+    normalized.push({
+      id: String(nextIndex),
+      text: nextIndex === 4 ? 'Свой вариант' : `Вариант ${nextIndex}`,
+    });
+  }
+  normalized[3] = { id: '4', text: 'Свой вариант' };
+  return normalized;
+}
+
+function buildQuizChatState(step: EntityQuizStepResponse): EntityChatQuizState | null {
+  if (step.mode !== 'quiz_step' && step.mode !== 'quiz_stop_check') return null;
+  const questionId = typeof step.questionId === 'string' ? step.questionId.trim() : '';
+  const options = normalizeQuizStepOptions(step.options);
+  if (!questionId || !options.length) return null;
+  return {
+    questionId,
+    mode: step.mode,
+    options,
+    answered: false,
+    selectedOptionId: '',
+    selectedText: '',
+  };
+}
+
+function pushChatMessage(
+  role: EntityChatRole,
+  text: string,
+  attachments: EntityAttachment[] = [],
+  quiz: EntityChatQuizState | null = null,
+) {
   if (!draft.value) return;
   const normalized = normalizeChatText(text);
   if (!normalized && !attachments.length) return;
@@ -1279,8 +1404,104 @@ function pushChatMessage(role: EntityChatRole, text: string, attachments: Entity
       text: normalized,
       createdAt: getIsoNow(),
       attachments: attachments.map((attachment) => ({ ...attachment })),
+      quiz: quiz ? { ...quiz, options: quiz.options.map((option) => ({ ...option })) } : null,
     },
   ];
+}
+
+const activeQuizMessageId = computed(() => {
+  const currentDraft = draft.value;
+  if (!currentDraft) return '';
+  for (let index = currentDraft.chatHistory.length - 1; index >= 0; index -= 1) {
+    const message = currentDraft.chatHistory[index];
+    if (!message) continue;
+    if (message.role !== 'assistant' || !message.quiz) continue;
+    if (!message.quiz.answered) return message.id;
+  }
+  return '';
+});
+
+function findChatMessage(messageId: string) {
+  const currentDraft = draft.value;
+  if (!currentDraft) return null;
+  return currentDraft.chatHistory.find((item) => item.id === messageId) || null;
+}
+
+function patchChatQuizState(messageId: string, patch: Partial<EntityChatQuizState>) {
+  const currentDraft = draft.value;
+  if (!currentDraft) return;
+  const index = currentDraft.chatHistory.findIndex((item) => item.id === messageId);
+  if (index < 0) return;
+  const message = currentDraft.chatHistory[index];
+  if (!message || !message.quiz) return;
+  currentDraft.chatHistory[index] = {
+    ...message,
+    quiz: {
+      ...message.quiz,
+      ...patch,
+      options: (patch.options || message.quiz.options).map((option) => ({ ...option })),
+    },
+  };
+}
+
+function isQuizMessageInteractionDisabled(message: EntityChatMessage) {
+  if (!message.quiz) return true;
+  if (message.quiz.answered) return true;
+  if (isAiRequestInFlight.value || isQuizRequestInFlight.value) return true;
+  if (!currentQuizStep.value || currentQuizStep.value.mode === 'quiz_completed') return true;
+  if (currentQuizStep.value.questionId !== message.quiz.questionId) return true;
+  return activeQuizMessageId.value !== message.id;
+}
+
+function isQuizOptionSelected(message: EntityChatMessage, optionId: string) {
+  return Boolean(message.quiz && message.quiz.answered && message.quiz.selectedOptionId === optionId);
+}
+
+function isQuizCustomInputOpen(message: EntityChatMessage) {
+  return activeQuizCustomInputMessageId.value === message.id;
+}
+
+function bindQuizCustomInputRef(messageId: string, element: unknown) {
+  quizCustomInputRefs.value[messageId] = element instanceof HTMLInputElement ? element : null;
+}
+
+function closeQuizCustomInput(messageId?: string) {
+  if (messageId && activeQuizCustomInputMessageId.value !== messageId) return;
+  activeQuizCustomInputMessageId.value = '';
+  activeQuizCustomInputText.value = '';
+}
+
+function openQuizCustomInput(message: EntityChatMessage) {
+  if (!message.quiz) return;
+  if (isQuizMessageInteractionDisabled(message)) return;
+  activeQuizCustomInputMessageId.value = message.id;
+  activeQuizCustomInputText.value = '';
+  void nextTick(() => {
+    const input = quizCustomInputRefs.value[message.id];
+    input?.focus();
+  });
+}
+
+function sendQuizAnswerFromMessage(message: EntityChatMessage, payload: { optionId: string; answerText: string }) {
+  if (!message.quiz || !draft.value) return;
+  if (message.quiz.answered || isQuizMessageInteractionDisabled(message)) return;
+
+  const answerText = normalizeChatText(payload.answerText);
+  if (!answerText) return;
+
+  patchChatQuizState(message.id, {
+    answered: true,
+    selectedOptionId: payload.optionId,
+    selectedText: answerText,
+  });
+  closeQuizCustomInput(message.id);
+  pushChatMessage('user', answerText);
+  scheduleSave();
+  void runEntityQuizStep({
+    action: 'answer',
+    optionId: payload.optionId,
+    answerText,
+  });
 }
 
 function toAiAttachmentPayload(attachment: EntityAttachment) {
@@ -1486,7 +1707,8 @@ async function runEntityQuizStep(payload: {
 
     applyQuizDraftUpdate(response);
     const debugAttachments = response.debug ? [buildDebugAttachment(response.debug)] : [];
-    pushChatMessage('assistant', formatQuizQuestionForChat(response), debugAttachments);
+    const quizState = buildQuizChatState(response);
+    pushChatMessage('assistant', formatQuizQuestionForChat(response), debugAttachments, quizState);
     scheduleSave();
     setQuizStep(response);
     await nextTick();
@@ -1507,16 +1729,35 @@ function startEntityQuiz() {
   void runEntityQuizStep({ action: 'start' });
 }
 
-function onQuizOptionSelect(optionId: string) {
-  if (!currentQuizStep.value || !draft.value) return;
-  const option = (currentQuizStep.value.options || []).find((item) => item.id === optionId);
+function onQuizOptionSelect(message: EntityChatMessage, optionId: string) {
+  if (!message.quiz) return;
+  const option = message.quiz.options.find((item) => item.id === optionId);
   const optionText = option?.text || `Ответ ${optionId}`;
-  pushChatMessage('user', optionText);
-  scheduleSave();
-  void runEntityQuizStep({
-    action: 'answer',
+
+  if (optionId === '4') {
+    openQuizCustomInput(message);
+    return;
+  }
+
+  sendQuizAnswerFromMessage(message, {
     optionId,
     answerText: optionText,
+  });
+}
+
+function onQuizCustomInputKeydown(event: KeyboardEvent, message: EntityChatMessage) {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  void submitQuizCustomAnswer(message);
+}
+
+async function submitQuizCustomAnswer(message: EntityChatMessage) {
+  if (!message.quiz) return;
+  const answerText = normalizeChatText(activeQuizCustomInputText.value);
+  if (!answerText) return;
+  sendQuizAnswerFromMessage(message, {
+    optionId: '4',
+    answerText,
   });
 }
 
@@ -1544,6 +1785,16 @@ async function onSendInput() {
 
   if (currentQuizStep.value) {
     if (!message) return;
+    const activeQuestionId = activeQuizMessageId.value;
+    const activeQuestionMessage = activeQuestionId ? findChatMessage(activeQuestionId) : null;
+    if (activeQuestionMessage?.quiz && !activeQuestionMessage.quiz.answered) {
+      patchChatQuizState(activeQuestionMessage.id, {
+        answered: true,
+        selectedOptionId: '4',
+        selectedText: message,
+      });
+      closeQuizCustomInput(activeQuestionMessage.id);
+    }
     pushChatMessage('user', message, attachments);
     draft.value.pendingUploads = [];
     draft.value.documents = Array.from(
@@ -1966,6 +2217,21 @@ const progressEntity = computed<Entity | null>(() => {
         size: attachment.size,
         data: attachment.data,
       })),
+      ...(message.quiz
+        ? {
+            quiz: {
+              questionId: message.quiz.questionId,
+              mode: message.quiz.mode,
+              options: message.quiz.options.map((option) => ({
+                id: option.id,
+                text: option.text,
+              })),
+              answered: message.quiz.answered,
+              selectedOptionId: message.quiz.selectedOptionId,
+              selectedText: message.quiz.selectedText,
+            },
+          }
+        : {}),
     })),
   } as Record<string, unknown>;
 
@@ -2592,6 +2858,54 @@ onBeforeUnmount(() => {
                 {{ attachment.name }}
               </button>
             </div>
+            <div
+              v-if="message.role === 'assistant' && message.quiz && message.quiz.options && message.quiz.options.length"
+              class="entity-chat-quiz-inline"
+            >
+              <div class="entity-info-quiz-options">
+                <button
+                  v-for="option in message.quiz.options"
+                  :key="`${message.id}:${option.id}`"
+                  type="button"
+                  class="entity-info-quiz-option-btn"
+                  :class="{ selected: isQuizOptionSelected(message, option.id) }"
+                  :disabled="isQuizMessageInteractionDisabled(message)"
+                  @click="onQuizOptionSelect(message, option.id)"
+                >
+                  {{ option.id }}. {{ option.text }}
+                </button>
+              </div>
+              <div
+                v-if="isQuizCustomInputOpen(message)"
+                class="entity-chat-quiz-custom"
+              >
+                <input
+                  :ref="(element) => bindQuizCustomInputRef(message.id, element)"
+                  v-model="activeQuizCustomInputText"
+                  class="entity-chat-quiz-custom-input"
+                  type="text"
+                  placeholder="Напиши свой вариант…"
+                  :disabled="isQuizRequestInFlight || isAiRequestInFlight"
+                  @keydown="onQuizCustomInputKeydown($event, message)"
+                />
+                <button
+                  type="button"
+                  class="entity-chat-quiz-custom-btn send"
+                  :disabled="isQuizRequestInFlight || isAiRequestInFlight || !activeQuizCustomInputText.trim()"
+                  @click="submitQuizCustomAnswer(message)"
+                >
+                  Отправить
+                </button>
+                <button
+                  type="button"
+                  class="entity-chat-quiz-custom-btn cancel"
+                  :disabled="isQuizRequestInFlight || isAiRequestInFlight"
+                  @click="closeQuizCustomInput(message.id)"
+                >
+                  Отмена
+                </button>
+              </div>
+            </div>
           </div>
           <time class="entity-chat-time">{{ toDisplayTime(message.createdAt) }}</time>
         </article>
@@ -2631,22 +2945,6 @@ onBeforeUnmount(() => {
             @input="onTextInput"
             @keydown="onChatComposerKeydown"
           />
-        </div>
-
-        <div
-          v-if="currentQuizStep && currentQuizStep.options && currentQuizStep.options.length"
-          class="entity-info-quiz-options"
-        >
-          <button
-            v-for="option in currentQuizStep.options"
-            :key="`${currentQuizStep.questionId}:${option.id}`"
-            type="button"
-            class="entity-info-quiz-option-btn"
-            :disabled="isAiRequestInFlight || isQuizRequestInFlight"
-            @click="onQuizOptionSelect(option.id)"
-          >
-            {{ option.id }}. {{ option.text }}
-          </button>
         </div>
 
         <div class="entity-info-chat-tools">
@@ -3737,6 +4035,13 @@ onBeforeUnmount(() => {
   gap: 6px;
 }
 
+.entity-chat-quiz-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
 .entity-info-quiz-option-btn {
   min-height: 30px;
   border-radius: 10px;
@@ -3761,9 +4066,76 @@ onBeforeUnmount(() => {
   background: #eef4ff;
 }
 
+.entity-info-quiz-option-btn.selected {
+  color: #1d4ed8;
+  border-color: #b9ccf9;
+  background: #e9f0ff;
+}
+
 .entity-info-quiz-option-btn:disabled {
-  cursor: wait;
-  opacity: 0.65;
+  cursor: not-allowed;
+  color: #8a96ab;
+  border-color: #dce5f2;
+  background: #f3f6fb;
+}
+
+.entity-chat-quiz-custom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.entity-chat-quiz-custom-input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  border-radius: 9px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 12px;
+  padding: 0 9px;
+  outline: none;
+}
+
+.entity-chat-quiz-custom-input:focus {
+  border-color: #9cb9ff;
+}
+
+.entity-chat-quiz-custom-btn {
+  height: 30px;
+  border-radius: 9px;
+  border: 1px solid #dbe4f3;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 10px;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.entity-chat-quiz-custom-btn.send:hover:not(:disabled) {
+  color: #1058ff;
+  border-color: #bfd5ff;
+  background: #eef4ff;
+}
+
+.entity-chat-quiz-custom-btn.cancel:hover:not(:disabled) {
+  color: #334155;
+  border-color: #cad6ea;
+  background: #edf2f9;
+}
+
+.entity-chat-quiz-custom-btn:disabled {
+  cursor: not-allowed;
+  color: #8a96ab;
+  border-color: #dce5f2;
+  background: #f3f6fb;
 }
 
 .entity-info-chat-tools {
@@ -3929,6 +4301,14 @@ onBeforeUnmount(() => {
 
   .entity-info-quiz-options {
     grid-template-columns: 1fr;
+  }
+
+  .entity-chat-quiz-custom {
+    grid-template-columns: 1fr;
+  }
+
+  .entity-chat-quiz-custom-btn {
+    width: 100%;
   }
 
   .entity-info-menu-footer {
