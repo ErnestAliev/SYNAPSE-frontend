@@ -49,6 +49,17 @@ const ENTITY_TYPE_CHAT_TARGET: Record<EntityType, string> = {
   task: 'задачу',
   shape: 'элемент',
 };
+const ENTITY_MINE_TOGGLE_LABELS: Partial<Record<EntityType, string>> = {
+  person: 'Это я',
+  company: 'Моя компания',
+  project: 'Мой проект',
+  resource: 'Мой ресурс',
+  goal: 'Моя цель',
+  task: 'Моя задача',
+  event: 'Моё событие',
+  result: 'Мой результат',
+  shape: 'Моё',
+};
 
 type EntityChatRole = 'user' | 'assistant';
 
@@ -287,6 +298,7 @@ const voiceCommittedText = ref('');
 const isProjectAddConfirmOpen = ref(false);
 const projectActionMessage = ref('');
 const isProjectActionBusy = ref(false);
+const isMineToggleBusy = ref(false);
 const selectedProjectId = ref('');
 const isDeleteConfirmOpen = ref(false);
 const isChatClearConfirmOpen = ref(false);
@@ -707,6 +719,7 @@ function loadDraft(entityId: string) {
   isProjectAddConfirmOpen.value = false;
   projectActionMessage.value = '';
   isProjectActionBusy.value = false;
+  isMineToggleBusy.value = false;
   editingFieldValue.value = null;
   isFieldsListExpanded.value = false;
 
@@ -825,6 +838,7 @@ function closeModal() {
   isProjectAddConfirmOpen.value = false;
   isDeleteConfirmOpen.value = false;
   isChatClearConfirmOpen.value = false;
+  isMineToggleBusy.value = false;
   currentQuizStep.value = null;
   closeQuizCustomInput();
   quizCustomInputRefs.value = {};
@@ -1217,6 +1231,96 @@ function onDescriptionInput() {
     draft.value.importanceSource = 'auto';
   }
   scheduleSave();
+}
+
+function snapshotMineFlags(entityIds: string[]) {
+  const uniqueIds = Array.from(new Set(entityIds.map((id) => id.trim()).filter(Boolean)));
+  return uniqueIds
+    .map((entityId) => {
+      const entity = entitiesStore.byId(entityId);
+      if (!entity) return null;
+      return {
+        entityId,
+        is_mine: toBooleanFlag(entity.is_mine),
+        is_me: toBooleanFlag(entity.is_me),
+      };
+    })
+    .filter((item): item is { entityId: string; is_mine: boolean; is_me: boolean } => Boolean(item));
+}
+
+function restoreMineFlags(snapshot: Array<{ entityId: string; is_mine: boolean; is_me: boolean }>) {
+  for (const row of snapshot) {
+    entitiesStore.applyLocalEntityPatch(row.entityId, {
+      is_mine: row.is_mine,
+      is_me: row.is_me,
+    });
+  }
+}
+
+function onMineToggleInput(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  if (!input) return;
+  void onMineToggleChange(input.checked);
+}
+
+async function onMineToggleChange(nextValue: boolean) {
+  const entity = currentEntity.value;
+  if (!entity || isMineToggleBusy.value || isProjectActionBusy.value) return;
+
+  projectActionMessage.value = '';
+  isMineToggleBusy.value = true;
+
+  try {
+    if (entity.type === 'person') {
+      if (nextValue) {
+        const persons = entitiesStore.byType('person');
+        const snapshot = snapshotMineFlags(persons.map((item) => item._id));
+
+        for (const person of persons) {
+          if (person._id === entity._id) {
+            entitiesStore.applyLocalEntityPatch(person._id, { is_me: true, is_mine: true });
+            continue;
+          }
+
+          if (toBooleanFlag(person.is_me)) {
+            entitiesStore.applyLocalEntityPatch(person._id, { is_me: false });
+          }
+        }
+
+        try {
+          await entitiesStore.setPersonAsMe(entity._id);
+        } catch (error) {
+          restoreMineFlags(snapshot);
+          throw error;
+        }
+
+        return;
+      }
+
+      const snapshot = snapshotMineFlags([entity._id]);
+      entitiesStore.applyLocalEntityPatch(entity._id, { is_me: false });
+      try {
+        await entitiesStore.updateEntity(entity._id, { is_me: false });
+      } catch (error) {
+        restoreMineFlags(snapshot);
+        throw error;
+      }
+      return;
+    }
+
+    const snapshot = snapshotMineFlags([entity._id]);
+    entitiesStore.applyLocalEntityPatch(entity._id, { is_mine: nextValue, is_me: false });
+    try {
+      await entitiesStore.updateEntity(entity._id, { is_mine: nextValue });
+    } catch (error) {
+      restoreMineFlags(snapshot);
+      throw error;
+    }
+  } catch {
+    projectActionMessage.value = 'Не удалось сохранить';
+  } finally {
+    isMineToggleBusy.value = false;
+  }
 }
 
 const descriptionTextareaStyle = computed(() => {
@@ -2162,6 +2266,23 @@ function toDisplayTime(iso: string) {
 }
 
 const currentEntity = computed(() => entitiesStore.byId(props.entityId) || null);
+const mineToggleLabel = computed(() => {
+  const entityType = currentEntity.value?.type || draft.value?.type || 'shape';
+  return ENTITY_MINE_TOGGLE_LABELS[entityType] || 'Моё';
+});
+const mineToggleChecked = computed(() => {
+  const entity = currentEntity.value;
+  if (!entity) return false;
+  if (entity.type === 'person') {
+    return toBooleanFlag(entity.is_me);
+  }
+  return toBooleanFlag(entity.is_mine);
+});
+const mineBadgeVisible = computed(() => {
+  const entity = currentEntity.value;
+  if (!entity) return false;
+  return toBooleanFlag(entity.is_me) || toBooleanFlag(entity.is_mine);
+});
 const availableProjectOptions = computed(() => {
   const current = currentEntity.value;
   return entitiesStore
@@ -2796,6 +2917,7 @@ onBeforeUnmount(() => {
               class="entity-info-name-input"
               @input="onNameInput"
             />
+            <span v-if="mineBadgeVisible" class="entity-info-mine-badge">МОЁ</span>
             <button
               type="button"
               class="entity-info-close-btn entity-info-close-btn-inline"
@@ -2810,6 +2932,19 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <div class="entity-info-progress-meta">
+            <label class="entity-info-mine-switch">
+              <input
+                type="checkbox"
+                class="entity-info-mine-switch-input"
+                :checked="mineToggleChecked"
+                :disabled="isMineToggleBusy || isProjectActionBusy"
+                @change="onMineToggleInput"
+              />
+              <span class="entity-info-mine-switch-track" aria-hidden="true">
+                <span class="entity-info-mine-switch-thumb"></span>
+              </span>
+              <span class="entity-info-mine-switch-label">{{ mineToggleLabel }}</span>
+            </label>
             <span class="entity-info-progress-level">{{ profileProgressLevel }}</span>
             <span class="entity-info-progress-percent">{{ profileProgress }}%</span>
           </div>
@@ -3628,6 +3763,22 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.14);
 }
 
+.entity-info-mine-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0 8px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid #bfd5ff;
+  background: #eef4ff;
+  color: #1058ff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
 .entity-info-close-btn-inline {
   flex-shrink: 0;
 }
@@ -3692,12 +3843,83 @@ onBeforeUnmount(() => {
 .entity-info-progress-meta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
   min-height: 16px;
+  flex-wrap: wrap;
+}
+
+.entity-info-mine-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.entity-info-mine-switch-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  border: 0;
+  clip: rect(0, 0, 0, 0);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.entity-info-mine-switch-track {
+  width: 34px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 1px solid #dbe4f3;
+  background: #e2e8f0;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px;
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease;
+}
+
+.entity-info-mine-switch-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.25);
+  transition: transform 0.18s ease;
+}
+
+.entity-info-mine-switch-input:checked + .entity-info-mine-switch-track {
+  background: #1058ff;
+  border-color: #1058ff;
+}
+
+.entity-info-mine-switch-input:checked + .entity-info-mine-switch-track .entity-info-mine-switch-thumb {
+  transform: translateX(14px);
+}
+
+.entity-info-mine-switch-input:focus-visible + .entity-info-mine-switch-track {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.24);
+}
+
+.entity-info-mine-switch-input:disabled + .entity-info-mine-switch-track,
+.entity-info-mine-switch-input:disabled + .entity-info-mine-switch-track + .entity-info-mine-switch-label {
+  opacity: 0.55;
+}
+
+.entity-info-mine-switch-label {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .entity-info-progress-level {
+  margin-left: auto;
   color: #64748b;
   font-size: 11px;
   font-weight: 600;
@@ -4349,6 +4571,16 @@ onBeforeUnmount(() => {
   }
 
   .entity-info-progress-level {
+    font-size: 10px;
+  }
+
+  .entity-info-mine-badge {
+    height: 20px;
+    padding: 0 7px;
+    font-size: 9px;
+  }
+
+  .entity-info-mine-switch-label {
     font-size: 10px;
   }
 

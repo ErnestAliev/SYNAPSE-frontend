@@ -57,6 +57,12 @@ interface FetchEntitiesOptions {
   merge?: boolean;
 }
 
+interface SetPersonAsMeResponse {
+  entity?: Entity;
+  entities?: Entity[];
+  clearedPersonIds?: string[];
+}
+
 function createInitialLoadedTypeState(): Partial<Record<EntityType, boolean>> {
   return ENTITY_TYPES.reduce((acc, type) => {
     acc[type] = false;
@@ -654,6 +660,31 @@ export const useEntitiesStore = defineStore('entities', {
       this.clearBufferedPatchState(id);
       const { data } = await apiClient.put<Entity>(`/entities/${id}`, payload);
       this.items = this.items.map((item) => (item._id === id ? data : item));
+
+      return data;
+    },
+
+    async setPersonAsMe(id: string) {
+      const normalizedId = String(id || '').trim();
+      if (!normalizedId) {
+        throw new Error('Entity id is required');
+      }
+
+      this.clearBufferedPatchState(normalizedId);
+      const { data } = await apiClient.post<SetPersonAsMeResponse>(`/entities/${normalizedId}/set-me`, {});
+      const updatedEntities = Array.isArray(data?.entities)
+        ? data.entities.filter((item): item is Entity => Boolean(item?._id))
+        : [];
+
+      if (updatedEntities.length) {
+        const map = new Map(this.items.map((item) => [item._id, item] as const));
+        for (const entity of updatedEntities) {
+          map.set(entity._id, entity);
+        }
+        this.items = Array.from(map.values());
+      } else if (data?.entity?._id) {
+        this.items = this.items.map((item) => (item._id === data.entity!._id ? data.entity! : item));
+      }
 
       return data;
     },

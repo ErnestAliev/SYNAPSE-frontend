@@ -48,6 +48,8 @@ export interface Entity {
   type: EntityType;
   name: string;
   profile?: Record<string, unknown>;
+  is_mine?: boolean;
+  is_me?: boolean;
   ai_metadata?: Record<string, unknown>;
   canvas_data?: ProjectCanvasData;
   createdAt?: string;

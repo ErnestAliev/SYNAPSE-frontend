@@ -48,13 +48,14 @@ interface MetadataFieldConfig {
   label: string;
 }
 
-type QuickFilterKey = 'onlyWithPhoto' | 'onlyNameOnly' | 'hideWithoutPhoto' | 'hideWithoutName';
+type QuickFilterKey = 'onlyWithPhoto' | 'onlyNameOnly' | 'hideWithoutPhoto' | 'hideWithoutName' | 'onlyMine';
 
 interface QuickEntityFilters {
   onlyWithPhoto: boolean;
   onlyNameOnly: boolean;
   hideWithoutPhoto: boolean;
   hideWithoutName: boolean;
+  onlyMine: boolean;
 }
 
 interface StoredCollectionFilterState {
@@ -67,6 +68,7 @@ const QUICK_FILTER_ITEMS: ReadonlyArray<{ key: QuickFilterKey; label: string }> 
   { key: 'onlyNameOnly', label: 'Только Имя' },
   { key: 'hideWithoutPhoto', label: 'Скрыть без фото' },
   { key: 'hideWithoutName', label: 'Скрыть без имени' },
+  { key: 'onlyMine', label: 'Только моё' },
 ];
 
 const IMPORTANCE_VALUE_MAP: Record<string, string> = {
@@ -183,6 +185,7 @@ function createDefaultQuickFilters(): QuickEntityFilters {
     onlyNameOnly: false,
     hideWithoutPhoto: false,
     hideWithoutName: false,
+    onlyMine: false,
   };
 }
 
@@ -622,6 +625,15 @@ function hasEntityName(entity: Entity) {
   return typeof entity.name === 'string' && entity.name.trim().length > 0;
 }
 
+function isEntityMine(entity: Entity) {
+  const isMine = entity.is_mine === true;
+  const isMe = entity.is_me === true;
+  if (entity.type === 'person') {
+    return isMine || isMe;
+  }
+  return isMine;
+}
+
 function quickFilterOptions() {
   return QUICK_FILTER_ITEMS.map((item) => item.label);
 }
@@ -708,6 +720,7 @@ function normalizeQuickFilters(raw: Partial<QuickEntityFilters> | undefined): Qu
     onlyNameOnly: raw.onlyNameOnly === true,
     hideWithoutPhoto: raw.hideWithoutPhoto === true,
     hideWithoutName: raw.hideWithoutName === true,
+    onlyMine: raw.onlyMine === true,
   };
 }
 
@@ -780,6 +793,10 @@ const filteredEntities = computed(() => {
     }
 
     if (quickEntityFilters.value.hideWithoutName && !hasName) {
+      return false;
+    }
+
+    if (quickEntityFilters.value.onlyMine && !isEntityMine(entity)) {
       return false;
     }
 
