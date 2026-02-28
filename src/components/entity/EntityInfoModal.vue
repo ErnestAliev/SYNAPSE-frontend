@@ -242,6 +242,8 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
 const ALL_METADATA_FIELD_KEYS = Array.from(
   new Set(Object.values(ENTITY_CONTEXT_FIELDS).flatMap((fields) => fields.map((field) => field.key))),
 ) as MetadataFieldKey[];
+const QUIZ_PROFILE_SUMMARY_QUESTION_ID = 'P9_PROFILE_SUMMARY';
+const QUIZ_THINKING_INDICATOR_DELAY_MS = 380;
 
 const entitiesStore = useEntitiesStore();
 const authStore = useAuthStore();
@@ -270,6 +272,9 @@ const pendingComposerHeightReset = ref(false);
 const isVoiceListening = ref(false);
 const isAiRequestInFlight = ref(false);
 const isQuizRequestInFlight = ref(false);
+const isQuizThinkingVisible = ref(false);
+const quizThinkingText = ref('Готовлю следующий вопрос...');
+const quizThinkingTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const currentQuizStep = ref<EntityQuizStepResponse | null>(null);
 const activeQuizCustomInputMessageId = ref('');
 const activeQuizCustomInputText = ref('');
@@ -695,6 +700,7 @@ function loadDraft(entityId: string) {
     chatHistory: normalizeChatHistory(aiMetadata.chat_history),
   };
   currentQuizStep.value = null;
+  stopQuizThinkingIndicator();
   closeQuizCustomInput();
   quizCustomInputRefs.value = {};
 
@@ -813,6 +819,7 @@ function closeModal() {
     persistDraft(currentDraft.entityId);
   }
   clearSaveTimer();
+  stopQuizThinkingIndicator();
   stopVoiceCapture();
   selectedProjectId.value = '';
   isProjectAddConfirmOpen.value = false;
@@ -1374,11 +1381,35 @@ function normalizeQuizStepOptions(rawOptions: EntityQuizOption[] | undefined) {
   return normalized;
 }
 
+function isQuizProfileSummaryQuestion(questionId: string) {
+  return questionId.trim().toUpperCase() === QUIZ_PROFILE_SUMMARY_QUESTION_ID;
+}
+
+function clearQuizThinkingTimer() {
+  if (!quizThinkingTimer.value) return;
+  clearTimeout(quizThinkingTimer.value);
+  quizThinkingTimer.value = null;
+}
+
+function stopQuizThinkingIndicator() {
+  clearQuizThinkingTimer();
+  isQuizThinkingVisible.value = false;
+}
+
+function startQuizThinkingIndicator(action: 'start' | 'answer') {
+  stopQuizThinkingIndicator();
+  if (action !== 'answer') return;
+  quizThinkingText.value = 'Готовлю следующий вопрос...';
+  quizThinkingTimer.value = setTimeout(() => {
+    isQuizThinkingVisible.value = true;
+  }, QUIZ_THINKING_INDICATOR_DELAY_MS);
+}
+
 function buildQuizChatState(step: EntityQuizStepResponse): EntityChatQuizState | null {
   if (step.mode !== 'quiz_step' && step.mode !== 'quiz_stop_check') return null;
   const questionId = typeof step.questionId === 'string' ? step.questionId.trim() : '';
-  const options = normalizeQuizStepOptions(step.options);
-  if (!questionId || !options.length) return null;
+  if (!questionId) return null;
+  const options = isQuizProfileSummaryQuestion(questionId) ? [] : normalizeQuizStepOptions(step.options);
   return {
     questionId,
     mode: step.mode,
@@ -1695,6 +1726,7 @@ async function runEntityQuizStep(payload: {
   if (!currentDraft) return;
   if (isQuizRequestInFlight.value || isAiRequestInFlight.value) return;
 
+  startQuizThinkingIndicator(payload.action);
   isQuizRequestInFlight.value = true;
   const requestPayload = {
     entityId: currentDraft.entityId,
@@ -1710,6 +1742,7 @@ async function runEntityQuizStep(payload: {
     debug: true,
   };
 
+  let shouldAutostartVoiceForProfileSummary = false;
   try {
     const response = await entityQuizStep(requestPayload);
     if (!draft.value || draft.value.entityId !== currentDraft.entityId) {
@@ -1722,6 +1755,9 @@ async function runEntityQuizStep(payload: {
     pushChatMessage('assistant', formatQuizQuestionForChat(response), debugAttachments, quizState);
     scheduleSave();
     setQuizStep(response);
+    shouldAutostartVoiceForProfileSummary =
+      response.mode === 'quiz_step' &&
+      isQuizProfileSummaryQuestion(typeof response.questionId === 'string' ? response.questionId : '');
     await nextTick();
     scrollEntityChatToBottom('auto');
   } catch (error) {
@@ -1732,6 +1768,10 @@ async function runEntityQuizStep(payload: {
     scheduleSave();
   } finally {
     isQuizRequestInFlight.value = false;
+    stopQuizThinkingIndicator();
+    if (shouldAutostartVoiceForProfileSummary && !isVoiceListening.value) {
+      startVoiceCapture();
+    }
   }
 }
 
@@ -2688,6 +2728,7 @@ onBeforeUnmount(() => {
     persistDraft(currentDraft.entityId);
   }
   clearSaveTimer();
+  stopQuizThinkingIndicator();
   stopVoiceCapture();
   stopDescriptionResize();
   if (typeof window !== 'undefined') {
@@ -2871,7 +2912,13 @@ onBeforeUnmount(() => {
               </button>
             </div>
             <div
-              v-if="message.role === 'assistant' && message.quiz && message.quiz.options && message.quiz.options.length"
+              v-if="
+                message.role === 'assistant' &&
+                message.quiz &&
+                message.quiz.options &&
+                message.quiz.options.length &&
+                !isQuizProfileSummaryQuestion(message.quiz.questionId)
+              "
               class="entity-chat-quiz-inline"
             >
               <div class="entity-info-quiz-options">
@@ -2918,8 +2965,25 @@ onBeforeUnmount(() => {
                 </button>
               </div>
             </div>
+            <div
+              v-else-if="
+                message.role === 'assistant' &&
+                message.quiz &&
+                isQuizProfileSummaryQuestion(message.quiz.questionId)
+              "
+              class="entity-chat-quiz-inline"
+            >
+              <p class="entity-chat-quiz-freeform-hint">
+                Ответьте свободным текстом или голосом.
+              </p>
+            </div>
           </div>
           <time class="entity-chat-time">{{ toDisplayTime(message.createdAt) }}</time>
+        </article>
+        <article v-if="isQuizThinkingVisible" class="entity-chat-message assistant">
+          <div class="entity-chat-bubble thinking">
+            <span class="entity-chat-thinking-text">{{ quizThinkingText }}</span>
+          </div>
         </article>
         <article v-if="isAiRequestInFlight" class="entity-chat-message assistant">
           <div class="entity-chat-bubble thinking">
@@ -4052,6 +4116,13 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 6px;
   margin-top: 8px;
+}
+
+.entity-chat-quiz-freeform-hint {
+  margin: 0;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.3;
 }
 
 .entity-info-quiz-option-btn {
