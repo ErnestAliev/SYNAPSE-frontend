@@ -761,6 +761,8 @@ function persistDraft(entityId: string) {
       data: doc.data,
     })),
   };
+  // Quiz state is owned by server orchestrator. Do not overwrite it from local autosave snapshot.
+  delete nextMetadata.quiz_state;
 
   for (const field of getEntityContextFields(currentDraft.type)) {
     nextMetadata[field.key] = currentDraft.metadataValues[field.key] || [];
