@@ -79,6 +79,7 @@ export interface EntityQuizDraftUpdate {
 export interface EntityQuizStepPayload {
   entityId: string;
   action: 'start' | 'answer';
+  questionId?: string;
   answerText?: string;
   optionId?: string;
   debug?: boolean;

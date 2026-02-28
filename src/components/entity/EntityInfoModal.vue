@@ -1500,6 +1500,7 @@ function sendQuizAnswerFromMessage(message: EntityChatMessage, payload: { option
   scheduleSave();
   void runEntityQuizStep({
     action: 'answer',
+    questionId: message.quiz.questionId,
     optionId: payload.optionId,
     answerText,
   });
@@ -1684,6 +1685,7 @@ function setQuizStep(response: EntityQuizStepResponse | null) {
 
 async function runEntityQuizStep(payload: {
   action: 'start' | 'answer';
+  questionId?: string;
   answerText?: string;
   optionId?: string;
 }) {
@@ -1695,6 +1697,7 @@ async function runEntityQuizStep(payload: {
   const requestPayload = {
     entityId: currentDraft.entityId,
     action: payload.action,
+    questionId: payload.questionId || '',
     answerText: payload.answerText || '',
     optionId: payload.optionId || '',
     debug: true,
@@ -1809,6 +1812,7 @@ async function onSendInput() {
     });
     void runEntityQuizStep({
       action: 'answer',
+      questionId: activeQuestionMessage?.quiz?.questionId || '',
       answerText: message,
     });
     return;
