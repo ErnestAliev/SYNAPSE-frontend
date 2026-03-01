@@ -289,6 +289,7 @@ const chatFeedRef = ref<HTMLElement | null>(null);
 const infoSaveTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const pendingComposerHeightReset = ref(false);
 const isVoiceListening = ref(false);
+const isVoiceSubmitting = ref(false);
 const isAiRequestInFlight = ref(false);
 const isQuizRequestInFlight = ref(false);
 const isQuizThinkingVisible = ref(false);
@@ -1670,7 +1671,7 @@ function patchChatQuizState(messageId: string, patch: Partial<EntityChatQuizStat
 function isQuizMessageInteractionDisabled(message: EntityChatMessage) {
   if (!message.quiz) return true;
   if (message.quiz.answered) return true;
-  if (isAiRequestInFlight.value || isQuizRequestInFlight.value) return true;
+  if (isAiRequestInFlight.value || isQuizRequestInFlight.value || isVoiceSubmitting.value) return true;
   // Derive liveness purely from chatHistory so device B (which never set
   // currentQuizStep) still gets live buttons after an SSE reload.
   return activeQuizMessageId.value !== message.id;
@@ -1830,9 +1831,8 @@ function extractQuizStepFromHttpError(error: unknown): EntityQuizStepResponse | 
   if (status !== 409) return null;
   const data = toProfile(axiosError.response?.data);
   const mode = typeof data.mode === 'string' ? data.mode.trim() : '';
-  const questionId = typeof data.questionId === 'string' ? data.questionId.trim() : '';
   const questionText = typeof data.questionText === 'string' ? data.questionText.trim() : '';
-  if (!mode || !questionId || !questionText) return null;
+  if (!mode || !questionText) return null;
   return data as unknown as EntityQuizStepResponse;
 }
 
@@ -2013,6 +2013,7 @@ async function runEntityQuizStep(payload: {
     scrollEntityChatToBottom('auto');
     scheduleSave();
   } finally {
+    isVoiceSubmitting.value = false;
     isQuizRequestInFlight.value = false;
     stopQuizThinkingIndicator();
     if (shouldAutostartVoiceForTextStep && !isVoiceListening.value) {
@@ -2074,7 +2075,7 @@ function openChatAttachment(attachment: EntityAttachment) {
 
 async function onSendInput() {
   if (!draft.value) return;
-  if (isAiRequestInFlight.value || isQuizRequestInFlight.value) return;
+  if (isAiRequestInFlight.value || isQuizRequestInFlight.value || isVoiceSubmitting.value) return;
 
   const message = normalizeChatText(draft.value.textInput);
   const attachments = [...draft.value.pendingUploads];
@@ -2087,6 +2088,7 @@ async function onSendInput() {
   if (activeQuizMsg?.quiz && !activeQuizMsg.quiz.answered) {
     if (!message) return;
     if (isVoiceListening.value) {
+      isVoiceSubmitting.value = true;
       stopVoiceCapture();
     }
     patchChatQuizState(activeQuizMsg.id, {
@@ -2994,6 +2996,41 @@ watch(
     ) {
       const remoteMeta = toProfile(entity.ai_metadata);
       const remoteHistory = normalizeChatHistory(remoteMeta.chat_history);
+      
+      const remoteDescription = typeof remoteMeta.description === 'string' ? remoteMeta.description : '';
+      const isDescriptionFocused =
+        typeof document !== 'undefined' && descriptionTextareaRef.value
+          ? document.activeElement === descriptionTextareaRef.value
+          : false;
+
+      if (!isDescriptionFocused && !isDescriptionResizing.value) {
+        const next = remoteDescription.trim();
+        if (next && next !== draft.value.description.trim()) {
+          draft.value.description = remoteDescription;
+        }
+      }
+
+      for (const field of getEntityContextFields(draft.value.type)) {
+        if (editingFieldValue.value?.fieldKey === field.key) continue;
+
+        const rawRemote = remoteMeta[field.key];
+        const remoteValues = Array.isArray(rawRemote)
+          ? rawRemote.filter((v) => typeof v === 'string').map((v) => v.trim()).filter(Boolean)
+          : [];
+
+        const localValues = (Array.isArray(draft.value.metadataValues[field.key])
+          ? draft.value.metadataValues[field.key]
+          : []) as string[];
+
+        if (remoteValues.length >= localValues.length) {
+          draft.value.metadataValues[field.key] = remoteValues.slice(0, 24);
+        }
+
+        if (field.key === 'importance' && remoteValues.length) {
+          draft.value.importanceSource = 'manual';
+        }
+      }
+
       // Only apply remote history if it is strictly longer than local — prevents
       // overwriting optimistic local state (answered flag, pending messages).
       if (remoteHistory.length > draft.value.chatHistory.length) {
