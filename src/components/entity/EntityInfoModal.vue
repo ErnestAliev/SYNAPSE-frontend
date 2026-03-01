@@ -493,6 +493,13 @@ function createLocalChatMessageId() {
   return `msg-${Date.now()}-${Math.floor(Math.random() * 100_000)}`;
 }
 
+function createClientEventId() {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `evt-${Date.now()}-${Math.floor(Math.random() * 100_000)}`;
+}
+
 function createLocalNodeId() {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
     return crypto.randomUUID();
@@ -1744,6 +1751,24 @@ function parseRequestError(error: unknown) {
   return 'LLM request failed';
 }
 
+function extractQuizStepFromHttpError(error: unknown): EntityQuizStepResponse | null {
+  if (typeof error !== 'object' || !error || !('response' in error)) return null;
+  const axiosError = error as {
+    response?: {
+      status?: number;
+      data?: unknown;
+    };
+  };
+  const status = Number(axiosError.response?.status);
+  if (status !== 409) return null;
+  const data = toProfile(axiosError.response?.data);
+  const mode = typeof data.mode === 'string' ? data.mode.trim() : '';
+  const questionId = typeof data.questionId === 'string' ? data.questionId.trim() : '';
+  const questionText = typeof data.questionText === 'string' ? data.questionText.trim() : '';
+  if (!mode || !questionId || !questionText) return null;
+  return data as unknown as EntityQuizStepResponse;
+}
+
 function mapPatchKeyToFieldKey(key: string) {
   return key.endsWith('Add') ? key.slice(0, -3) : key;
 }
@@ -1849,9 +1874,11 @@ async function runEntityQuizStep(payload: {
     currentQuizStep.value.expects.type.trim().toLowerCase() === 'text';
   startQuizThinkingIndicator(payload.action, payload.questionId || '', isTextStepAnswer);
   isQuizRequestInFlight.value = true;
+  const clientEventId = payload.action === 'answer' ? createClientEventId() : '';
   const requestPayload = {
     entityId: currentDraft.entityId,
     action: payload.action,
+    client_event_id: clientEventId,
     questionId: payload.questionId || '',
     input: {
       activeQuestion: {
@@ -1888,6 +1915,23 @@ async function runEntityQuizStep(payload: {
     await nextTick();
     scrollEntityChatToBottom('auto');
   } catch (error) {
+    const syncResponse = extractQuizStepFromHttpError(error);
+    if (syncResponse && draft.value && draft.value.entityId === currentDraft.entityId) {
+      applyQuizDraftUpdate(syncResponse);
+      const debugAttachments = syncResponse.debug ? [buildDebugAttachment(syncResponse.debug)] : [];
+      pushChatMessage('assistant', formatQuizQuestionForChat(syncResponse), debugAttachments, buildQuizChatState(syncResponse));
+      scheduleSave();
+      setQuizStep(syncResponse);
+      shouldAutostartVoiceForTextStep = Boolean(
+        syncResponse.mode === 'quiz_step' &&
+          syncResponse.expects &&
+          typeof syncResponse.expects.type === 'string' &&
+          syncResponse.expects.type.trim().toLowerCase() === 'text',
+      );
+      await nextTick();
+      scrollEntityChatToBottom('auto');
+      return;
+    }
     const debugAttachments = [buildDebugAttachment(buildLlmErrorDebugPayload(error, requestPayload))];
     pushChatMessage('assistant', `Не удалось получить шаг квиза. ${parseRequestError(error)}`, debugAttachments);
     await nextTick();

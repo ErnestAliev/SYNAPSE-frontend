@@ -79,6 +79,7 @@ export interface EntityQuizDraftUpdate {
 export interface EntityQuizStepPayload {
   entityId: string;
   action: 'start' | 'answer';
+  client_event_id?: string;
   questionId?: string;
   input?: {
     activeQuestion?: {
@@ -102,6 +103,12 @@ export interface EntityQuizStepResponse {
   state: EntityQuizStepState;
   draftUpdate: EntityQuizDraftUpdate;
   stopCheck?: Record<string, unknown> | null;
+  orchestrator?: {
+    activeQuestionId?: string;
+    answeredQuestionIds?: string[];
+    answers?: Record<string, unknown>;
+    stepIndex?: number;
+  };
   model?: string;
   usage?: unknown;
   resumed?: boolean;
