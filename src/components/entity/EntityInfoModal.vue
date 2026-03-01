@@ -96,6 +96,7 @@ interface EntityChatQuizState {
   selectedOptionId: string;
   selectedText: string;
   recommendedOptionId?: string;
+  stepVersion?: number;
 }
 
 interface EmojiRecord {
@@ -296,6 +297,7 @@ const isQuizRequestInFlight = ref(false);
 const isQuizThinkingVisible = ref(false);
 const quizThinkingText = ref('Готовлю следующий вопрос...');
 const quizThinkingTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+const lastQuizStepVersion = ref(0);
 const currentQuizStep = ref<EntityQuizStepResponse | null>(null);
 const activeQuizCustomInputMessageId = ref('');
 const activeQuizCustomInputText = ref('');
@@ -1564,6 +1566,7 @@ function buildQuizChatState(step: EntityQuizStepResponse): EntityChatQuizState |
   return {
     questionId,
     quizRunId,
+    stepVersion: typeof step.stepVersion === 'number' ? step.stepVersion : undefined,
     mode: step.mode,
     quizMode,
     expectsType,
@@ -1990,6 +1993,14 @@ async function runEntityQuizStep(payload: {
       return;
     }
 
+    const incomingVersion = Number(response.stepVersion || 0);
+    if (incomingVersion > 0) {
+      if (incomingVersion < lastQuizStepVersion.value) {
+        return;
+      }
+      lastQuizStepVersion.value = incomingVersion;
+    }
+
     applyQuizDraftUpdate(response);
     const debugAttachments = response.debug ? [buildDebugAttachment(response.debug)] : [];
     const quizState = buildQuizChatState(response);
@@ -2014,6 +2025,14 @@ async function runEntityQuizStep(payload: {
   } catch (error) {
     const syncResponse = extractQuizStepFromHttpError(error);
     if (syncResponse && draft.value && draft.value.entityId === currentDraft.entityId) {
+      const incomingVersion = Number(syncResponse.stepVersion || 0);
+      if (incomingVersion > 0) {
+        if (incomingVersion < lastQuizStepVersion.value) {
+          return;
+        }
+        lastQuizStepVersion.value = incomingVersion;
+      }
+
       applyQuizDraftUpdate(syncResponse);
       const debugAttachments = syncResponse.debug ? [buildDebugAttachment(syncResponse.debug)] : [];
       // Dedup — 409 can replay the same question; don't show it twice.
@@ -2023,6 +2042,9 @@ async function runEntityQuizStep(payload: {
       }
       scheduleSave();
       setQuizStep(syncResponse);
+      if (syncResponse.mode === 'quiz_completed') {
+        stopVoiceCapture();
+      }
       shouldAutostartVoiceForTextStep = Boolean(
         syncResponse.mode === 'quiz_step' &&
           syncResponse.expects &&
