@@ -785,6 +785,9 @@ function persistDraft(entityId: string) {
         ? {
             quiz: {
               questionId: message.quiz.questionId,
+              // quizRunId must be persisted so other devices can reconstruct
+              // the dedup key (quizRunId, questionId) after an SSE reload.
+              quizRunId: message.quiz.quizRunId,
               mode: message.quiz.mode,
               quizMode: message.quiz.quizMode,
               expectsType: message.quiz.expectsType,
@@ -1668,8 +1671,8 @@ function isQuizMessageInteractionDisabled(message: EntityChatMessage) {
   if (!message.quiz) return true;
   if (message.quiz.answered) return true;
   if (isAiRequestInFlight.value || isQuizRequestInFlight.value) return true;
-  if (!currentQuizStep.value || currentQuizStep.value.mode === 'quiz_completed') return true;
-  if (currentQuizStep.value.questionId !== message.quiz.questionId) return true;
+  // Derive liveness purely from chatHistory so device B (which never set
+  // currentQuizStep) still gets live buttons after an SSE reload.
   return activeQuizMessageId.value !== message.id;
 }
 
@@ -2077,21 +2080,21 @@ async function onSendInput() {
   const attachments = [...draft.value.pendingUploads];
   if (!message && !attachments.length) return;
 
-  if (currentQuizStep.value) {
+  // Derive active quiz step from chatHistory — works on all devices, not just
+  // the one that received the quiz step response into currentQuizStep.
+  const activeQuizMsgId = activeQuizMessageId.value;
+  const activeQuizMsg = activeQuizMsgId ? findChatMessage(activeQuizMsgId) : null;
+  if (activeQuizMsg?.quiz && !activeQuizMsg.quiz.answered) {
     if (!message) return;
     if (isVoiceListening.value) {
       stopVoiceCapture();
     }
-    const activeQuestionId = activeQuizMessageId.value;
-    const activeQuestionMessage = activeQuestionId ? findChatMessage(activeQuestionId) : null;
-    if (activeQuestionMessage?.quiz && !activeQuestionMessage.quiz.answered) {
-      patchChatQuizState(activeQuestionMessage.id, {
-        answered: true,
-        selectedOptionId: '4',
-        selectedText: message,
-      });
-      closeQuizCustomInput(activeQuestionMessage.id);
-    }
+    patchChatQuizState(activeQuizMsg.id, {
+      answered: true,
+      selectedOptionId: '4',
+      selectedText: message,
+    });
+    closeQuizCustomInput(activeQuizMsg.id);
     pushChatMessage('user', message, attachments);
     draft.value.pendingUploads = [];
     draft.value.documents = Array.from(
@@ -2105,7 +2108,7 @@ async function onSendInput() {
     });
     void runEntityQuizStep({
       action: 'answer',
-      questionId: activeQuestionMessage?.quiz?.questionId || '',
+      questionId: activeQuizMsg.quiz.questionId,
       answerText: message,
     });
     return;
@@ -2536,6 +2539,7 @@ const progressEntity = computed<Entity | null>(() => {
         ? {
             quiz: {
               questionId: message.quiz.questionId,
+              quizRunId: message.quiz.quizRunId,
               mode: message.quiz.mode,
               quizMode: message.quiz.quizMode,
               expectsType: message.quiz.expectsType,
@@ -2976,6 +2980,26 @@ watch(
   (entity) => {
     if (!entity && draft.value) {
       closeModal();
+      return;
+    }
+    // SSE live-update: when the entity store receives entity.updated from the
+    // server, merge the remote chatHistory into the local draft so other devices
+    // see new quiz questions (and get live buttons) without a page reload.
+    if (
+      entity &&
+      draft.value &&
+      entity._id === draft.value.entityId &&
+      !isQuizRequestInFlight.value &&
+      !isAiRequestInFlight.value
+    ) {
+      const remoteMeta = toProfile(entity.ai_metadata);
+      const remoteHistory = normalizeChatHistory(remoteMeta.chat_history);
+      // Only apply remote history if it is strictly longer than local — prevents
+      // overwriting optimistic local state (answered flag, pending messages).
+      if (remoteHistory.length > draft.value.chatHistory.length) {
+        draft.value.chatHistory = remoteHistory;
+        void nextTick(() => scrollEntityChatToBottom('auto'));
+      }
     }
   },
 );
@@ -3343,7 +3367,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="entity-info-chat-icon-btn"
-              :class="{ active: Boolean(currentQuizStep) }"
+              :class="{ active: Boolean(activeQuizMessageId) }"
               title="Квиз"
               :disabled="isAiRequestInFlight || isQuizRequestInFlight"
               @click="startEntityQuiz"
