@@ -3350,18 +3350,22 @@ onBeforeUnmount(() => {
               class="entity-chat-quiz-inline"
             >
               <div class="entity-info-quiz-options">
-                <button
+                <div
                   v-for="option in message.quiz.options"
                   :key="`${message.id}:${option.id}`"
-                  type="button"
-                  class="entity-info-quiz-option-btn"
-                  :class="{ selected: isQuizOptionSelected(message, option.id), recommended: message.quiz?.recommendedOptionId === option.id && !isQuizOptionSelected(message, option.id) }"
-                  :title="getQuizOptionTooltip(message, option.id)"
-                  :disabled="isQuizMessageInteractionDisabled(message) || isQuizCustomInputOpen(message)"
-                  @click="onQuizOptionSelect(message, option.id)"
+                  class="entity-info-quiz-option-wrap"
+                  :data-tooltip="getQuizOptionTooltip(message, option.id) || undefined"
                 >
-                  {{ option.id }}. {{ option.text }}
-                </button>
+                  <button
+                    type="button"
+                    class="entity-info-quiz-option-btn"
+                    :class="{ selected: isQuizOptionSelected(message, option.id), recommended: message.quiz?.recommendedOptionId === option.id && !isQuizOptionSelected(message, option.id) }"
+                    :disabled="isQuizMessageInteractionDisabled(message) || isQuizCustomInputOpen(message)"
+                    @click="onQuizOptionSelect(message, option.id)"
+                  >
+                    {{ option.id }}. {{ option.text }}
+                  </button>
+                </div>
               </div>
               <div
                 v-if="isQuizCustomInputOpen(message)"
@@ -4622,9 +4626,36 @@ onBeforeUnmount(() => {
 }
 
 .entity-info-quiz-options {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+}
+
+.entity-info-quiz-option-wrap {
+  position: relative;
+}
+
+.entity-info-quiz-option-wrap[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1e2333;
+  color: #e8ecf4;
+  font-size: 11.5px;
+  font-family: inherit;
+  line-height: 1.45;
+  padding: 7px 11px;
+  border-radius: 9px;
+  white-space: pre-wrap;
+  max-width: 230px;
+  width: max-content;
+  z-index: 999;
+  pointer-events: none;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.20);
+  animation: none;
+  transition: none;
 }
 
 .entity-chat-quiz-inline {
