@@ -1941,6 +1941,14 @@ function applyQuizDraftUpdate(response: EntityQuizStepResponse) {
   // quiz_completed without restarting when lastQuestion.mode === 'quiz_completed'.
 }
 
+function applyUpdatedEntityFromQuizResponse(response: EntityQuizStepResponse) {
+  const rawUpdated = (response as unknown as { updatedEntity?: unknown }).updatedEntity;
+  const entity = toProfile(rawUpdated);
+  const id = typeof entity._id === 'string' ? entity._id : '';
+  if (!id) return;
+  entitiesStore.applyLocalEntityPatch(id, entity as unknown as Partial<Entity>);
+}
+
 
 function formatQuizQuestionForChat(step: EntityQuizStepResponse) {
   return step.questionText.trim();
@@ -1996,19 +2004,21 @@ async function runEntityQuizStep(payload: {
   };
 
   let shouldAutostartVoiceForTextStep = false;
-  try {
-    const response = await entityQuizStep(requestPayload);
-    if (!draft.value || draft.value.entityId !== currentDraft.entityId) {
-      return;
-    }
-
-    const incomingVersion = Number(response.stepVersion || 0);
-    if (incomingVersion > 0) {
-      if (incomingVersion < lastQuizStepVersion.value) {
+    try {
+      const response = await entityQuizStep(requestPayload);
+      if (!draft.value || draft.value.entityId !== currentDraft.entityId) {
         return;
       }
-      lastQuizStepVersion.value = incomingVersion;
-    }
+
+      const incomingVersion = Number(response.stepVersion || 0);
+      if (incomingVersion > 0) {
+        if (incomingVersion < lastQuizStepVersion.value) {
+          return;
+        }
+        lastQuizStepVersion.value = incomingVersion;
+      }
+
+      applyUpdatedEntityFromQuizResponse(response);
 
     // B2: guard against backend returning quiz_step with no options (would cause silent freeze)
     if (response.mode === 'quiz_step' && (!Array.isArray(response.options) || response.options.length === 0) && response.expects?.type !== 'text') {
@@ -2019,7 +2029,7 @@ async function runEntityQuizStep(payload: {
       return;
     }
 
-    applyQuizDraftUpdate(response);
+      applyQuizDraftUpdate(response);
     const debugAttachments = response.debug ? [buildDebugAttachment(response.debug)] : [];
     const quizState = buildQuizChatState(response);
     // Only push the question if it is not already in chat history (dedup by quizRunId + questionId).
@@ -2052,6 +2062,7 @@ async function runEntityQuizStep(payload: {
       }
 
       applyQuizDraftUpdate(syncResponse);
+      applyUpdatedEntityFromQuizResponse(syncResponse);
       const debugAttachments = syncResponse.debug ? [buildDebugAttachment(syncResponse.debug)] : [];
       // Dedup — 409 can replay the same question; don't show it twice.
       const syncRunId = typeof syncResponse.quizRunId === 'string' && syncResponse.quizRunId.trim() ? syncResponse.quizRunId.trim() : undefined;
