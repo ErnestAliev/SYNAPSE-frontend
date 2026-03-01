@@ -83,6 +83,8 @@ interface EntityChatMessage {
 interface EntityChatQuizState {
   questionId: string;
   mode: 'quiz_step' | 'quiz_stop_check';
+  quizMode: 'standard' | 'my';
+  expectsType: 'choice_or_text' | 'text';
   options: EntityQuizOption[];
   answered: boolean;
   selectedOptionId: string;
@@ -467,6 +469,7 @@ function buildEntityMetadataResetPayload() {
     voice_input: '',
     chat_history: [],
     quiz_state: null,
+    quiz_my: null,
     documents: [],
     description_history: [],
     description_meta: {},
@@ -521,28 +524,18 @@ function normalizeChatHistory(value: unknown) {
 
   const normalizeQuizOptions = (rawOptions: unknown) => {
     const source = Array.isArray(rawOptions) ? rawOptions : [];
-    const normalized = source
+    return source
       .slice(0, 4)
       .map((item, index) => {
         const record = toProfile(item);
         const text = typeof record.text === 'string' ? record.text.trim() : '';
         if (!text) return null;
         return {
-          id: String(index + 1),
+          id: typeof record.id === 'string' && record.id.trim() ? record.id.trim() : String(index + 1),
           text,
         } satisfies EntityQuizOption;
       })
       .filter((item): item is EntityQuizOption => Boolean(item));
-
-    while (normalized.length < 4) {
-      const nextIndex = normalized.length + 1;
-      normalized.push({
-        id: String(nextIndex),
-        text: nextIndex === 4 ? 'Свой вариант' : `Вариант ${nextIndex}`,
-      });
-    }
-    normalized[3] = { id: '4', text: 'Свой вариант' };
-    return normalized;
   };
 
   const normalizeQuizState = (rawQuiz: unknown) => {
@@ -552,12 +545,24 @@ function normalizeChatHistory(value: unknown) {
     const modeRaw = typeof quiz.mode === 'string' ? quiz.mode.trim().toLowerCase() : '';
     const mode = modeRaw === 'quiz_stop_check' ? 'quiz_stop_check' : 'quiz_step';
     const options = normalizeQuizOptions(quiz.options);
+    const quizMode = typeof quiz.quizMode === 'string' && quiz.quizMode.trim().toLowerCase() === 'my' ? 'my' : 'standard';
+    const expectsType = (() => {
+      if (typeof quiz.expectsType === 'string' && quiz.expectsType.trim().toLowerCase() === 'text') {
+        return 'text' as const;
+      }
+      if (isQuizProfileSummaryQuestion(questionId) || !options.length) {
+        return 'text' as const;
+      }
+      return 'choice_or_text' as const;
+    })();
     const selectedOptionId = typeof quiz.selectedOptionId === 'string' ? quiz.selectedOptionId.trim() : '';
     const selectedText = typeof quiz.selectedText === 'string' ? quiz.selectedText.trim() : '';
 
     return {
       questionId,
       mode,
+      quizMode,
+      expectsType,
       options,
       answered: quiz.answered === true,
       selectedOptionId,
@@ -761,6 +766,8 @@ function persistDraft(entityId: string) {
             quiz: {
               questionId: message.quiz.questionId,
               mode: message.quiz.mode,
+              quizMode: message.quiz.quizMode,
+              expectsType: message.quiz.expectsType,
               options: message.quiz.options.map((option) => ({
                 id: option.id,
                 text: option.text,
@@ -782,6 +789,7 @@ function persistDraft(entityId: string) {
   };
   // Quiz state is owned by server orchestrator. Do not overwrite it from local autosave snapshot.
   delete nextMetadata.quiz_state;
+  delete nextMetadata.quiz_my;
 
   for (const field of getEntityContextFields(currentDraft.type)) {
     nextMetadata[field.key] = currentDraft.metadataValues[field.key] || [];
@@ -1463,26 +1471,18 @@ function normalizeChatText(value: string) {
 
 function normalizeQuizStepOptions(rawOptions: EntityQuizOption[] | undefined) {
   const source = Array.isArray(rawOptions) ? rawOptions : [];
-  const normalized = source
+  return source
     .slice(0, 4)
     .map((item, index) => {
       const text = typeof item?.text === 'string' ? item.text.trim() : '';
       if (!text) return null;
+      const id = typeof item?.id === 'string' ? item.id.trim() : '';
       return {
-        id: String(index + 1),
+        id: id || String(index + 1),
         text,
       } satisfies EntityQuizOption;
     })
     .filter((item): item is EntityQuizOption => Boolean(item));
-  while (normalized.length < 4) {
-    const nextIndex = normalized.length + 1;
-    normalized.push({
-      id: String(nextIndex),
-      text: nextIndex === 4 ? 'Свой вариант' : `Вариант ${nextIndex}`,
-    });
-  }
-  normalized[3] = { id: '4', text: 'Свой вариант' };
-  return normalized;
 }
 
 function isQuizProfileSummaryQuestion(questionId: string) {
@@ -1500,10 +1500,10 @@ function stopQuizThinkingIndicator() {
   isQuizThinkingVisible.value = false;
 }
 
-function startQuizThinkingIndicator(action: 'start' | 'answer', questionId = '') {
+function startQuizThinkingIndicator(action: 'start' | 'answer', questionId = '', isTextStep = false) {
   stopQuizThinkingIndicator();
   if (action !== 'answer') return;
-  quizThinkingText.value = isQuizProfileSummaryQuestion(questionId)
+  quizThinkingText.value = isTextStep || isQuizProfileSummaryQuestion(questionId)
     ? 'Завершаю обработку...'
     : 'Думаю...';
   quizThinkingTimer.value = setTimeout(() => {
@@ -1515,10 +1515,19 @@ function buildQuizChatState(step: EntityQuizStepResponse): EntityChatQuizState |
   if (step.mode !== 'quiz_step' && step.mode !== 'quiz_stop_check') return null;
   const questionId = typeof step.questionId === 'string' ? step.questionId.trim() : '';
   if (!questionId) return null;
-  const options = isQuizProfileSummaryQuestion(questionId) ? [] : normalizeQuizStepOptions(step.options);
+  const quizMode = step.quizMode === 'my' ? 'my' : 'standard';
+  const expectsType =
+    step.expects && typeof step.expects.type === 'string' && step.expects.type.trim().toLowerCase() === 'text'
+      ? 'text'
+      : Array.isArray(step.options) && step.options.length
+        ? 'choice_or_text'
+        : 'text';
+  const options = expectsType === 'text' ? [] : normalizeQuizStepOptions(step.options);
   return {
     questionId,
     mode: step.mode,
+    quizMode,
+    expectsType,
     options,
     answered: false,
     selectedOptionId: '',
@@ -1832,7 +1841,13 @@ async function runEntityQuizStep(payload: {
   if (!currentDraft) return;
   if (isQuizRequestInFlight.value || isAiRequestInFlight.value) return;
 
-  startQuizThinkingIndicator(payload.action, payload.questionId || '');
+  const isTextStepAnswer =
+    payload.action === 'answer' &&
+    currentQuizStep.value?.mode === 'quiz_step' &&
+    currentQuizStep.value.expects &&
+    typeof currentQuizStep.value.expects.type === 'string' &&
+    currentQuizStep.value.expects.type.trim().toLowerCase() === 'text';
+  startQuizThinkingIndicator(payload.action, payload.questionId || '', isTextStepAnswer);
   isQuizRequestInFlight.value = true;
   const requestPayload = {
     entityId: currentDraft.entityId,
@@ -1848,7 +1863,7 @@ async function runEntityQuizStep(payload: {
     debug: true,
   };
 
-  let shouldAutostartVoiceForProfileSummary = false;
+  let shouldAutostartVoiceForTextStep = false;
   try {
     const response = await entityQuizStep(requestPayload);
     if (!draft.value || draft.value.entityId !== currentDraft.entityId) {
@@ -1864,9 +1879,12 @@ async function runEntityQuizStep(payload: {
     if (response.mode === 'quiz_completed') {
       stopVoiceCapture();
     }
-    shouldAutostartVoiceForProfileSummary =
+    shouldAutostartVoiceForTextStep = Boolean(
       response.mode === 'quiz_step' &&
-      isQuizProfileSummaryQuestion(typeof response.questionId === 'string' ? response.questionId : '');
+        response.expects &&
+        typeof response.expects.type === 'string' &&
+        response.expects.type.trim().toLowerCase() === 'text',
+    );
     await nextTick();
     scrollEntityChatToBottom('auto');
   } catch (error) {
@@ -1878,7 +1896,7 @@ async function runEntityQuizStep(payload: {
   } finally {
     isQuizRequestInFlight.value = false;
     stopQuizThinkingIndicator();
-    if (shouldAutostartVoiceForProfileSummary && !isVoiceListening.value) {
+    if (shouldAutostartVoiceForTextStep && !isVoiceListening.value) {
       startVoiceCapture();
     }
   }
@@ -1894,7 +1912,7 @@ function onQuizOptionSelect(message: EntityChatMessage, optionId: string) {
   const option = message.quiz.options.find((item) => item.id === optionId);
   const optionText = option?.text || `Ответ ${optionId}`;
 
-  if (optionId === '4') {
+  if (optionId === '4' && message.quiz.quizMode === 'standard') {
     openQuizCustomInput(message);
     return;
   }
@@ -2403,6 +2421,8 @@ const progressEntity = computed<Entity | null>(() => {
             quiz: {
               questionId: message.quiz.questionId,
               mode: message.quiz.mode,
+              quizMode: message.quiz.quizMode,
+              expectsType: message.quiz.expectsType,
               options: message.quiz.options.map((option) => ({
                 id: option.id,
                 text: option.text,
@@ -3059,8 +3079,7 @@ onBeforeUnmount(() => {
                 message.role === 'assistant' &&
                 message.quiz &&
                 message.quiz.options &&
-                message.quiz.options.length &&
-                !isQuizProfileSummaryQuestion(message.quiz.questionId)
+                message.quiz.options.length
               "
               class="entity-chat-quiz-inline"
             >
@@ -3112,7 +3131,7 @@ onBeforeUnmount(() => {
               v-else-if="
                 message.role === 'assistant' &&
                 message.quiz &&
-                isQuizProfileSummaryQuestion(message.quiz.questionId)
+                message.quiz.expectsType === 'text'
               "
               class="entity-chat-quiz-inline"
             >

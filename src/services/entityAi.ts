@@ -92,6 +92,8 @@ export interface EntityQuizStepPayload {
 
 export interface EntityQuizStepResponse {
   mode: 'quiz_step' | 'quiz_stop_check' | 'quiz_completed';
+  quizMode?: 'standard' | 'my';
+  myScenario?: string;
   entityType: string;
   questionId: string;
   questionText: string;
