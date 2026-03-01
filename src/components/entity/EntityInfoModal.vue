@@ -2001,6 +2001,15 @@ async function runEntityQuizStep(payload: {
       lastQuizStepVersion.value = incomingVersion;
     }
 
+    // B2: guard against backend returning quiz_step with no options (would cause silent freeze)
+    if (response.mode === 'quiz_step' && (!Array.isArray(response.options) || response.options.length === 0) && response.expects?.type !== 'text') {
+      pushChatMessage('assistant', 'Ошибка: сервер вернул шаг квиза без вариантов ответа. Обнови страницу или повтори. (step without options)');
+      stopVoiceCapture();
+      await nextTick();
+      scrollEntityChatToBottom('auto');
+      return;
+    }
+
     applyQuizDraftUpdate(response);
     const debugAttachments = response.debug ? [buildDebugAttachment(response.debug)] : [];
     const quizState = buildQuizChatState(response);
