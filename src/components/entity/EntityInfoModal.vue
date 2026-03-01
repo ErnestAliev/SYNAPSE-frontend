@@ -1912,7 +1912,7 @@ function onQuizOptionSelect(message: EntityChatMessage, optionId: string) {
   const option = message.quiz.options.find((item) => item.id === optionId);
   const optionText = option?.text || `Ответ ${optionId}`;
 
-  if (optionId === '4' && message.quiz.quizMode === 'standard') {
+  if (optionId === '4') {
     openQuizCustomInput(message);
     return;
   }
@@ -3090,7 +3090,7 @@ onBeforeUnmount(() => {
                   type="button"
                   class="entity-info-quiz-option-btn"
                   :class="{ selected: isQuizOptionSelected(message, option.id) }"
-                  :disabled="isQuizMessageInteractionDisabled(message)"
+                  :disabled="isQuizMessageInteractionDisabled(message) || isQuizCustomInputOpen(message)"
                   @click="onQuizOptionSelect(message, option.id)"
                 >
                   {{ option.id }}. {{ option.text }}
@@ -3105,7 +3105,7 @@ onBeforeUnmount(() => {
                   v-model="activeQuizCustomInputText"
                   class="entity-chat-quiz-custom-input"
                   type="text"
-                  placeholder="Напиши свой вариант…"
+                  placeholder="Введи свой вариант…"
                   :disabled="isQuizRequestInFlight || isAiRequestInFlight"
                   @keydown="onQuizCustomInputKeydown($event, message)"
                 />
