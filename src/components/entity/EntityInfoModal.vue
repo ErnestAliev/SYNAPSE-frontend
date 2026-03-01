@@ -1988,6 +1988,8 @@ async function runEntityQuizStep(payload: {
     },
     answerText: payload.answerText || '',
     optionId: payload.optionId || '',
+    // Item 5: always send quizMode so backend routes to the correct branch
+    quizMode: 'standard',
     debug: true,
   };
 
