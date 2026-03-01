@@ -2085,6 +2085,25 @@ function startEntityQuiz() {
   void runEntityQuizStep({ action: 'start' });
 }
 
+const ACCESS_ROLE_QUIZ_QUESTION_ID = 'ACCESS_ROLE';
+
+const ACCESS_ROLE_OPTION_TOOLTIPS: Record<string, string> = {
+  '1': 'Активный, общительный, везде бывает, сводит людей. Узнать: по соцсетям/чатам видно, что он постоянно на встречах и знакомит людей.',
+  '2': 'Ресурс/влияние (деньги, статус, доступ), но сам редко «проводит» дальше. Через него обычно не идёт цепочка знакомств.',
+  '3': 'Помогает пройти: подсказывает кому/как писать, делает интро, ускоряет доступ.',
+  '4': 'Блокирует/тормозит доступ: фильтрует, не пропускает, формально отшивает или «держит дверь».',
+  '5': 'Недостаточно данных, пока не ясно.',
+  '6': 'Ввести свою роль текстом.',
+};
+
+function getQuizOptionTooltip(message: EntityChatMessage, optionId: string): string {
+  const questionId = message.quiz?.questionId ?? '';
+  if (questionId.toUpperCase() === ACCESS_ROLE_QUIZ_QUESTION_ID) {
+    return ACCESS_ROLE_OPTION_TOOLTIPS[optionId] ?? '';
+  }
+  return '';
+}
+
 function onQuizOptionSelect(message: EntityChatMessage, optionId: string) {
   if (!message.quiz) return;
   const option = message.quiz.options.find((item) => item.id === optionId);
@@ -3337,6 +3356,7 @@ onBeforeUnmount(() => {
                   type="button"
                   class="entity-info-quiz-option-btn"
                   :class="{ selected: isQuizOptionSelected(message, option.id), recommended: message.quiz?.recommendedOptionId === option.id && !isQuizOptionSelected(message, option.id) }"
+                  :title="getQuizOptionTooltip(message, option.id)"
                   :disabled="isQuizMessageInteractionDisabled(message) || isQuizCustomInputOpen(message)"
                   @click="onQuizOptionSelect(message, option.id)"
                 >
@@ -4656,6 +4676,17 @@ onBeforeUnmount(() => {
   color: #8a96ab;
   border-color: #dce5f2;
   background: #f3f6fb;
+}
+
+@keyframes quizRecommendedPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 88, 255, 0.18); }
+  50% { box-shadow: 0 0 0 4px rgba(16, 88, 255, 0.10); }
+}
+
+.entity-info-quiz-option-btn.recommended {
+  border-color: #7ba7ff;
+  color: #1d4ed8;
+  animation: quizRecommendedPulse 1.4s ease-in-out infinite;
 }
 
 .entity-chat-quiz-custom {
