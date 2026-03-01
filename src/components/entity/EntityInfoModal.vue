@@ -1841,11 +1841,19 @@ function extractQuizStepFromHttpError(error: unknown): EntityQuizStepResponse | 
   };
   const status = Number(axiosError.response?.status);
   if (status !== 409) return null;
-  const data = toProfile(axiosError.response?.data);
-  const mode = typeof data.mode === 'string' ? data.mode.trim() : '';
-  const questionText = typeof data.questionText === 'string' ? data.questionText.trim() : '';
-  if (!mode || !questionText) return null;
-  return data as unknown as EntityQuizStepResponse;
+  
+  const rawData = toProfile(axiosError.response?.data);
+  const candidate = toProfile(
+    rawData.step ?? rawData.payload ?? rawData.response ?? rawData
+  );
+
+  const mode = typeof candidate.mode === 'string' ? candidate.mode.trim() : '';
+  const questionId = typeof candidate.questionId === 'string' ? candidate.questionId.trim() : '';
+  const questionText = typeof candidate.questionText === 'string' ? candidate.questionText.trim() : '';
+  
+  if (!mode || !questionId || !questionText) return null;
+  
+  return candidate as unknown as EntityQuizStepResponse;
 }
 
 function mapPatchKeyToFieldKey(key: string) {
@@ -2025,6 +2033,16 @@ async function runEntityQuizStep(payload: {
       scrollEntityChatToBottom('auto');
       return;
     }
+    
+    const is409 = typeof error === 'object' && error !== null && 'response' in error && (error as any).response?.status === 409;
+    if (is409 && draft.value && draft.value.entityId === currentDraft.entityId) {
+      const debugAttachments = [buildDebugAttachment(buildLlmErrorDebugPayload(error, requestPayload))];
+      pushChatMessage('assistant', 'Квиз уже обработал запрос (409), но сервер не вернул шаг. Ожидается корректный step в ответе 409 от сервера.', debugAttachments);
+      await nextTick();
+      scrollEntityChatToBottom('auto');
+      return;
+    }
+
     const debugAttachments = [buildDebugAttachment(buildLlmErrorDebugPayload(error, requestPayload))];
     pushChatMessage('assistant', `Не удалось получить шаг квиза. ${parseRequestError(error)}`, debugAttachments);
     await nextTick();
