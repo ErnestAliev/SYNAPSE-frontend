@@ -1930,8 +1930,14 @@ async function runEntityQuizStep(payload: {
   optionId?: string;
 }) {
   const currentDraft = draft.value;
-  if (!currentDraft) return;
-  if (isQuizRequestInFlight.value || isAiRequestInFlight.value) return;
+  if (!currentDraft) {
+    isVoiceSubmitting.value = false;
+    return;
+  }
+  if (isQuizRequestInFlight.value || isAiRequestInFlight.value) {
+    isVoiceSubmitting.value = false;
+    return;
+  }
 
   const isTextStepAnswer =
     payload.action === 'answer' &&
@@ -2077,7 +2083,14 @@ async function onSendInput() {
   if (!draft.value) return;
   if (isAiRequestInFlight.value || isQuizRequestInFlight.value || isVoiceSubmitting.value) return;
 
-  const message = normalizeChatText(draft.value.textInput);
+  const voiceSubmitStarted = isVoiceListening.value;
+  if (voiceSubmitStarted) {
+    isVoiceSubmitting.value = true;
+    stopVoiceCapture();
+  }
+
+  try {
+    const message = normalizeChatText(draft.value.textInput);
   const attachments = [...draft.value.pendingUploads];
   if (!message && !attachments.length) return;
 
@@ -2087,10 +2100,6 @@ async function onSendInput() {
   const activeQuizMsg = activeQuizMsgId ? findChatMessage(activeQuizMsgId) : null;
   if (activeQuizMsg?.quiz && !activeQuizMsg.quiz.answered) {
     if (!message) return;
-    if (isVoiceListening.value) {
-      isVoiceSubmitting.value = true;
-      stopVoiceCapture();
-    }
     patchChatQuizState(activeQuizMsg.id, {
       answered: true,
       selectedOptionId: '4',
@@ -2103,6 +2112,7 @@ async function onSendInput() {
       new Map([...draft.value.documents, ...attachments].map((attachment) => [attachment.id, attachment])).values(),
     );
     draft.value.textInput = '';
+    draft.value.voiceInput = '';
     resetChatInputSize();
     scheduleSave();
     void nextTick(() => {
@@ -2122,6 +2132,7 @@ async function onSendInput() {
     new Map([...draft.value.documents, ...attachments].map((attachment) => [attachment.id, attachment])).values(),
   );
   draft.value.textInput = '';
+  draft.value.voiceInput = '';
 
   resetChatInputSize();
   void nextTick(() => {
@@ -2186,11 +2197,17 @@ async function onSendInput() {
   } finally {
     isAiRequestInFlight.value = false;
   }
+  } finally {
+    if (voiceSubmitStarted) {
+      isVoiceSubmitting.value = false;
+    }
+  }
 }
 
 function onChatComposerKeydown(event: KeyboardEvent) {
   if (event.key !== 'Enter') return;
   if (event.shiftKey) return;
+  if (isVoiceSubmitting.value) return;
 
   event.preventDefault();
   void onSendInput();
@@ -2261,6 +2278,7 @@ function mergeVoiceSegments(...parts: string[]) {
 
 function applyVoiceDraft(interimText = '') {
   if (!draft.value) return;
+  if (isVoiceSubmitting.value) return;
 
   const merged = mergeVoiceSegments(voiceSessionBaseText.value, voiceCommittedText.value, interimText);
   draft.value.voiceInput = merged;
@@ -3355,7 +3373,7 @@ onBeforeUnmount(() => {
             v-model="draft.textInput"
             class="entity-info-chat-input"
             :placeholder="chatPlaceholder"
-            :disabled="isAiRequestInFlight || isQuizRequestInFlight"
+            :disabled="isAiRequestInFlight || isQuizRequestInFlight || isVoiceSubmitting"
             rows="1"
             @input="onTextInput"
             @keydown="onChatComposerKeydown"
@@ -3368,7 +3386,7 @@ onBeforeUnmount(() => {
               type="button"
               class="entity-info-chat-icon-btn"
               title="Загрузка документа"
-              :disabled="isAiRequestInFlight || isQuizRequestInFlight"
+              :disabled="isAiRequestInFlight || isQuizRequestInFlight || isVoiceSubmitting"
               @click="docInputRef?.click()"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -3390,7 +3408,7 @@ onBeforeUnmount(() => {
               class="entity-info-chat-icon-btn"
               :class="{ active: isVoiceListening }"
               title="Голосовой ввод"
-              :disabled="isAiRequestInFlight || isQuizRequestInFlight"
+              :disabled="isAiRequestInFlight || isQuizRequestInFlight || isVoiceSubmitting"
               @click="onVoiceToggle"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -3406,7 +3424,7 @@ onBeforeUnmount(() => {
               class="entity-info-chat-icon-btn"
               :class="{ active: Boolean(activeQuizMessageId) }"
               title="Квиз"
-              :disabled="isAiRequestInFlight || isQuizRequestInFlight"
+              :disabled="isAiRequestInFlight || isQuizRequestInFlight || isVoiceSubmitting"
               @click="startEntityQuiz"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -3466,7 +3484,7 @@ onBeforeUnmount(() => {
             type="button"
             class="entity-info-chat-icon-btn send entity-info-chat-tools-send"
             title="Отправить"
-            :disabled="isAiRequestInFlight || isQuizRequestInFlight"
+            :disabled="isAiRequestInFlight || isQuizRequestInFlight || isVoiceSubmitting"
             @click="onSendInput"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
