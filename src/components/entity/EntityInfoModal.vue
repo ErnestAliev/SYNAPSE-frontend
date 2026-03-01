@@ -1498,16 +1498,16 @@ function normalizeChatText(value: string) {
 
 function normalizeQuizStepOptions(rawOptions: EntityQuizOption[] | undefined) {
   const source = Array.isArray(rawOptions) ? rawOptions : [];
+  // B1: NEVER re-index option IDs. Use the exact id from the backend.
+  // The old fallback `id || String(index + 1)` was silently remapping ids 5,6 -> 1,2
+  // causing 409/restart when optionId sent back to backend didn't match.
   return source
     .slice(0, 6)
-    .map((item, index) => {
-      const text = typeof item?.text === 'string' ? item.text.trim() : '';
-      if (!text) return null;
-      const id = typeof item?.id === 'string' ? item.id.trim() : '';
-      return {
-        id: id || String(index + 1),
-        text,
-      } satisfies EntityQuizOption;
+    .map((item) => {
+      const id = item?.id != null ? String(item.id).trim() : '';
+      const text = item?.text != null ? String(item.text).trim() : '';
+      if (!id || !text) return null;
+      return { id, text } satisfies EntityQuizOption;
     })
     .filter((item): item is EntityQuizOption => Boolean(item));
 }
