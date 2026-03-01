@@ -95,6 +95,7 @@ interface EntityChatQuizState {
   answered: boolean;
   selectedOptionId: string;
   selectedText: string;
+  recommendedOptionId?: string;
 }
 
 interface EmojiRecord {
@@ -1496,7 +1497,7 @@ function normalizeChatText(value: string) {
 function normalizeQuizStepOptions(rawOptions: EntityQuizOption[] | undefined) {
   const source = Array.isArray(rawOptions) ? rawOptions : [];
   return source
-    .slice(0, 4)
+    .slice(0, 6)
     .map((item, index) => {
       const text = typeof item?.text === 'string' ? item.text.trim() : '';
       if (!text) return null;
@@ -1507,6 +1508,16 @@ function normalizeQuizStepOptions(rawOptions: EntityQuizOption[] | undefined) {
       } satisfies EntityQuizOption;
     })
     .filter((item): item is EntityQuizOption => Boolean(item));
+}
+
+function getQuizCustomOptionId(message: EntityChatMessage): string {
+  if (!message.quiz || !message.quiz.options.length) return '4';
+  const lastOption = message.quiz.options[message.quiz.options.length - 1];
+  return lastOption ? lastOption.id : '4';
+}
+
+function isQuizCustomOption(message: EntityChatMessage, optionId: string): boolean {
+  return optionId === getQuizCustomOptionId(message);
 }
 
 function isQuizProfileSummaryQuestion(questionId: string) {
@@ -1560,6 +1571,7 @@ function buildQuizChatState(step: EntityQuizStepResponse): EntityChatQuizState |
     answered: false,
     selectedOptionId: '',
     selectedText: '',
+    recommendedOptionId: typeof step.recommendedOptionId === 'string' ? step.recommendedOptionId.trim() : '',
   };
 }
 
@@ -2038,7 +2050,7 @@ function onQuizOptionSelect(message: EntityChatMessage, optionId: string) {
   const option = message.quiz.options.find((item) => item.id === optionId);
   const optionText = option?.text || `Ответ ${optionId}`;
 
-  if (optionId === '4') {
+  if (isQuizCustomOption(message, optionId)) {
     openQuizCustomInput(message);
     return;
   }
@@ -2060,7 +2072,7 @@ async function submitQuizCustomAnswer(message: EntityChatMessage) {
   const answerText = normalizeChatText(activeQuizCustomInputText.value);
   if (!answerText) return;
   sendQuizAnswerFromMessage(message, {
-    optionId: '4',
+    optionId: getQuizCustomOptionId(message),
     answerText,
   });
 }
@@ -3284,7 +3296,7 @@ onBeforeUnmount(() => {
                   :key="`${message.id}:${option.id}`"
                   type="button"
                   class="entity-info-quiz-option-btn"
-                  :class="{ selected: isQuizOptionSelected(message, option.id) }"
+                  :class="{ selected: isQuizOptionSelected(message, option.id), recommended: message.quiz?.recommendedOptionId === option.id && !isQuizOptionSelected(message, option.id) }"
                   :disabled="isQuizMessageInteractionDisabled(message) || isQuizCustomInputOpen(message)"
                   @click="onQuizOptionSelect(message, option.id)"
                 >

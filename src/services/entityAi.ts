@@ -117,6 +117,7 @@ export interface EntityQuizStepResponse {
   usage?: unknown;
   resumed?: boolean;
   debug?: Record<string, unknown>;
+  recommendedOptionId?: string;
 }
 
 export async function entityQuizStep(payload: EntityQuizStepPayload) {
