@@ -1917,12 +1917,14 @@ function applyQuizDraftUpdate(response: EntityQuizStepResponse) {
   const fieldsPatch = update.fieldsPatch && typeof update.fieldsPatch === 'object' ? update.fieldsPatch : {};
   for (const [patchKey, rawValues] of Object.entries(fieldsPatch)) {
     const fieldKey = mapPatchKeyToFieldKey(patchKey);
-    if (!Object.prototype.hasOwnProperty.call(draft.value.metadataValues, fieldKey)) continue;
     const patchValues = Array.isArray(rawValues)
       ? rawValues.filter((item): item is string => typeof item === 'string')
       : [];
     if (!patchValues.length) continue;
 
+    // B (frontend): if the field doesn't exist yet in metadataValues, initialize it —
+    // do NOT skip it. The old hasOwnProperty guard was silently dropping rolesAdd when
+    // the entity hadn't loaded roles yet (e.g. draft freshly created).
     const existing = Array.isArray(draft.value.metadataValues[fieldKey])
       ? draft.value.metadataValues[fieldKey]
       : [];
