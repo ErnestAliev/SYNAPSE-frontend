@@ -1933,7 +1933,12 @@ function applyQuizDraftUpdate(response: EntityQuizStepResponse) {
   }
 
   scheduleSave();
+
+  // B1: If response includes updatedEntity, nothing extra needed on draft — the backend
+  // already persists quiz_state as completed. The 'start' guard on backend returns
+  // quiz_completed without restarting when lastQuestion.mode === 'quiz_completed'.
 }
+
 
 function formatQuizQuestionForChat(step: EntityQuizStepResponse) {
   return step.questionText.trim();
