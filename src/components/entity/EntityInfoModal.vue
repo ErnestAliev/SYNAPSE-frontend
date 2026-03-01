@@ -4633,6 +4633,7 @@ onBeforeUnmount(() => {
 
 .entity-info-quiz-option-wrap {
   position: relative;
+  width: 100%;
 }
 
 .entity-info-quiz-option-wrap[data-tooltip]:hover::after {
@@ -4673,6 +4674,7 @@ onBeforeUnmount(() => {
 }
 
 .entity-info-quiz-option-btn {
+  width: 100%;
   min-height: 30px;
   border-radius: 10px;
   border: 1px solid #dbe4f3;
