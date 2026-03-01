@@ -84,8 +84,10 @@ interface EntityChatQuizState {
   questionId: string;
   /** Unique ID for the quiz run this question belongs to.
    *  Primary component of the dedup key: (quizRunId, questionId) is unique
-   *  across runs so a restart produces a fresh run that won't get filtered. */
-  quizRunId?: string;
+   *  across runs so a restart produces a fresh run that won't get filtered.
+   *  Declared as `string | undefined` (not optional) so TS enforces that
+   *  every construction site always sets it explicitly. */
+  quizRunId: string | undefined;
   mode: 'quiz_step' | 'quiz_stop_check';
   quizMode: 'standard' | 'my';
   expectsType: 'choice_or_text' | 'text';
@@ -571,7 +573,7 @@ function normalizeChatHistory(value: unknown) {
 
     return {
       questionId,
-      quizRunId: typeof quiz.quizRunId === 'string' ? quiz.quizRunId.trim() : undefined,
+      quizRunId: (typeof quiz.quizRunId === 'string' ? quiz.quizRunId.trim() : undefined) ?? undefined,
       mode,
       quizMode,
       expectsType,
@@ -1542,7 +1544,8 @@ function buildQuizChatState(step: EntityQuizStepResponse): EntityChatQuizState |
         : 'text';
   const options = expectsType === 'text' ? [] : normalizeQuizStepOptions(step.options);
   // Use the backend-generated quizRunId as the primary dedup discriminator.
-  const quizRunId = typeof step.quizRunId === 'string' && step.quizRunId.trim() ? step.quizRunId.trim() : undefined;
+  const quizRunId: string | undefined =
+    typeof step.quizRunId === 'string' && step.quizRunId.trim() ? step.quizRunId.trim() : undefined;
   return {
     questionId,
     quizRunId,
