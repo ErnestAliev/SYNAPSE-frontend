@@ -82,6 +82,10 @@ interface EntityChatMessage {
 
 interface EntityChatQuizState {
   questionId: string;
+  /** Unique ID for the quiz run this question belongs to.
+   *  Primary component of the dedup key: (quizRunId, questionId) is unique
+   *  across runs so a restart produces a fresh run that won't get filtered. */
+  quizRunId?: string;
   mode: 'quiz_step' | 'quiz_stop_check';
   quizMode: 'standard' | 'my';
   expectsType: 'choice_or_text' | 'text';
@@ -567,6 +571,7 @@ function normalizeChatHistory(value: unknown) {
 
     return {
       questionId,
+      quizRunId: typeof quiz.quizRunId === 'string' ? quiz.quizRunId.trim() : undefined,
       mode,
       quizMode,
       expectsType,
@@ -709,6 +714,10 @@ function loadDraft(entityId: string) {
     })
     .filter((doc): doc is NonNullable<typeof doc> => Boolean(doc));
 
+  // FIX D: Preserve quiz state if loadDraft is called for the same entity
+  // while a quiz step is active (e.g., triggered by an SSE-driven store update).
+  const quizWasActive = draft.value?.entityId === entity._id && currentQuizStep.value !== null;
+
   draft.value = {
     entityId: entity._id,
     name: entity.name || '',
@@ -723,10 +732,12 @@ function loadDraft(entityId: string) {
     pendingUploads: [],
     chatHistory: normalizeChatHistory(aiMetadata.chat_history),
   };
-  currentQuizStep.value = null;
-  stopQuizThinkingIndicator();
-  closeQuizCustomInput();
-  quizCustomInputRefs.value = {};
+  if (!quizWasActive) {
+    currentQuizStep.value = null;
+    stopQuizThinkingIndicator();
+    closeQuizCustomInput();
+    quizCustomInputRefs.value = {};
+  }
 
   isProjectAddConfirmOpen.value = false;
   projectActionMessage.value = '';
@@ -1530,8 +1541,11 @@ function buildQuizChatState(step: EntityQuizStepResponse): EntityChatQuizState |
         ? 'choice_or_text'
         : 'text';
   const options = expectsType === 'text' ? [] : normalizeQuizStepOptions(step.options);
+  // Use the backend-generated quizRunId as the primary dedup discriminator.
+  const quizRunId = typeof step.quizRunId === 'string' && step.quizRunId.trim() ? step.quizRunId.trim() : undefined;
   return {
     questionId,
+    quizRunId,
     mode: step.mode,
     quizMode,
     expectsType,
@@ -1563,6 +1577,53 @@ function pushChatMessage(
       quiz: quiz ? { ...quiz, options: quiz.options.map((option) => ({ ...option })) } : null,
     },
   ];
+}
+
+/**
+ * Build a stable dedup key for an assistant quiz message.
+ *
+ * Priority:
+ *   1. quizRunId present AND questionId present  → `run:${quizRunId}|qid:${questionId}`
+ *   2. questionId present only                   → `qid:${questionId}`
+ *   3. Neither (edge case)                       → djb2 hash of the question text
+ */
+function buildQuizDedupKey(
+  questionId: string,
+  quizRunId: string | undefined,
+  questionText: string,
+): string {
+  if (questionId && quizRunId) return `run:${quizRunId}|qid:${questionId}`;
+  if (questionId) return `qid:${questionId}`;
+  // Fallback: djb2 hash of question text (catches blank questionId edge cases)
+  let hash = 5381;
+  for (let i = 0; i < questionText.length; i++) {
+    hash = ((hash << 5) + hash) ^ questionText.charCodeAt(i);
+    hash = hash >>> 0; // keep uint32
+  }
+  return `txt:${hash}`;
+}
+
+/**
+ * Dedup guard for assistant quiz messages.
+ * Checks chatHistory for an existing message whose quiz dedup key matches.
+ * Prevents the same question from appearing twice on 409 retry or SSE replay.
+ */
+function isQuizStepDuplicate(
+  questionId: string,
+  quizRunId: string | undefined,
+  questionText: string,
+): boolean {
+  if (!draft.value) return false;
+  const incomingKey = buildQuizDedupKey(questionId, quizRunId, questionText);
+  return draft.value.chatHistory.some((msg) => {
+    if (msg.role !== 'assistant' || !msg.quiz) return false;
+    const msgKey = buildQuizDedupKey(
+      msg.quiz.questionId,
+      msg.quiz.quizRunId,
+      msg.text,
+    );
+    return msgKey === incomingKey;
+  });
 }
 
 const activeQuizMessageId = computed(() => {
@@ -1900,7 +1961,11 @@ async function runEntityQuizStep(payload: {
     applyQuizDraftUpdate(response);
     const debugAttachments = response.debug ? [buildDebugAttachment(response.debug)] : [];
     const quizState = buildQuizChatState(response);
-    pushChatMessage('assistant', formatQuizQuestionForChat(response), debugAttachments, quizState);
+    // Only push the question if it is not already in chat history (dedup by quizRunId + questionId).
+    const qRunId = typeof response.quizRunId === 'string' && response.quizRunId.trim() ? response.quizRunId.trim() : undefined;
+    if (!isQuizStepDuplicate(response.questionId, qRunId, response.questionText)) {
+      pushChatMessage('assistant', formatQuizQuestionForChat(response), debugAttachments, quizState);
+    }
     scheduleSave();
     setQuizStep(response);
     if (response.mode === 'quiz_completed') {
@@ -1919,7 +1984,11 @@ async function runEntityQuizStep(payload: {
     if (syncResponse && draft.value && draft.value.entityId === currentDraft.entityId) {
       applyQuizDraftUpdate(syncResponse);
       const debugAttachments = syncResponse.debug ? [buildDebugAttachment(syncResponse.debug)] : [];
-      pushChatMessage('assistant', formatQuizQuestionForChat(syncResponse), debugAttachments, buildQuizChatState(syncResponse));
+      // Dedup — 409 can replay the same question; don't show it twice.
+      const syncRunId = typeof syncResponse.quizRunId === 'string' && syncResponse.quizRunId.trim() ? syncResponse.quizRunId.trim() : undefined;
+      if (!isQuizStepDuplicate(syncResponse.questionId, syncRunId, syncResponse.questionText)) {
+        pushChatMessage('assistant', formatQuizQuestionForChat(syncResponse), debugAttachments, buildQuizChatState(syncResponse));
+      }
       scheduleSave();
       setQuizStep(syncResponse);
       shouldAutostartVoiceForTextStep = Boolean(

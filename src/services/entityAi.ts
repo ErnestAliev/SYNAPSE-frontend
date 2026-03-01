@@ -95,6 +95,10 @@ export interface EntityQuizStepResponse {
   mode: 'quiz_step' | 'quiz_stop_check' | 'quiz_completed';
   quizMode?: 'standard' | 'my';
   myScenario?: string;
+  /** Stable unique ID for this quiz run. Same value for every question in the
+   *  same run; changes when the quiz is restarted. Used as primary dedup key:
+   *  (quizRunId, questionId) uniquely identifies a question in a run. */
+  quizRunId?: string;
   entityType: string;
   questionId: string;
   questionText: string;

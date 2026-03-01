@@ -195,6 +195,11 @@ const selectedFieldFilters = ref<Record<string, string[]>>({});
 const quickEntityFilters = ref<QuickEntityFilters>(createDefaultQuickFilters());
 const isHydratingFilterPrefs = ref(false);
 const entityInfoEntityId = ref<string | null>(null);
+// FIX B: Deferred full-refresh flag. Set when a fetchEntities() call was
+// requested while the EntityInfoModal was open. The fetch runs as soon as
+// the modal closes so we never miss the refresh but also never stomp
+// mid-quiz entity state.
+const pendingEntitiesRefetch = ref(false);
 const activeProjectRenameId = ref<string | null>(null);
 const projectRenameDraft = ref('');
 const projectDeleteTarget = ref<Entity | null>(null);
@@ -1381,7 +1386,13 @@ async function importWhatsAppContacts() {
       }
     }
 
-    await entitiesStore.fetchEntities({ silent: true });
+    // FIX B: Modal is open — quiz may be active. Defer the full refresh
+    // until the modal closes (see watch on entityInfoEntityId below).
+    if (entityInfoEntityId.value) {
+      pendingEntitiesRefetch.value = true;
+    } else {
+      await entitiesStore.fetchEntities({ silent: true });
+    }
 
     const successMessage =
       importedTotal > 0
@@ -1455,7 +1466,12 @@ async function confirmDeleteImportedWhatsApp() {
     isDeleteWhatsappConfirmVisible.value = false;
     connectionImportStats.value = null;
     setConnectionGlobalMessage(`Удалено импортированных контактов: ${Number(data.deleted) || 0}.`, 3200);
-    await entitiesStore.fetchEntities({ silent: true });
+    // FIX B: Modal open — defer.
+    if (entityInfoEntityId.value) {
+      pendingEntitiesRefetch.value = true;
+    } else {
+      await entitiesStore.fetchEntities({ silent: true });
+    }
     appendConnectionClientLog('imported.delete.response', data);
   } catch (error) {
     connectionImportError.value = formatConnectionImportError(error);
@@ -1768,6 +1784,15 @@ function entityProgress(entity: Entity) {
 function closeEntityInfoModal() {
   entityInfoEntityId.value = null;
 }
+
+// FIX B: When the modal closes, flush any pending full-refresh that was
+// deferred while a quiz was potentially active inside the modal.
+watch(entityInfoEntityId, (id) => {
+  if (id !== null) return; // modal is still open
+  if (!pendingEntitiesRefetch.value) return;
+  pendingEntitiesRefetch.value = false;
+  void entitiesStore.fetchEntities({ silent: true });
+});
 </script>
 
 <template>

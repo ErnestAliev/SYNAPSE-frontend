@@ -144,6 +144,48 @@ function resolveRealtimeEventsUrl(sessionToken: string) {
   return url.toString();
 }
 
+/**
+ * FIX A — 3-way version comparison for SSE upserts.
+ *
+ * Returns:
+ *   'newer'           — incoming is strictly newer than existing  → replace
+ *   'equal_or_unknown'— versions are equal or no version field    → merge
+ *   'older'           — incoming is strictly older               → skip
+ *
+ * Comparison order:
+ *   1. updatedAt / updated_at (ISO string lexicographic compare)
+ *   2. __v / version / rev (numeric compare)
+ *   3. Neither field present → 'equal_or_unknown'
+ */
+function compareEntityVersion(
+  incoming: Entity,
+  existing: Entity,
+): 'newer' | 'equal_or_unknown' | 'older' {
+  const inc = incoming as unknown as Record<string, unknown>;
+  const ext = existing as unknown as Record<string, unknown>;
+
+  // 1. ISO date fields
+  const inDate = (inc.updatedAt || inc.updated_at) as string | undefined;
+  const exDate = (ext.updatedAt || ext.updated_at) as string | undefined;
+  if (typeof inDate === 'string' && typeof exDate === 'string') {
+    if (inDate > exDate) return 'newer';
+    if (inDate < exDate) return 'older';
+    return 'equal_or_unknown';
+  }
+
+  // 2. Numeric version fields
+  const inVer = (inc.__v ?? inc.version ?? inc.rev) as number | undefined;
+  const exVer = (ext.__v ?? ext.version ?? ext.rev) as number | undefined;
+  if (typeof inVer === 'number' && typeof exVer === 'number') {
+    if (inVer > exVer) return 'newer';
+    if (inVer < exVer) return 'older';
+    return 'equal_or_unknown';
+  }
+
+  // 3. No comparable version info
+  return 'equal_or_unknown';
+}
+
 function parseEntityEventPayload(rawData: string): Record<string, unknown> | null {
   if (!rawData) return null;
   try {
@@ -338,7 +380,20 @@ export const useEntitiesStore = defineStore('entities', {
       const existingIndex = nextItems.findIndex((item) => item._id === entity._id);
       let inserted = false;
       if (existingIndex >= 0) {
-        nextItems[existingIndex] = entity;
+        const existing = nextItems[existingIndex]!;
+        const rel = compareEntityVersion(entity, existing);
+        if (rel === 'older') {
+          // FIX A: Strictly older snapshot — skip to protect active quiz context.
+          return;
+        }
+        if (rel === 'equal_or_unknown') {
+          // FIX A: Equal/unknown version — shallow-merge to pick up new server
+          // fields without overwriting anything already held locally.
+          nextItems[existingIndex] = { ...existing, ...entity };
+        } else {
+          // 'newer' — straightforward replace.
+          nextItems[existingIndex] = entity;
+        }
       } else {
         nextItems.unshift(entity);
         this.lastCreatedIdByType[entity.type] = entity._id;
