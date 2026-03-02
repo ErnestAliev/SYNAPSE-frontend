@@ -13,6 +13,8 @@ let realtimeEventSource: EventSource | null = null;
 let realtimeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let realtimeReconnectAttempt = 0;
 let realtimeShouldReconnect = false;
+let entitiesBootstrapPromise: Promise<void> | null = null;
+const entitiesFetchInFlight = new Map<string, Promise<void>>();
 
 const RECENT_DELETE_TTL_MS = 15000;
 const ENTITIES_FETCH_TIMEOUT_MS = 60000;
@@ -517,66 +519,84 @@ export const useEntitiesStore = defineStore('entities', {
       const requestedType = options?.type;
       const excludedType = requestedType ? undefined : options?.excludeType;
       const merge = options?.merge ?? false;
-      if (!silent) {
-        this.loading = true;
+      const requestKey = requestedType ? `type:${requestedType}` : excludedType ? `exclude:${excludedType}` : 'all';
+      const existingRequest = entitiesFetchInFlight.get(requestKey);
+      if (existingRequest) {
+        await existingRequest;
+        return;
       }
-      this.error = null;
 
-      try {
-        const params: Record<string, string | number> = { _t: Date.now() };
-        if (requestedType) {
-          params.type = requestedType;
-        } else if (excludedType) {
-          params.excludeType = excludedType;
-        }
-
-        const { data } = await apiClient.get<Entity[]>('/entities', {
-          params,
-          timeout: ENTITIES_FETCH_TIMEOUT_MS,
-        });
-
-        cleanupExpiredRecentlyDeleted();
-        const nextFetchedItems = data.filter((item) => !recentlyDeletedEntityIds.has(item._id));
-
-        if (merge) {
-          const merged = new Map(this.items.map((item) => [item._id, item] as const));
-          for (const item of nextFetchedItems) {
-            merged.set(item._id, item);
-          }
-          this.items = Array.from(merged.values());
-        } else {
-          this.items = nextFetchedItems;
-        }
-
-        if (requestedType) {
-          this.loadedTypes[requestedType] = true;
-        } else if (excludedType) {
-          for (const type of ENTITY_TYPES) {
-            this.loadedTypes[type] = type !== excludedType;
-          }
-        } else {
-          for (const type of ENTITY_TYPES) {
-            this.loadedTypes[type] = true;
-          }
-        }
-
-        const existingIds = new Set(this.items.map((item) => item._id));
-        const affectedTypes = requestedType
-          ? [requestedType]
-          : excludedType
-            ? ENTITY_TYPES.filter((type) => type !== excludedType)
-            : ENTITY_TYPES;
-        for (const type of affectedTypes) {
-          const lastCreatedId = this.lastCreatedIdByType[type];
-          if (lastCreatedId && !existingIds.has(lastCreatedId)) {
-            this.lastCreatedIdByType[type] = null;
-          }
-        }
-      } catch (error: unknown) {
-        this.error = this.formatApiError(error);
-      } finally {
+      const requestPromise = (async () => {
         if (!silent) {
-          this.loading = false;
+          this.loading = true;
+        }
+        this.error = null;
+
+        try {
+          const params: Record<string, string | number> = { _t: Date.now() };
+          if (requestedType) {
+            params.type = requestedType;
+          } else if (excludedType) {
+            params.excludeType = excludedType;
+          }
+
+          const { data } = await apiClient.get<Entity[]>('/entities', {
+            params,
+            timeout: ENTITIES_FETCH_TIMEOUT_MS,
+          });
+
+          cleanupExpiredRecentlyDeleted();
+          const nextFetchedItems = data.filter((item) => !recentlyDeletedEntityIds.has(item._id));
+
+          if (merge) {
+            const merged = new Map(this.items.map((item) => [item._id, item] as const));
+            for (const item of nextFetchedItems) {
+              merged.set(item._id, item);
+            }
+            this.items = Array.from(merged.values());
+          } else {
+            this.items = nextFetchedItems;
+          }
+
+          if (requestedType) {
+            this.loadedTypes[requestedType] = true;
+          } else if (excludedType) {
+            for (const type of ENTITY_TYPES) {
+              this.loadedTypes[type] = type !== excludedType;
+            }
+          } else {
+            for (const type of ENTITY_TYPES) {
+              this.loadedTypes[type] = true;
+            }
+          }
+
+          const existingIds = new Set(this.items.map((item) => item._id));
+          const affectedTypes = requestedType
+            ? [requestedType]
+            : excludedType
+              ? ENTITY_TYPES.filter((type) => type !== excludedType)
+              : ENTITY_TYPES;
+          for (const type of affectedTypes) {
+            const lastCreatedId = this.lastCreatedIdByType[type];
+            if (lastCreatedId && !existingIds.has(lastCreatedId)) {
+              this.lastCreatedIdByType[type] = null;
+            }
+          }
+        } catch (error: unknown) {
+          this.error = this.formatApiError(error);
+        } finally {
+          if (!silent) {
+            this.loading = false;
+          }
+        }
+      })();
+
+      entitiesFetchInFlight.set(requestKey, requestPromise);
+      try {
+        await requestPromise;
+      } finally {
+        if (entitiesFetchInFlight.get(requestKey) === requestPromise) {
+          entitiesFetchInFlight.delete(requestKey);
         }
       }
     },
@@ -586,26 +606,36 @@ export const useEntitiesStore = defineStore('entities', {
         this.startRealtimeSync();
         return;
       }
-      const deferConnection = options?.deferConnection ?? true;
-
-      if (deferConnection) {
-        await this.fetchEntities({ excludeType: 'connection' });
-        this.initialized = true;
-        this.startRealtimeSync();
-        if (!this.loadedTypes.connection) {
-          void this.fetchEntities({
-            silent: true,
-            type: 'connection',
-            merge: true,
-          });
-        }
+      if (entitiesBootstrapPromise) {
+        await entitiesBootstrapPromise;
         return;
       }
+      const deferConnection = options?.deferConnection ?? true;
+      entitiesBootstrapPromise = (async () => {
+        if (deferConnection) {
+          await this.fetchEntities({ excludeType: 'connection' });
+          this.initialized = true;
+          this.startRealtimeSync();
+          if (!this.loadedTypes.connection) {
+            void this.fetchEntities({
+              silent: true,
+              type: 'connection',
+              merge: true,
+            });
+          }
+          return;
+        }
 
-      await this.fetchEntities();
+        await this.fetchEntities();
 
-      this.initialized = true;
-      this.startRealtimeSync();
+        this.initialized = true;
+        this.startRealtimeSync();
+      })();
+      try {
+        await entitiesBootstrapPromise;
+      } finally {
+        entitiesBootstrapPromise = null;
+      }
     },
 
     async fetchTypeIfNeeded(type: EntityType) {
