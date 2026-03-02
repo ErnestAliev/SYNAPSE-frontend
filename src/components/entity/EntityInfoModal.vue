@@ -2558,11 +2558,6 @@ const mineToggleChecked = computed(() => {
   }
   return toBooleanFlag(entity.is_mine);
 });
-const mineBadgeVisible = computed(() => {
-  const entity = currentEntity.value;
-  if (!entity) return false;
-  return toBooleanFlag(entity.is_me) || toBooleanFlag(entity.is_mine);
-});
 const availableProjectOptions = computed(() => {
   const current = currentEntity.value;
   return entitiesStore
@@ -3255,7 +3250,6 @@ onBeforeUnmount(() => {
               class="entity-info-name-input"
               @input="onNameInput"
             />
-            <span v-if="mineBadgeVisible" class="entity-info-mine-badge">МОЁ</span>
             <button
               type="button"
               class="entity-info-close-btn entity-info-close-btn-inline"
@@ -4105,22 +4099,6 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.14);
 }
 
-.entity-info-mine-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  padding: 0 8px;
-  height: 22px;
-  border-radius: 999px;
-  border: 1px solid #bfd5ff;
-  background: #eef4ff;
-  color: #1058ff;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
 .entity-info-close-btn-inline {
   flex-shrink: 0;
 }
@@ -4954,12 +4932,6 @@ onBeforeUnmount(() => {
 
   .entity-info-progress-level {
     font-size: 10px;
-  }
-
-  .entity-info-mine-badge {
-    height: 20px;
-    padding: 0 7px;
-    font-size: 9px;
   }
 
   .entity-info-mine-switch-label {
