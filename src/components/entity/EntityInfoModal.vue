@@ -2132,6 +2132,7 @@ async function runEntityQuizStep(payload: {
 
 function startEntityQuiz() {
   if (!draft.value) return;
+  if (isMineToggleBusy.value) return;
   void runEntityQuizStep({ action: 'start' });
 }
 
@@ -2242,6 +2243,7 @@ async function onSendInput() {
     void runEntityQuizStep({
       action: 'answer',
       questionId: activeQuizMsg.quiz.questionId,
+      quizMode: activeQuizMsg.quiz.quizMode,
       answerText: message,
     });
     return;
@@ -3550,7 +3552,7 @@ onBeforeUnmount(() => {
               class="entity-info-chat-icon-btn"
               :class="{ active: Boolean(activeQuizMessageId) }"
               title="Квиз"
-              :disabled="isAiRequestInFlight || isQuizRequestInFlight || isVoiceSubmitting"
+              :disabled="isAiRequestInFlight || isQuizRequestInFlight || isVoiceSubmitting || isMineToggleBusy"
               @click="startEntityQuiz"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
