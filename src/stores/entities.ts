@@ -660,12 +660,8 @@ export const useEntitiesStore = defineStore('entities', {
       const flash = options?.flash ?? true;
       const { data } = await apiClient.post<Entity>('/entities', payload);
 
-      this.items.unshift(data);
-      this.lastCreatedIdByType[data.type] = data._id;
-
-      if (flash) {
-        this.triggerFlash(data.type);
-      }
+      // Avoid duplicate cards when realtime `entity.created` arrives before the POST response.
+      this.upsertEntityFromRealtime(data, { flash });
 
       return data;
     },
