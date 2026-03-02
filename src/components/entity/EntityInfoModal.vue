@@ -1739,6 +1739,7 @@ function sendQuizAnswerFromMessage(message: EntityChatMessage, payload: { option
   void runEntityQuizStep({
     action: 'answer',
     questionId: message.quiz.questionId,
+    quizMode: message.quiz.quizMode,
     optionId: payload.optionId,
     answerText,
   });
@@ -1963,6 +1964,7 @@ function setQuizStep(response: EntityQuizStepResponse | null) {
 
 async function runEntityQuizStep(payload: {
   action: 'start' | 'answer';
+  quizMode?: 'standard' | 'my';
   questionId?: string;
   answerText?: string;
   optionId?: string;
@@ -1986,6 +1988,26 @@ async function runEntityQuizStep(payload: {
   startQuizThinkingIndicator(payload.action, payload.questionId || '', isTextStepAnswer);
   isQuizRequestInFlight.value = true;
   const clientEventId = payload.action === 'answer' ? createClientEventId() : '';
+  const requestedQuizMode = (() => {
+    if (payload.quizMode === 'my' || payload.quizMode === 'standard') {
+      return payload.quizMode;
+    }
+
+    if (currentQuizStep.value?.quizMode === 'my') {
+      return 'my';
+    }
+
+    const entity = currentEntity.value;
+    if (!entity) {
+      return 'standard';
+    }
+
+    if (entity.type === 'person') {
+      return toBooleanFlag(entity.is_me) ? 'my' : 'standard';
+    }
+
+    return toBooleanFlag(entity.is_mine) ? 'my' : 'standard';
+  })();
   const requestPayload = {
     entityId: currentDraft.entityId,
     action: payload.action,
@@ -1998,8 +2020,7 @@ async function runEntityQuizStep(payload: {
     },
     answerText: payload.answerText || '',
     optionId: payload.optionId || '',
-    // Item 5: always send quizMode so backend routes to the correct branch
-    quizMode: 'standard',
+    quizMode: requestedQuizMode,
     debug: true,
   };
 
