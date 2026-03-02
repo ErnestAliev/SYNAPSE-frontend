@@ -17,7 +17,7 @@ let entitiesBootstrapPromise: Promise<void> | null = null;
 const entitiesFetchInFlight = new Map<string, Promise<void>>();
 
 const RECENT_DELETE_TTL_MS = 15000;
-const ENTITIES_FETCH_TIMEOUT_MS = 60000;
+const ENTITIES_FETCH_TIMEOUT_MS = 120000;
 const ENTITY_UPDATE_TIMEOUT_MS = 60000;
 const REALTIME_RETRY_BASE_MS = 1000;
 const REALTIME_RETRY_MAX_MS = 30000;
