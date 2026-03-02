@@ -1,7 +1,20 @@
 <script setup lang="ts">
 import type { EntityType } from '../../types/entity';
 
-type IconName = EntityType | 'plus' | 'search' | 'back';
+type IconName =
+  | EntityType
+  | 'plus'
+  | 'search'
+  | 'back'
+  | 'loader'
+  | 'pause'
+  | 'play'
+  | 'square'
+  | 'unplug'
+  | 'wifi-off'
+  | 'shield-check'
+  | 'check-circle'
+  | 'close';
 
 defineProps<{
   name: IconName;
@@ -205,5 +218,143 @@ defineProps<{
   >
     <line x1="19" y1="12" x2="5" y2="12" />
     <polyline points="12 19 5 12 12 5" />
+  </svg>
+
+  <svg
+    v-else-if="name === 'loader'"
+    width="16"
+    height="16"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+  >
+    <line x1="12" y1="2" x2="12" y2="6" />
+    <line x1="12" y1="18" x2="12" y2="22" />
+    <line x1="4.93" y1="4.93" x2="7.76" y2="7.76" />
+    <line x1="16.24" y1="16.24" x2="19.07" y2="19.07" />
+    <line x1="2" y1="12" x2="6" y2="12" />
+    <line x1="18" y1="12" x2="22" y2="12" />
+    <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" />
+    <line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
+  </svg>
+
+  <svg
+    v-else-if="name === 'pause'"
+    width="14"
+    height="14"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+  >
+    <line x1="10" y1="4" x2="10" y2="20" />
+    <line x1="14" y1="4" x2="14" y2="20" />
+  </svg>
+
+  <svg
+    v-else-if="name === 'play'"
+    width="14"
+    height="14"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+  >
+    <polygon points="8 5 19 12 8 19 8 5" />
+  </svg>
+
+  <svg
+    v-else-if="name === 'square'"
+    width="14"
+    height="14"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+  >
+    <rect x="6" y="6" width="12" height="12" rx="1" />
+  </svg>
+
+  <svg
+    v-else-if="name === 'unplug'"
+    width="14"
+    height="14"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+  >
+    <path d="M9 2v6" />
+    <path d="M15 2v6" />
+    <path d="M12 17v5" />
+    <path d="M5 8h14a0 0 0 0 1 0 0v1a7 7 0 0 1-14 0V8a0 0 0 0 1 0 0Z" />
+    <line x1="8" y1="14" x2="16" y2="6" />
+  </svg>
+
+  <svg
+    v-else-if="name === 'wifi-off'"
+    width="14"
+    height="14"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+  >
+    <line x1="2" y1="2" x2="22" y2="22" />
+    <path d="M16.72 11.06a10.94 10.94 0 0 1 3.28 2.94" />
+    <path d="M5 12.55a11 11 0 0 1 14.08-2.88" />
+    <path d="M10.71 5.05A16 16 0 0 1 22.58 9" />
+    <path d="M1.42 9a16 16 0 0 1 4.7-2.88" />
+    <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+    <line x1="12" y1="20" x2="12.01" y2="20" />
+  </svg>
+
+  <svg
+    v-else-if="name === 'shield-check'"
+    width="16"
+    height="16"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+  >
+    <path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3z" />
+    <path d="m9 12 2 2 4-4" />
+  </svg>
+
+  <svg
+    v-else-if="name === 'check-circle'"
+    width="14"
+    height="14"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+  >
+    <circle cx="12" cy="12" r="10" />
+    <path d="m9 12 2 2 4-4" />
+  </svg>
+
+  <svg
+    v-else-if="name === 'close'"
+    width="14"
+    height="14"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+  >
+    <line x1="18" y1="6" x2="6" y2="18" />
+    <line x1="6" y1="6" x2="18" y2="18" />
   </svg>
 </template>

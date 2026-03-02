@@ -214,9 +214,8 @@ const projectDeleteTarget = ref<Entity | null>(null);
 const isProjectDeleteBusy = ref(false);
 const isCreateBusy = ref(false);
 const isConnectionImportModalOpen = ref(false);
-const connectionDialogMode = ref<'qr' | 'update' | 'monitor'>('qr');
+const connectionDialogMode = ref<'qr' | 'prompt_action'>('qr');
 const isConnectionImportBusy = ref(false);
-const connectionImportMessage = ref('');
 const connectionImportError = ref('');
 const connectionImportStats = ref<{
   total: number;
@@ -239,6 +238,9 @@ const connectionImportQrCode = ref('');
 const connectionImportSessionStatus = ref<
   'idle' | 'initializing' | 'qr' | 'ready' | 'importing' | 'error' | 'disconnected'
 >('idle');
+const connectionSessionStatus = ref<
+  'idle' | 'initializing' | 'qr' | 'prompt_action' | 'importing' | 'paused' | 'ready'
+>('idle');
 const connectionImportPollTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const connectionImportProgress = ref<{
   stage: string;
@@ -254,11 +256,10 @@ const connectionBackgroundSyncActive = ref(false);
 const connectionBackgroundState = ref('');
 const connectionBackgroundLastCursor = ref(0);
 const connectionBackgroundLastState = ref('');
-const connectionAutoImportPending = ref(false);
+const isConnectionStateHydrated = ref(false);
 const connectionAwaitingBackgroundStart = ref(false);
 const connectionGlobalMessage = ref('');
 const connectionGlobalError = ref('');
-const connectionGlobalMessageTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const CONNECTION_IMPORT_REQUEST_TIMEOUT_MS = 180_000;
 const WHATSAPP_BG_SESSION_STORAGE_KEY = 'synapse.whatsapp.background.session';
 
@@ -303,22 +304,70 @@ function resetConnectionSessionStateToIdle() {
   connectionImportSessionId.value = '';
   connectionImportQrCode.value = '';
   connectionImportSessionStatus.value = 'idle';
+  connectionSessionStatus.value = 'idle';
+  connectionDialogMode.value = 'qr';
+  isConnectionImportModalOpen.value = false;
   connectionBackgroundState.value = '';
+  connectionBackgroundLastState.value = '';
+  connectionBackgroundLastCursor.value = 0;
   connectionImportProgress.value = null;
   connectionBackgroundSyncActive.value = false;
   connectionAwaitingBackgroundStart.value = false;
+  isConnectionStateHydrated.value = false;
 }
 
-function openDialogForCurrentConnectionSession() {
-  if (!connectionImportSessionId.value) return false;
-  connectionDialogMode.value = isConnectionImportActive.value
-    ? 'monitor'
-    : connectionImportSessionStatus.value === 'ready'
-      ? 'update'
-      : 'qr';
+function syncConnectionSessionStatus() {
+  if (
+    isConnectionImportModalOpen.value &&
+    connectionDialogMode.value === 'prompt_action' &&
+    connectionImportSessionStatus.value === 'ready' &&
+    !isConnectionBackgroundRunning.value &&
+    !connectionAwaitingBackgroundStart.value
+  ) {
+    connectionSessionStatus.value = 'prompt_action';
+    return;
+  }
+
+  if (connectionBackgroundState.value === 'paused') {
+    connectionSessionStatus.value = 'paused';
+    return;
+  }
+
+  if (
+    connectionAwaitingBackgroundStart.value ||
+    connectionBackgroundState.value === 'running' ||
+    connectionImportSessionStatus.value === 'importing'
+  ) {
+    connectionSessionStatus.value = 'importing';
+    return;
+  }
+
+  if (connectionImportSessionStatus.value === 'initializing') {
+    connectionSessionStatus.value = 'initializing';
+    return;
+  }
+  if (connectionImportSessionStatus.value === 'qr') {
+    connectionSessionStatus.value = 'qr';
+    return;
+  }
+  if (connectionImportSessionStatus.value === 'ready') {
+    connectionSessionStatus.value = 'ready';
+    return;
+  }
+
+  connectionSessionStatus.value = 'idle';
+}
+
+function openPromptActionDialog() {
+  connectionDialogMode.value = 'prompt_action';
   isConnectionImportModalOpen.value = true;
-  scheduleConnectionImportPoll(500);
-  return true;
+  syncConnectionSessionStatus();
+}
+
+function openQrConnectionDialog() {
+  connectionDialogMode.value = 'qr';
+  isConnectionImportModalOpen.value = true;
+  syncConnectionSessionStatus();
 }
 
 interface ProjectPreviewPoint {
@@ -856,30 +905,32 @@ const filtersCounterLabel = computed(() => (activeType.value === 'connection' ? 
 const isConnectionBackgroundRunning = computed(
   () => connectionBackgroundState.value === 'running' || connectionBackgroundState.value === 'paused',
 );
-const isConnectionImportActive = computed(
-  () =>
-    connectionAwaitingBackgroundStart.value ||
-    isConnectionBackgroundRunning.value ||
-    connectionImportSessionStatus.value === 'importing',
-);
 const isConnectionCreateBlocked = computed(
-  () => activeType.value === 'connection' && (isConnectionImportActive.value || isConnectionImportBusy.value),
-);
-const showConnectionSyncBanner = computed(
   () =>
-    connectionBackgroundSyncActive.value || Boolean(connectionGlobalMessage.value) || Boolean(connectionGlobalError.value),
+    activeType.value === 'connection' &&
+    (
+      isConnectionImportBusy.value ||
+      ['importing', 'paused'].includes(connectionSessionStatus.value)
+    ),
 );
-const connectionToolbarStatusLabel = computed(() => {
-  if (connectionAwaitingBackgroundStart.value || isConnectionBackgroundRunning.value || connectionImportSessionStatus.value === 'importing') {
-    const percent = Math.max(0, Math.min(100, Math.round(connectionImportProgress.value?.percent || 0)));
-    if (connectionBackgroundState.value === 'paused') {
-      return percent > 0 ? `Обновление на паузе ${percent}%` : 'Обновление на паузе';
-    }
-    return percent > 0 ? `Идет обновление ${percent}%` : 'Идет обновление';
+const showConnectionSyncBanner = computed(() => Boolean(connectionGlobalMessage.value) || Boolean(connectionGlobalError.value));
+const connectionImportProgressPercent = computed(() =>
+  Math.max(0, Math.min(100, Math.round(connectionImportProgress.value?.percent || 0))),
+);
+const connectionImportProgressProcessed = computed(() =>
+  Math.max(0, Number(connectionImportProgress.value?.processed) || 0),
+);
+const connectionImportProgressTotal = computed(() =>
+  Math.max(0, Number(connectionImportProgress.value?.total) || 0),
+);
+const connectionToolbarProgressLabel = computed(() => {
+  const percent = connectionImportProgressPercent.value;
+  const processed = connectionImportProgressProcessed.value;
+  const total = connectionImportProgressTotal.value;
+  if (total > 0) {
+    return `${connectionSessionStatus.value === 'paused' ? 'Пауза' : 'Загрузка'} ${percent}% (${processed}/${total})`;
   }
-  if (connectionImportSessionStatus.value === 'ready') return 'Подключено';
-  if (['initializing', 'qr'].includes(connectionImportSessionStatus.value)) return 'Подключение...';
-  return 'Нет активных подключений';
+  return `${connectionSessionStatus.value === 'paused' ? 'Пауза' : 'Загрузка'} ${percent}%`;
 });
 
 function storeTrackedWhatsappBackgroundSession(sessionId: string) {
@@ -956,6 +1007,8 @@ onMounted(async () => {
 
   applyStoredFiltersForType(activeType.value);
   void entitiesStore.fetchTypeIfNeeded(activeType.value);
+  connectionGlobalMessage.value = '';
+  connectionGlobalError.value = '';
   const trackedSessionId = readTrackedWhatsappBackgroundSession();
   if (trackedSessionId) {
     connectionImportSessionId.value = trackedSessionId;
@@ -967,10 +1020,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   clearConnectionImportPoll();
-  if (connectionGlobalMessageTimer.value) {
-    clearTimeout(connectionGlobalMessageTimer.value);
-    connectionGlobalMessageTimer.value = null;
-  }
 });
 
 watch(
@@ -1000,6 +1049,8 @@ watch(activeType, () => {
   activeProjectRenameId.value = null;
   projectRenameDraft.value = '';
   projectDeleteTarget.value = null;
+  connectionGlobalMessage.value = '';
+  connectionGlobalError.value = '';
   if (connectionImportPollTimer.value && !isConnectionBackgroundRunning.value) {
     clearTimeout(connectionImportPollTimer.value);
     connectionImportPollTimer.value = null;
@@ -1080,8 +1131,6 @@ async function fetchCurrentConnectionSession(options?: { silent?: boolean }) {
       '/integrations/whatsapp/session/current',
     );
     if (data?.session) {
-      // Querying current session must not auto-trigger import.
-      connectionAutoImportPending.value = false;
       applyConnectionSessionState(data.session);
       const backgroundState =
         typeof data.session?.backgroundImport?.state === 'string'
@@ -1108,10 +1157,7 @@ async function fetchCurrentConnectionSession(options?: { silent?: boolean }) {
 
 async function createEntity() {
   if (activeType.value === 'connection') {
-    if (isConnectionImportActive.value || isConnectionBackgroundRunning.value) {
-      connectionDialogMode.value = 'monitor';
-      isConnectionImportModalOpen.value = true;
-      scheduleConnectionImportPoll(500);
+    if (isConnectionCreateBlocked.value) {
       return;
     }
     isDeleteWhatsappConfirmVisible.value = false;
@@ -1166,6 +1212,9 @@ function applyConnectionSessionState(session: WhatsappSessionStatus | undefined)
   if (!session) return;
 
   const previousStatus = connectionImportSessionStatus.value;
+  const previousBackgroundState = connectionBackgroundState.value;
+  const previousDialogMode = connectionDialogMode.value;
+  const isFirstHydrationFrame = !isConnectionStateHydrated.value;
   connectionImportSessionId.value = session.sessionId || '';
   connectionImportSessionStatus.value = session.status || 'idle';
   connectionImportQrCode.value = session.qrCodeDataUrl || '';
@@ -1195,15 +1244,14 @@ function applyConnectionSessionState(session: WhatsappSessionStatus | undefined)
     connectionImportError.value = '';
   }
 
-  const background = session.backgroundImport && typeof session.backgroundImport === 'object'
-    ? session.backgroundImport
-    : null;
+  const background =
+    session.backgroundImport && typeof session.backgroundImport === 'object' ? session.backgroundImport : null;
   const backgroundState =
     typeof background?.state === 'string' ? background.state.trim().toLowerCase() : '';
   connectionBackgroundState.value = backgroundState;
   const backgroundCursor = Math.max(0, Number(background?.cursor) || 0);
   const backgroundTotal = Math.max(0, Number(background?.total) || 0);
-  const backgroundRunning = backgroundState === 'running' || backgroundState === 'paused';
+  const backgroundRunning = ['running', 'paused'].includes(backgroundState);
   connectionBackgroundSyncActive.value = backgroundRunning;
   if (backgroundRunning || ['completed', 'stopped', 'error'].includes(backgroundState)) {
     connectionAwaitingBackgroundStart.value = false;
@@ -1228,7 +1276,8 @@ function applyConnectionSessionState(session: WhatsappSessionStatus | undefined)
 
     const total = backgroundTotal;
     const processed = total > 0 ? Math.min(total, backgroundCursor) : backgroundCursor;
-    const percent = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : backgroundState === 'completed' ? 100 : 0;
+    const percent =
+      total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : backgroundState === 'completed' ? 100 : 0;
     if (backgroundRunning) {
       connectionImportProgress.value = {
         stage: backgroundState,
@@ -1240,17 +1289,7 @@ function applyConnectionSessionState(session: WhatsappSessionStatus | undefined)
     }
   }
 
-  const shouldAutoStartBackgroundImport =
-    connectionAutoImportPending.value &&
-    connectionImportSessionStatus.value === 'ready' &&
-    !backgroundRunning &&
-    !isConnectionImportBusy.value;
-  if (shouldAutoStartBackgroundImport) {
-    connectionAutoImportPending.value = false;
-    void importWhatsAppContacts({ auto: true });
-  }
   if (['error', 'disconnected'].includes(connectionImportSessionStatus.value)) {
-    connectionAutoImportPending.value = false;
     connectionAwaitingBackgroundStart.value = false;
   }
 
@@ -1259,49 +1298,52 @@ function applyConnectionSessionState(session: WhatsappSessionStatus | undefined)
     void entitiesStore.fetchEntities({ silent: true });
   }
 
+  if (backgroundRunning && connectionImportSessionId.value) {
+    storeTrackedWhatsappBackgroundSession(connectionImportSessionId.value);
+  }
   if (backgroundState && backgroundState !== connectionBackgroundLastState.value) {
     connectionBackgroundLastState.value = backgroundState;
     if (backgroundState === 'completed') {
-      connectionAwaitingBackgroundStart.value = false;
-      connectionImportMessage.value = '';
       clearTrackedWhatsappBackgroundSession();
+      connectionBackgroundSyncActive.value = false;
+      connectionGlobalError.value = '';
       const imported = Math.max(0, Number(background?.imported) || 0);
       const updatedNames = Math.max(0, Number(background?.updatedNames) || 0);
       const updatedImages = Math.max(0, Number(background?.updatedImages) || 0);
-      const completionMessage = `Загрузка WhatsApp завершена: новых ${imported}, обновлено имен ${updatedNames}, фото ${updatedImages}.`;
-      setConnectionGlobalMessage(
-        completionMessage,
-        5000,
-      );
-      connectionBackgroundSyncActive.value = false;
+      if (!isFirstHydrationFrame && ['running', 'paused'].includes(previousBackgroundState)) {
+        connectionGlobalMessage.value = `Загрузка WhatsApp завершена: новых ${imported}, обновлено имен ${updatedNames}, фото ${updatedImages}.`;
+      }
       void entitiesStore.fetchEntities({ silent: true });
     } else if (backgroundState === 'error') {
-      connectionAwaitingBackgroundStart.value = false;
-      connectionImportMessage.value = '';
       clearTrackedWhatsappBackgroundSession();
-      connectionGlobalError.value = typeof background?.error === 'string' ? background.error : 'Ошибка фонового импорта.';
       connectionBackgroundSyncActive.value = false;
-    } else if (backgroundState === 'stopped') {
-      connectionAwaitingBackgroundStart.value = false;
-      connectionImportMessage.value = '';
-      clearTrackedWhatsappBackgroundSession();
-      setConnectionGlobalMessage('Фоновый импорт остановлен.', 2800);
-      connectionBackgroundSyncActive.value = false;
-    } else if (backgroundState === 'paused') {
-      connectionAwaitingBackgroundStart.value = false;
-      if (connectionImportSessionId.value) {
-        storeTrackedWhatsappBackgroundSession(connectionImportSessionId.value);
+      if (!isFirstHydrationFrame) {
+        connectionGlobalError.value = typeof background?.error === 'string' ? background.error : 'Ошибка фонового импорта.';
       }
-      setConnectionGlobalMessage('Фоновый импорт на паузе.');
-    } else if (backgroundState === 'running') {
-      connectionAwaitingBackgroundStart.value = false;
-      if (connectionImportSessionId.value) {
-        storeTrackedWhatsappBackgroundSession(connectionImportSessionId.value);
+    } else if (backgroundState === 'stopped') {
+      clearTrackedWhatsappBackgroundSession();
+      connectionBackgroundSyncActive.value = false;
+      if (!isFirstHydrationFrame && ['running', 'paused'].includes(previousBackgroundState)) {
+        connectionGlobalMessage.value = 'Фоновый импорт остановлен.';
       }
       connectionGlobalError.value = '';
-      setConnectionGlobalMessage('Идет фоновая синхронизация WhatsApp-контактов.');
     }
   }
+
+  const becameReadyAfterQr =
+    connectionImportSessionStatus.value === 'ready' &&
+    previousStatus !== 'ready' &&
+    ['initializing', 'qr'].includes(previousStatus);
+  if (becameReadyAfterQr && isConnectionImportModalOpen.value && previousDialogMode === 'qr') {
+    openPromptActionDialog();
+  }
+
+  if (previousBackgroundState !== 'paused' && backgroundState === 'paused' && isConnectionImportModalOpen.value) {
+    isConnectionImportModalOpen.value = false;
+  }
+
+  isConnectionStateHydrated.value = true;
+  syncConnectionSessionStatus();
 }
 
 function scheduleConnectionImportPoll(delay = 1800) {
@@ -1341,18 +1383,17 @@ async function fetchConnectionSessionStatus() {
       scheduleConnectionImportPoll(3000);
     } else {
       connectionImportSessionStatus.value = 'error';
+      syncConnectionSessionStatus();
       clearConnectionImportPoll();
     }
   }
 }
 
-async function startConnectionSession(options?: { autoStartOnReady?: boolean; preserveMessages?: boolean }) {
+async function startConnectionSession(options?: { preserveMessages?: boolean }) {
   if (isConnectionImportBusy.value) return;
   isConnectionImportBusy.value = true;
-  connectionAutoImportPending.value = options?.autoStartOnReady === true;
   if (!options?.preserveMessages) {
     connectionImportError.value = '';
-    connectionImportMessage.value = '';
     connectionGlobalError.value = '';
     connectionGlobalMessage.value = '';
     connectionImportStats.value = null;
@@ -1367,6 +1408,7 @@ async function startConnectionSession(options?: { autoStartOnReady?: boolean; pr
       {},
     );
     applyConnectionSessionState(data.session);
+    syncConnectionSessionStatus();
     appendConnectionClientLog('session.start.response', {
       status: data.session?.status,
       sessionId: data.session?.sessionId,
@@ -1384,11 +1426,15 @@ async function startConnectionSession(options?: { autoStartOnReady?: boolean; pr
       )
     ) {
       scheduleConnectionImportPoll(1200);
+      openQrConnectionDialog();
+    } else if (data.session?.status === 'ready') {
+      openPromptActionDialog();
     }
     return data.session;
   } catch (error) {
     connectionImportError.value = formatConnectionImportError(error);
     connectionImportSessionStatus.value = 'error';
+    syncConnectionSessionStatus();
     appendConnectionClientLog('session.start.error', { message: connectionImportError.value });
     clearConnectionImportPoll();
     return null;
@@ -1400,60 +1446,51 @@ async function startConnectionSession(options?: { autoStartOnReady?: boolean; pr
 async function openConnectionDialogFromButton() {
   if (isConnectionImportBusy.value || isConnectionPhotosBusy.value) return;
 
-  if (!connectionImportSessionId.value) {
+  if (connectionImportSessionId.value) {
+    try {
+      const { data } = await apiClient.get<{ session: WhatsappSessionStatus }>(
+        `/integrations/whatsapp/session/${connectionImportSessionId.value}`,
+      );
+      applyConnectionSessionState(data.session);
+    } catch {
+      resetConnectionSessionStateToIdle();
+    }
+  } else {
     const hasCurrentSession = await fetchCurrentConnectionSession({ silent: true });
-    if (hasCurrentSession) {
-      openDialogForCurrentConnectionSession();
-      return;
+    if (!hasCurrentSession) {
+      resetConnectionSessionStateToIdle();
     }
   }
 
-  if (connectionImportSessionId.value && isConnectionImportActive.value) {
-    connectionDialogMode.value = 'monitor';
-    isConnectionImportModalOpen.value = true;
-    scheduleConnectionImportPoll(500);
+  if (['importing', 'paused'].includes(connectionSessionStatus.value)) {
+    scheduleConnectionImportPoll(1000);
     return;
   }
 
-  if (connectionImportSessionId.value && connectionImportSessionStatus.value === 'ready') {
-    connectionDialogMode.value = 'update';
-    if (!isConnectionImportActive.value) {
-      connectionImportMessage.value = '';
-    }
-    isConnectionImportModalOpen.value = true;
+  if (connectionImportSessionStatus.value === 'ready' && connectionImportSessionId.value) {
+    openPromptActionDialog();
+    scheduleConnectionImportPoll(1200);
+    return;
+  }
+
+  if (['initializing', 'qr'].includes(connectionImportSessionStatus.value) && connectionImportSessionId.value) {
+    openQrConnectionDialog();
     scheduleConnectionImportPoll(800);
     return;
   }
 
-  const session = await startConnectionSession({ autoStartOnReady: false });
+  const session = await startConnectionSession();
   if (!session) return;
 
   const status = typeof session.status === 'string' ? session.status.trim().toLowerCase() : 'idle';
-  const backgroundState =
-    typeof session.backgroundImport?.state === 'string' ? session.backgroundImport.state.trim().toLowerCase() : '';
-  const backgroundRunning = backgroundState === 'running' || backgroundState === 'paused';
-
-  if (backgroundRunning || status === 'importing') {
-    connectionDialogMode.value = 'monitor';
-    isConnectionImportModalOpen.value = true;
-    scheduleConnectionImportPoll(500);
-    return;
-  }
-
   if (status === 'ready') {
-    connectionDialogMode.value = 'update';
-    if (!isConnectionImportActive.value) {
-      connectionImportMessage.value = '';
-    }
-    isConnectionImportModalOpen.value = true;
-    connectionAutoImportPending.value = false;
+    openPromptActionDialog();
     return;
   }
-
-  connectionDialogMode.value = 'qr';
-  isConnectionImportModalOpen.value = true;
-  connectionAutoImportPending.value = true;
-  scheduleConnectionImportPoll(500);
+  if (['initializing', 'qr'].includes(status)) {
+    openQrConnectionDialog();
+    scheduleConnectionImportPoll(800);
+  }
 }
 
 async function stopConnectionSession(options?: { silent?: boolean }) {
@@ -1472,13 +1509,14 @@ async function stopConnectionSession(options?: { silent?: boolean }) {
     connectionImportSessionId.value = '';
     connectionImportQrCode.value = '';
     connectionImportSessionStatus.value = 'idle';
+    connectionSessionStatus.value = 'idle';
     connectionImportProgress.value = null;
     connectionBackgroundState.value = '';
     connectionBackgroundLastState.value = '';
     connectionBackgroundLastCursor.value = 0;
     connectionAwaitingBackgroundStart.value = false;
-    connectionAutoImportPending.value = false;
     connectionDialogMode.value = 'qr';
+    isConnectionImportModalOpen.value = false;
     isDeleteWhatsappConfirmVisible.value = false;
   }
 }
@@ -1486,13 +1524,14 @@ async function stopConnectionSession(options?: { silent?: boolean }) {
 async function closeConnectionImportModal() {
   if (isConnectionImportBusy.value || isConnectionPhotosBusy.value) return;
   appendConnectionClientLog('modal.close');
-  if (isConnectionBackgroundRunning.value) {
-    setConnectionGlobalMessage('Импорт продолжается в фоне. Сообщим, когда загрузка завершится.');
+  if (['importing', 'paused'].includes(connectionSessionStatus.value)) {
+    connectionGlobalMessage.value = 'Загрузка продолжается в фоне. Сообщим, когда обновление завершится.';
     scheduleConnectionImportPoll(1400);
   } else if (!connectionBackgroundSyncActive.value) {
     clearConnectionImportPoll();
   }
   isConnectionImportModalOpen.value = false;
+  syncConnectionSessionStatus();
 }
 
 async function disconnectWhatsappSession() {
@@ -1503,7 +1542,8 @@ async function disconnectWhatsappSession() {
     await stopConnectionSession();
     connectionBackgroundSyncActive.value = false;
     clearConnectionImportPoll();
-    setConnectionGlobalMessage('WhatsApp-сессия отключена.', 2600);
+    connectionGlobalMessage.value = 'WhatsApp-сессия отключена.';
+    connectionGlobalError.value = '';
     isConnectionImportModalOpen.value = false;
   } finally {
     isConnectionImportBusy.value = false;
@@ -1511,56 +1551,14 @@ async function disconnectWhatsappSession() {
 }
 
 async function openConnectionControlPanel() {
-  if (connectionImportSessionId.value) {
-    try {
-      const { data } = await apiClient.get<{ session: WhatsappSessionStatus }>(
-        `/integrations/whatsapp/session/${connectionImportSessionId.value}`,
-      );
-      applyConnectionSessionState(data.session);
-    } catch {
-      resetConnectionSessionStateToIdle();
-    }
-  }
-
-  if (!connectionImportSessionId.value) {
-    const hasCurrentSession = await fetchCurrentConnectionSession({ silent: true });
-    if (hasCurrentSession) {
-      openDialogForCurrentConnectionSession();
-      return;
-    }
-    void openConnectionDialogFromButton();
-    return;
-  }
-
-  openDialogForCurrentConnectionSession();
+  await openConnectionDialogFromButton();
 }
 
-function setConnectionGlobalMessage(message: string, autoClearMs = 0) {
-  if (connectionGlobalMessageTimer.value) {
-    clearTimeout(connectionGlobalMessageTimer.value);
-    connectionGlobalMessageTimer.value = null;
-  }
-
+function setConnectionGlobalMessage(message: string) {
   connectionGlobalMessage.value = message;
-
-  if (!message || autoClearMs <= 0) {
-    return;
-  }
-
-  const snapshot = message;
-  connectionGlobalMessageTimer.value = setTimeout(() => {
-    if (
-      connectionGlobalMessage.value === snapshot &&
-      !connectionBackgroundSyncActive.value &&
-      !connectionGlobalError.value
-    ) {
-      connectionGlobalMessage.value = '';
-    }
-    connectionGlobalMessageTimer.value = null;
-  }, autoClearMs);
 }
 
-async function importWhatsAppContacts(options?: { auto?: boolean; closeModalOnStart?: boolean; overwriteNames?: boolean }) {
+async function importWhatsAppContacts(options?: { overwriteNames?: boolean }) {
   if (isConnectionImportBusy.value) return;
   if (isConnectionBackgroundRunning.value) return;
   if (!connectionImportSessionId.value) {
@@ -1574,10 +1572,8 @@ async function importWhatsAppContacts(options?: { auto?: boolean; closeModalOnSt
 
   isConnectionImportBusy.value = true;
   connectionAwaitingBackgroundStart.value = true;
-  if (!options?.auto) {
-    connectionImportError.value = '';
-    connectionImportMessage.value = '';
-  }
+  connectionImportError.value = '';
+  connectionGlobalError.value = '';
   connectionImportProgress.value = {
     stage: 'prepare',
     note: 'Запуск фонового импорта',
@@ -1585,6 +1581,7 @@ async function importWhatsAppContacts(options?: { auto?: boolean; closeModalOnSt
     total: 0,
     percent: 5,
   };
+  connectionSessionStatus.value = 'importing';
   appendConnectionClientLog('import.background.start.request', { sessionId: connectionImportSessionId.value });
   clearConnectionImportPoll();
 
@@ -1610,32 +1607,13 @@ async function importWhatsAppContacts(options?: { auto?: boolean; closeModalOnSt
     if (data.session?.sessionId) {
       storeTrackedWhatsappBackgroundSession(data.session.sessionId);
     }
-    connectionImportMessage.value =
-      options?.overwriteNames === true
-        ? 'Перезапись контактов запущена: синхронизация идет в фоне, можно продолжать работу.'
-        : 'Импорт запущен: синхронизация идет в фоне, можно продолжать работу.';
     appendConnectionClientLog('import.background.start.response', {
       sessionId: data.session?.sessionId,
       state: data.session?.backgroundImport?.state,
     });
     scheduleConnectionImportPoll(1200);
-    setConnectionGlobalMessage('Идет фоновая синхронизация контактов WhatsApp.');
-    connectionAutoImportPending.value = false;
-    connectionDialogMode.value = 'monitor';
-    if (options?.auto || options?.closeModalOnStart) {
-      isConnectionImportModalOpen.value = false;
-      if (options?.auto) {
-        setConnectionGlobalMessage('QR подтвержден. Импорт запущен в фоне, сообщим о завершении.');
-      } else {
-        setConnectionGlobalMessage(
-          options?.overwriteNames === true
-            ? 'Перезапись контактов запущена в фоне.'
-            : 'Обновление контактов запущено в фоне.',
-        );
-      }
-    } else {
-      isConnectionImportModalOpen.value = true;
-    }
+    isConnectionImportModalOpen.value = false;
+    syncConnectionSessionStatus();
   } catch (error) {
     connectionAwaitingBackgroundStart.value = false;
     connectionBackgroundSyncActive.value = false;
@@ -1643,10 +1621,9 @@ async function importWhatsAppContacts(options?: { auto?: boolean; closeModalOnSt
     if (connectionImportSessionId.value) {
       connectionImportSessionStatus.value = 'ready';
     }
+    syncConnectionSessionStatus();
     connectionImportError.value = formatConnectionImportError(error);
-    if (options?.closeModalOnStart) {
-      connectionGlobalError.value = connectionImportError.value;
-    }
+    connectionGlobalError.value = connectionImportError.value;
     appendConnectionClientLog('import.background.start.error', { message: connectionImportError.value });
   } finally {
     isConnectionImportBusy.value = false;
@@ -1655,14 +1632,12 @@ async function importWhatsAppContacts(options?: { auto?: boolean; closeModalOnSt
 
 async function triggerContactsUpdateFromConnected() {
   if (isConnectionImportBusy.value || isConnectionPhotosBusy.value) return;
-  isConnectionImportModalOpen.value = false;
-  await importWhatsAppContacts({ closeModalOnStart: true });
+  await importWhatsAppContacts();
 }
 
 async function triggerContactsOverwriteFromConnected() {
   if (isConnectionImportBusy.value || isConnectionPhotosBusy.value) return;
-  isConnectionImportModalOpen.value = false;
-  await importWhatsAppContacts({ closeModalOnStart: true, overwriteNames: true });
+  await importWhatsAppContacts({ overwriteNames: true });
 }
 
 async function pauseBackgroundImport() {
@@ -1677,7 +1652,6 @@ async function pauseBackgroundImport() {
       { sessionId: connectionImportSessionId.value },
     );
     applyConnectionSessionState(data.session);
-    connectionImportMessage.value = 'Фоновый импорт поставлен на паузу.';
     scheduleConnectionImportPoll(1200);
   } catch (error) {
     connectionImportError.value = formatConnectionImportError(error);
@@ -1698,7 +1672,6 @@ async function resumeBackgroundImport() {
       { sessionId: connectionImportSessionId.value },
     );
     applyConnectionSessionState(data.session);
-    connectionImportMessage.value = 'Фоновый импорт продолжен.';
     scheduleConnectionImportPoll(1200);
   } catch (error) {
     connectionImportError.value = formatConnectionImportError(error);
@@ -1707,11 +1680,8 @@ async function resumeBackgroundImport() {
   }
 }
 
-async function stopBackgroundImportAndClose() {
-  if (!connectionImportSessionId.value || isConnectionImportBusy.value) {
-    isConnectionImportModalOpen.value = false;
-    return;
-  }
+async function stopBackgroundImport() {
+  if (!connectionImportSessionId.value || isConnectionImportBusy.value) return;
   isConnectionImportBusy.value = true;
   connectionAwaitingBackgroundStart.value = false;
   connectionImportError.value = '';
@@ -1721,15 +1691,14 @@ async function stopBackgroundImportAndClose() {
       { sessionId: connectionImportSessionId.value },
     );
     applyConnectionSessionState(data.session);
-    connectionImportMessage.value = 'Фоновый импорт остановлен.';
     connectionBackgroundSyncActive.value = false;
     clearTrackedWhatsappBackgroundSession();
-    clearConnectionImportPoll();
+    scheduleConnectionImportPoll(800);
+    syncConnectionSessionStatus();
   } catch (error) {
     connectionImportError.value = formatConnectionImportError(error);
   } finally {
     isConnectionImportBusy.value = false;
-    isConnectionImportModalOpen.value = false;
   }
 }
 
@@ -1755,7 +1724,7 @@ async function confirmDeleteImportedWhatsApp() {
     const { data } = await apiClient.delete<WhatsappDeleteImportedResult>('/integrations/whatsapp/imported');
     isDeleteWhatsappConfirmVisible.value = false;
     connectionImportStats.value = null;
-    setConnectionGlobalMessage(`Удалено импортированных контактов: ${Number(data.deleted) || 0}.`, 3200);
+    setConnectionGlobalMessage(`Удалено импортированных контактов: ${Number(data.deleted) || 0}.`);
     // FIX B: Modal open — defer.
     if (entityInfoEntityId.value) {
       pendingEntitiesRefetch.value = true;
@@ -1769,29 +1738,6 @@ async function confirmDeleteImportedWhatsApp() {
   } finally {
     isConnectionImportBusy.value = false;
   }
-}
-
-function connectionSessionStatusLabel() {
-  if (connectionBackgroundState.value === 'running') return 'Фоновая синхронизация';
-  if (connectionBackgroundState.value === 'paused') return 'Синхронизация на паузе';
-  const status = connectionImportSessionStatus.value;
-  if (status === 'ready') return 'Подключено';
-  if (status === 'qr') return 'Ожидает сканирования QR';
-  if (status === 'initializing') return 'Генерация QR';
-  if (status === 'importing') return 'Импорт контактов';
-  if (status === 'error') return 'Ошибка';
-  if (status === 'disconnected') return 'Отключено';
-  return 'Не подключено';
-}
-
-function connectionSessionActionLabel() {
-  const status = connectionImportSessionStatus.value;
-  if (status === 'ready') return 'Обновить';
-  if (status === 'qr') return 'Обновить QR';
-  if (status === 'initializing') return 'Генерация...';
-  if (status === 'idle') return 'Получить QR';
-  if (status === 'error' || status === 'disconnected') return 'Повторить';
-  return 'Обновить';
 }
 
 function connectionPhone(entity: Entity) {
@@ -2101,14 +2047,77 @@ watch(entityInfoEntityId, (id) => {
           Показано {{ filteredEntitiesCount }} из {{ totalEntitiesCount }} {{ filtersCounterLabel }}
         </div>
         <div v-if="activeType === 'connection'" class="connection-toolbar-actions">
+          <div
+            v-if="['importing', 'paused'].includes(connectionSessionStatus)"
+            class="connection-progress-toolbar"
+            :class="{ paused: connectionSessionStatus === 'paused' }"
+          >
+            <div class="connection-progress-toolbar-main">
+              <AppIcon name="loader" class="connection-progress-loader" />
+              <span>{{ connectionToolbarProgressLabel }}</span>
+            </div>
+            <button
+              type="button"
+              class="connection-progress-toolbar-action"
+              :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
+              :title="connectionSessionStatus === 'paused' ? 'Продолжить импорт' : 'Пауза импорта'"
+              @click="connectionSessionStatus === 'paused' ? resumeBackgroundImport() : pauseBackgroundImport()"
+            >
+              <AppIcon :name="connectionSessionStatus === 'paused' ? 'play' : 'pause'" />
+              <span>{{ connectionSessionStatus === 'paused' ? 'Продолжить' : 'Пауза' }}</span>
+            </button>
+            <button
+              type="button"
+              class="connection-progress-toolbar-action stop"
+              :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
+              title="Остановить импорт"
+              @click="stopBackgroundImport"
+            >
+              <AppIcon name="square" />
+              <span>Стоп</span>
+            </button>
+          </div>
+          <div v-else-if="connectionSessionStatus === 'ready'" class="connection-ready-toolbar">
+            <button
+              type="button"
+              class="connection-ready-main"
+              :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
+              @click="openConnectionControlPanel"
+            >
+              <AppIcon name="check-circle" />
+              <span>Подключено</span>
+            </button>
+            <button
+              type="button"
+              class="connection-ready-disconnect"
+              :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
+              @click="disconnectWhatsappSession"
+            >
+              <AppIcon name="unplug" />
+            </button>
+          </div>
           <button
+            v-else-if="['initializing', 'qr', 'prompt_action'].includes(connectionSessionStatus)"
             type="button"
-            class="connection-toolbar-btn status"
-            :class="{ active: connectionImportSessionStatus === 'ready' || isConnectionImportActive }"
+            class="connection-toolbar-btn status-connecting"
             :disabled="isConnectionImportBusy"
             @click="openConnectionControlPanel"
           >
-            {{ connectionToolbarStatusLabel }}
+            <AppIcon
+              :name="connectionSessionStatus === 'prompt_action' ? 'check-circle' : 'loader'"
+              :class="{ 'connection-progress-loader': connectionSessionStatus !== 'prompt_action' }"
+            />
+            <span>{{ connectionSessionStatus === 'prompt_action' ? 'Подключено' : 'Подключение...' }}</span>
+          </button>
+          <button
+            v-else
+            type="button"
+            class="connection-toolbar-btn status-idle"
+            :disabled="isConnectionImportBusy"
+            @click="openConnectionControlPanel"
+          >
+            <AppIcon name="wifi-off" />
+            <span>Нет активных подключений</span>
           </button>
           <button
             v-if="!isDeleteWhatsappConfirmVisible"
@@ -2151,7 +2160,12 @@ watch(entityInfoEntityId, (id) => {
       <div v-if="entitiesStore.loading" class="state">Загрузка...</div>
       <div v-else-if="entitiesStore.error" class="state state-error">{{ entitiesStore.error }}</div>
       <div v-else class="grid-layout">
-        <button class="create-card" :disabled="isCreateBusy || isConnectionCreateBlocked" @click="createEntity">
+        <button
+          class="create-card"
+          :class="{ 'connection-create-blocked': activeType === 'connection' && isConnectionCreateBlocked }"
+          :disabled="isCreateBusy || isConnectionCreateBlocked"
+          @click="createEntity"
+        >
           <AppIcon name="plus" />
           <span class="create-card-label">{{ createButtonLabel }}</span>
         </button>
@@ -2533,216 +2547,74 @@ watch(entityInfoEntityId, (id) => {
       @pointerdown.self="closeConnectionImportModal"
     >
       <div class="connection-import-card" @pointerdown.stop>
-        <h3 class="connection-import-title">
-          {{ connectionDialogMode === 'update' ? 'Подключено' : 'Подключение WhatsApp' }}
-        </h3>
-        <p v-if="connectionDialogMode === 'qr'" class="connection-import-text">
-          Сканируйте QR-код в WhatsApp. После сканирования окно закроется, а синхронизация контактов запустится автоматически в фоне.
-        </p>
-        <p v-else-if="connectionDialogMode === 'update'" class="connection-import-text">
-          WhatsApp уже подключен.
-        </p>
-        <p v-else class="connection-import-text">
-          Фоновая синхронизация уже запущена. Можно поставить на паузу, остановить или отключить сессию.
-        </p>
-        <p class="connection-import-note">
-          {{
-            connectionDialogMode === 'update'
-              ? 'Окно можно закрыть: загрузка продолжится в фоне.'
-              : 'Окно можно закрыть: загрузка продолжится в фоне, а по завершении придет уведомление.'
-          }}
-        </p>
-
-        <div
-          v-if="connectionDialogMode !== 'update'"
-          class="connection-status-badge"
-          :class="[
-            `status-${connectionImportSessionStatus}`,
-            { 'status-importing': connectionBackgroundState === 'running' || connectionBackgroundState === 'paused' },
-          ]"
-        >
-          {{ connectionSessionStatusLabel() }}
-        </div>
-
-        <div
-          v-if="connectionDialogMode === 'qr' && connectionImportQrCode && !isConnectionBackgroundRunning && ['initializing', 'qr'].includes(connectionImportSessionStatus)"
-          class="connection-qr-wrap"
-        >
-          <img class="connection-qr-image" :src="connectionImportQrCode" alt="WhatsApp QR" />
-          <p class="connection-qr-hint">Сканируйте QR-код в WhatsApp на телефоне.</p>
-        </div>
-        <div
-          v-else-if="connectionDialogMode === 'qr' && !isConnectionBackgroundRunning && ['initializing', 'qr'].includes(connectionImportSessionStatus)"
-          class="connection-qr-placeholder"
-        >
-          QR загружается. Если код не появился, нажмите «{{ connectionSessionActionLabel() }}».
-        </div>
-
-        <div v-if="connectionDialogMode === 'qr'" class="connection-import-actions">
+        <div class="connection-import-head">
+          <h3 class="connection-import-title">
+            {{ connectionDialogMode === 'prompt_action' ? 'Управление контактами' : 'Подключение WhatsApp' }}
+          </h3>
           <button
             type="button"
-            class="connection-link-btn"
-            :disabled="isConnectionImportBusy || isConnectionPhotosBusy || connectionImportSessionStatus === 'initializing'"
-            @click="() => startConnectionSession({ autoStartOnReady: true })"
-          >
-            {{ connectionSessionActionLabel() }}
-          </button>
-          <button
-            type="button"
-            class="connection-link-btn"
+            class="connection-modal-close"
             :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
             @click="closeConnectionImportModal"
           >
-            Отмена
-          </button>
-          <button
-            v-if="connectionImportSessionId"
-            type="button"
-            class="connection-link-btn"
-            :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
-            @click="disconnectWhatsappSession"
-          >
-            Отключить
+            <AppIcon name="close" />
           </button>
         </div>
 
-        <div v-else-if="connectionDialogMode === 'update'" class="connection-import-actions">
+        <template v-if="connectionDialogMode === 'qr'">
+          <div class="connection-privacy-card">
+            <div class="connection-privacy-head">
+              <AppIcon name="shield-check" />
+              <span>Полная конфиденциальность</span>
+            </div>
+            <p>
+              Мы не имеем доступа к вашей переписке, файлам или звонкам. Интеграция лишь однократно перенесет имена,
+              аватарки и номера телефонов.
+            </p>
+          </div>
+          <div class="connection-qr-block">
+            <img
+              v-if="connectionImportQrCode"
+              class="connection-qr-image"
+              :src="connectionImportQrCode"
+              alt="WhatsApp QR"
+            />
+            <div v-else class="connection-qr-placeholder">
+              <AppIcon name="loader" class="connection-progress-loader" />
+            </div>
+          </div>
+        </template>
+
+        <template v-else>
+          <p class="connection-import-text">
+            Что необходимо сделать с контактами WhatsApp?
+          </p>
           <button
             type="button"
-            class="connection-link-btn"
-            :disabled="
-              isConnectionImportBusy ||
-                isConnectionPhotosBusy ||
-                isConnectionBackgroundRunning ||
-                connectionImportSessionStatus !== 'ready'
-            "
+            class="connection-action-option"
+            :disabled="isConnectionImportBusy || isConnectionPhotosBusy || isConnectionBackgroundRunning"
             @click="triggerContactsUpdateFromConnected"
           >
-            Обновить
+            <strong>Синхронизировать</strong>
+            <span>Добавить новые контакты. Существующие карточки и имена не изменятся.</span>
           </button>
           <button
             type="button"
-            class="connection-link-btn"
-            :disabled="
-              isConnectionImportBusy ||
-                isConnectionPhotosBusy ||
-                isConnectionBackgroundRunning ||
-                connectionImportSessionStatus !== 'ready'
-            "
+            class="connection-action-option overwrite"
+            :disabled="isConnectionImportBusy || isConnectionPhotosBusy || isConnectionBackgroundRunning"
             @click="triggerContactsOverwriteFromConnected"
           >
-            Перезаписать
+            <strong>Перезаписать</strong>
+            <span>Принудительная перезапись. Полностью обновить аватарки и заменить имена на актуальные из WhatsApp.</span>
           </button>
-          <button
-            type="button"
-            class="connection-link-btn"
-            :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
-            @click="closeConnectionImportModal"
-          >
-            Отмена
-          </button>
-        </div>
-
-        <div v-else class="connection-import-actions">
-          <button
-            v-if="connectionBackgroundState === 'running'"
-            type="button"
-            class="connection-link-btn"
-            :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
-            @click="pauseBackgroundImport"
-          >
-            Пауза
-          </button>
-          <button
-            v-if="connectionBackgroundState === 'paused'"
-            type="button"
-            class="connection-link-btn"
-            :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
-            @click="resumeBackgroundImport"
-          >
-            Продолжить
-          </button>
-          <button
-            v-if="connectionBackgroundState === 'running' || connectionBackgroundState === 'paused'"
-            type="button"
-            class="connection-link-btn danger"
-            :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
-            @click="stopBackgroundImportAndClose"
-          >
-            Стоп
-          </button>
-        </div>
-
-        <div v-if="connectionDialogMode === 'monitor' && connectionImportProgress" class="connection-progress-wrap">
-          <div class="connection-progress-head">
-            <span>{{ connectionImportProgress.note || 'Импорт контактов' }}</span>
-            <span>{{ Math.round(connectionImportProgress.percent) }}%</span>
+          <div v-if="connectionImportStats" class="connection-import-stats">
+            <span>Всего найдено: {{ connectionImportStats.total }}</span>
+            <span>Импортировано: {{ connectionImportStats.imported }}</span>
+            <span>Обновлено имен: {{ connectionImportStats.updatedNames }}</span>
+            <span>Обновлено фото: {{ connectionImportStats.updatedImages }}</span>
           </div>
-          <div class="connection-progress-track">
-            <div class="connection-progress-fill" :style="{ width: `${connectionImportProgress.percent}%` }"></div>
-          </div>
-          <div
-            v-if="connectionImportProgress.total > 0"
-            class="connection-progress-meta"
-          >
-            {{ connectionImportProgress.processed }} / {{ connectionImportProgress.total }}
-          </div>
-        </div>
-        <div
-          v-else-if="connectionDialogMode === 'monitor'"
-          class="connection-progress-wrap"
-        >
-          <div class="connection-progress-head">
-            <span>Ожидание данных прогресса</span>
-            <span>0%</span>
-          </div>
-          <div class="connection-progress-track">
-            <div class="connection-progress-fill" :style="{ width: '0%' }"></div>
-          </div>
-        </div>
+        </template>
 
-        <p v-if="connectionDialogMode === 'qr' && connectionAutoImportPending" class="connection-step-hint">
-          1) Откройте WhatsApp -> Связанные устройства. 2) Сканируйте QR. 3) Импорт начнется автоматически.
-        </p>
-        <p
-          v-if="connectionImportSessionStatus === 'importing' || connectionBackgroundState === 'running'"
-          class="connection-step-hint"
-        >
-          Идет импорт контактов. Можно поставить паузу или остановить задачу.
-        </p>
-        <p v-else-if="connectionBackgroundState === 'paused'" class="connection-step-hint">
-          Импорт на паузе. Нажмите «Продолжить», чтобы докачать контакты.
-        </p>
-        <p v-else-if="connectionDialogMode === 'update' && connectionImportSessionStatus === 'ready'" class="connection-step-hint">
-          «Обновить» запускает обычную синхронизацию. «Перезаписать» повторно обходит контакты и обновляет имена WhatsApp в разделе Подключение.
-        </p>
-        <p v-else-if="connectionDialogMode === 'update' && connectionImportSessionStatus !== 'ready'" class="connection-step-hint">
-          Сессия не готова к обновлению. Нажмите кнопку статуса на панели и отсканируйте QR заново.
-        </p>
-
-        <div
-          v-if="(connectionDialogMode === 'monitor' || connectionDialogMode === 'update') && connectionImportStats"
-          class="connection-import-stats"
-        >
-          <span>Всего найдено: {{ connectionImportStats.total }}</span>
-          <span>Импортировано: {{ connectionImportStats.imported }}</span>
-          <span>Совпадения: {{ connectionImportStats.matched }}</span>
-          <span>С именем: {{ connectionImportStats.newWithName }}</span>
-          <span>Без имени: {{ connectionImportStats.newWithoutName }}</span>
-          <span>Фото при импорте: {{ connectionImportStats.importedWithImage }}</span>
-          <span>Обновлено имен: {{ connectionImportStats.updatedNames }}</span>
-          <span>Обновлено фото: {{ connectionImportStats.updatedImages }}</span>
-        </div>
-        <p v-else-if="connectionDialogMode === 'update'" class="connection-step-hint">
-          Статистика пока недоступна. Запустите обновление, чтобы получить актуальные данные.
-        </p>
-
-        <p
-          v-if="connectionImportMessage && (connectionDialogMode !== 'update' || isConnectionImportActive)"
-          class="connection-import-message"
-        >
-          {{ connectionImportMessage }}
-        </p>
         <p v-if="connectionImportError" class="connection-import-error">
           {{ connectionImportError }}
         </p>
@@ -2883,25 +2755,39 @@ watch(entityInfoEntityId, (id) => {
 }
 
 .connection-toolbar-btn {
-  height: 27px;
+  height: 28px;
   border-radius: 10px;
   border: 1px solid #d2dfef;
-  background: rgba(250, 253, 255, 0.96);
-  color: #334155;
+  background: #fafdff;
+  color: #475569;
   font-size: 10px;
   font-weight: 700;
   padding: 0 10px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
   transition:
     border-color 0.16s ease,
     background-color 0.16s ease,
     color 0.16s ease;
 }
 
-.connection-toolbar-btn:hover:not(:disabled) {
+.connection-toolbar-btn.status-idle:hover:not(:disabled) {
   border-color: #95b8fb;
   background: #edf4ff;
   color: #1058ff;
+}
+
+.connection-toolbar-btn.status-connecting {
+  border-color: #bcd3ff;
+  background: #edf4ff;
+  color: #1058ff;
+}
+
+.connection-toolbar-btn.status-connecting:hover:not(:disabled) {
+  border-color: #95b8fb;
 }
 
 .connection-toolbar-btn:disabled {
@@ -2909,16 +2795,102 @@ watch(entityInfoEntityId, (id) => {
   cursor: not-allowed;
 }
 
-.connection-toolbar-btn.status {
-  border-color: #bcd3ff;
-  background: #edf4ff;
-  color: #1058ff;
-}
-
-.connection-toolbar-btn.status.active {
-  border-color: #86efac;
+.connection-progress-toolbar {
+  height: 28px;
+  border-radius: 10px;
+  border: 1px solid #86efac;
   background: #ecfdf5;
   color: #047857;
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.connection-progress-toolbar.paused {
+  border-color: #fcd34d;
+  background: #fffbeb;
+  color: #d97706;
+}
+
+.connection-progress-toolbar-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.connection-progress-toolbar-action {
+  border: none;
+  border-left: 1px solid rgba(15, 23, 42, 0.08);
+  background: transparent;
+  color: currentColor;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 8px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.connection-progress-toolbar-action:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.connection-progress-toolbar-action :deep(svg) {
+  width: 13px;
+  height: 13px;
+}
+
+.connection-progress-toolbar-action.stop:hover:not(:disabled) {
+  color: #be123c;
+  background: #ffe4e6;
+}
+
+.connection-ready-toolbar {
+  height: 28px;
+  border-radius: 10px;
+  border: 1px solid #99f6e4;
+  background: #f0fdfa;
+  color: #0f766e;
+  display: inline-flex;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.connection-ready-main,
+.connection-ready-disconnect {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.connection-ready-main {
+  padding: 0 10px;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.connection-ready-disconnect {
+  width: 28px;
+  border-left: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.connection-ready-main:hover:not(:disabled),
+.connection-ready-disconnect:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.6);
 }
 
 .connection-toolbar-btn.danger {
@@ -2970,6 +2942,30 @@ watch(entityInfoEntityId, (id) => {
 .create-card:disabled {
   cursor: wait;
   opacity: 0.72;
+}
+
+.create-card.connection-create-blocked {
+  opacity: 0.7;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.connection-progress-loader {
+  animation: connection-spin 1s linear infinite;
+}
+
+.connection-progress-loader :deep(svg) {
+  width: 14px;
+  height: 14px;
+}
+
+@keyframes connection-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .create-card-label {
@@ -3331,7 +3327,9 @@ watch(entityInfoEntityId, (id) => {
   position: fixed;
   inset: 0;
   z-index: 180;
-  background: rgba(15, 23, 42, 0.4);
+  background: rgba(15, 23, 42, 0.3);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3339,205 +3337,182 @@ watch(entityInfoEntityId, (id) => {
 }
 
 .connection-import-card {
-  width: min(460px, 100%);
-  border-radius: 14px;
+  width: min(420px, 100%);
+  border-radius: 24px;
   border: 1px solid #e2e8f0;
   background: #ffffff;
-  box-shadow: 0 20px 34px rgba(15, 23, 42, 0.28);
-  padding: 16px;
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.15);
+  padding: 24px;
   display: flex;
   flex-direction: column;
+  gap: 14px;
+}
+
+.connection-import-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
 }
 
 .connection-import-title {
   margin: 0;
   color: #0f172a;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 800;
+}
+
+.connection-modal-close {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #334155;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.connection-modal-close:hover:not(:disabled) {
+  background: #e2e8f0;
+}
+
+.connection-modal-close:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 
 .connection-import-text {
   margin: 0;
   color: #475569;
-  font-size: 13px;
-}
-
-.connection-import-note {
-  margin: -2px 0 2px;
-  color: #64748b;
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.4;
 }
 
-.connection-status-badge {
-  align-self: flex-start;
-  border-radius: 999px;
-  border: 1px solid #dbe4f3;
-  background: #f8fafc;
-  color: #334155;
-  font-size: 11px;
-  font-weight: 700;
-  padding: 4px 10px;
-}
-
-.connection-status-badge.status-ready {
-  border-color: #99f6e4;
-  background: #f0fdfa;
-  color: #0f766e;
-}
-
-.connection-status-badge.status-qr,
-.connection-status-badge.status-initializing,
-.connection-status-badge.status-importing {
-  border-color: #bfdbfe;
-  background: #eff6ff;
-  color: #1d4ed8;
-}
-
-.connection-status-badge.status-error,
-.connection-status-badge.status-disconnected {
-  border-color: #fecaca;
-  background: #fff1f2;
-  color: #b91c1c;
-}
-
-.connection-qr-wrap {
-  width: 100%;
-  border-radius: 12px;
-  border: 1px dashed #bfd5ff;
-  background: #f8fbff;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-
-.connection-qr-placeholder {
-  width: 100%;
-  border-radius: 12px;
-  border: 1px dashed #cbd5e1;
-  background: #f8fafc;
-  min-height: 140px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #64748b;
-  font-size: 12px;
-  text-align: center;
-  padding: 12px;
-}
-
-.connection-qr-image {
-  width: min(260px, 100%);
-  aspect-ratio: 1 / 1;
-  object-fit: contain;
-  border-radius: 10px;
-  border: 1px solid #dbe4f3;
-  background: #ffffff;
-}
-
-.connection-qr-hint {
-  margin: 0;
-  text-align: center;
-  font-size: 12px;
-  color: #64748b;
-}
-
-.connection-import-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.connection-progress-wrap {
-  border-radius: 10px;
-  border: 1px solid #dbe4f3;
-  background: #f8fbff;
-  padding: 10px;
+.connection-privacy-card {
+  border-radius: 16px;
+  border: 1px solid #bae6fd;
+  background: #f0f9ff;
+  padding: 12px 14px;
   display: grid;
   gap: 6px;
 }
 
-.connection-progress-head {
-  display: flex;
+.connection-privacy-head {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  color: #334155;
-  font-size: 11px;
+  gap: 6px;
+  color: #0369a1;
+  font-size: 14px;
   font-weight: 700;
 }
 
-.connection-progress-track {
-  height: 8px;
-  border-radius: 999px;
-  overflow: hidden;
-  background: #e7eefb;
+.connection-privacy-head :deep(svg) {
+  width: 16px;
+  height: 16px;
+  color: #0ea5e9;
 }
 
-.connection-progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #3b82f6 0%, #1058ff 100%);
-  transition: width 0.25s ease;
+.connection-privacy-card p {
+  margin: 0;
+  color: #0c4a6e;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
-.connection-progress-meta {
+.connection-qr-block {
+  width: 100%;
+  border-radius: 24px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+  min-height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px;
+}
+
+.connection-qr-placeholder {
+  width: 240px;
+  height: 240px;
+  border-radius: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: #64748b;
-  font-size: 11px;
-  font-weight: 600;
+  background: #f8fafc;
+}
+
+.connection-qr-image {
+  width: 240px;
+  height: 240px;
+  object-fit: contain;
+  border-radius: 24px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
 }
 
 .connection-import-stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 10px;
-  border-radius: 10px;
+  gap: 8px 12px;
+  border-radius: 14px;
   border: 1px solid #dbe4f3;
   background: #f8fbff;
-  padding: 10px;
+  padding: 12px;
   color: #334155;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 
-.connection-link-btn {
-  height: 34px;
-  border-radius: 10px;
-  border: 1px solid #dbe4f3;
+.connection-action-option {
+  border-radius: 14px;
+  border: 2px solid #e2e8f0;
   background: #ffffff;
-  color: #334155;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 0 12px;
+  color: #0f172a;
+  text-align: left;
+  padding: 12px;
+  display: grid;
+  gap: 6px;
   cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    color 0.16s ease;
 }
 
-.connection-link-btn:hover:not(:disabled) {
-  border-color: #97b9ff;
+.connection-action-option strong {
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.2;
 }
 
-.connection-link-btn:disabled {
+.connection-action-option span {
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.35;
+}
+
+.connection-action-option:hover:not(:disabled) {
+  border-color: #1058ff;
+  background: #f8fbff;
+}
+
+.connection-action-option.overwrite:hover:not(:disabled) {
+  border-color: #f43f5e;
+  background: #fff1f2;
+}
+
+.connection-action-option.overwrite:hover:not(:disabled) strong {
+  color: #e11d48;
+}
+
+.connection-action-option:disabled {
   opacity: 0.65;
   cursor: not-allowed;
-}
-
-.connection-link-btn.danger {
-  border-color: #fecaca;
-  background: #fff1f2;
-  color: #b91c1c;
-}
-
-.connection-link-btn.danger:hover:not(:disabled) {
-  border-color: #fca5a5;
-}
-
-.connection-import-message {
-  margin: 0;
-  color: #0f766e;
-  font-size: 12px;
-  font-weight: 600;
 }
 
 .connection-import-error {
@@ -3545,13 +3520,6 @@ watch(entityInfoEntityId, (id) => {
   color: #b91c1c;
   font-size: 12px;
   font-weight: 600;
-}
-
-.connection-step-hint {
-  margin: 0;
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.4;
 }
 
 .entity-phone-meta {
