@@ -87,6 +87,52 @@ function mergeEntityPatch(base: Partial<Entity>, patch: Partial<Entity>): Partia
   return next;
 }
 
+function normalizeEntityId(value: unknown) {
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+
+  if (value && typeof value === 'object') {
+    const candidate = String(value).trim();
+    if (candidate && candidate !== '[object Object]') {
+      return candidate;
+    }
+  }
+
+  return '';
+}
+
+function normalizeEntityForStore(entity: Entity | null | undefined): Entity | null {
+  if (!entity || typeof entity !== 'object') {
+    return null;
+  }
+
+  const nextId = normalizeEntityId((entity as { _id?: unknown })._id);
+  if (!nextId) {
+    return null;
+  }
+
+  return {
+    ...entity,
+    _id: nextId,
+  };
+}
+
+function dedupeEntitiesById(items: Entity[]) {
+  const seen = new Set<string>();
+  const result: Entity[] = [];
+
+  for (const row of items) {
+    const normalized = normalizeEntityForStore(row);
+    if (!normalized) continue;
+    if (seen.has(normalized._id)) continue;
+    seen.add(normalized._id);
+    result.push(normalized);
+  }
+
+  return result;
+}
+
 function markRecentlyDeleted(ids: Iterable<string>, ttlMs = RECENT_DELETE_TTL_MS) {
   const expiresAt = Date.now() + ttlMs;
   for (const id of ids) {
@@ -373,17 +419,20 @@ export const useEntitiesStore = defineStore('entities', {
     },
 
     upsertEntityFromRealtime(entity: Entity, options?: { flash?: boolean }) {
-      if (!entity || typeof entity !== 'object' || !entity._id) return;
+      const normalizedEntity = normalizeEntityForStore(entity);
+      if (!normalizedEntity) return;
 
       cleanupExpiredRecentlyDeleted();
-      clearRecentlyDeleted([entity._id]);
+      clearRecentlyDeleted([normalizedEntity._id]);
 
       const nextItems = [...this.items];
-      const existingIndex = nextItems.findIndex((item) => item._id === entity._id);
+      const existingIndex = nextItems.findIndex(
+        (item) => normalizeEntityId(item._id) === normalizedEntity._id,
+      );
       let inserted = false;
       if (existingIndex >= 0) {
         const existing = nextItems[existingIndex]!;
-        const rel = compareEntityVersion(entity, existing);
+        const rel = compareEntityVersion(normalizedEntity, existing);
         if (rel === 'older') {
           // FIX A: Strictly older snapshot — skip to protect active quiz context.
           return;
@@ -391,21 +440,21 @@ export const useEntitiesStore = defineStore('entities', {
         if (rel === 'equal_or_unknown') {
           // FIX A: Equal/unknown version — shallow-merge to pick up new server
           // fields without overwriting anything already held locally.
-          nextItems[existingIndex] = { ...existing, ...entity };
+          nextItems[existingIndex] = { ...existing, ...normalizedEntity };
         } else {
           // 'newer' — straightforward replace.
-          nextItems[existingIndex] = entity;
+          nextItems[existingIndex] = normalizedEntity;
         }
       } else {
-        nextItems.unshift(entity);
-        this.lastCreatedIdByType[entity.type] = entity._id;
+        nextItems.unshift(normalizedEntity);
+        this.lastCreatedIdByType[normalizedEntity.type] = normalizedEntity._id;
         inserted = true;
       }
 
-      this.items = nextItems;
+      this.items = dedupeEntitiesById(nextItems);
 
       if (options?.flash && inserted) {
-        this.triggerFlash(entity.type);
+        this.triggerFlash(normalizedEntity.type);
       }
     },
 
@@ -546,7 +595,9 @@ export const useEntitiesStore = defineStore('entities', {
           });
 
           cleanupExpiredRecentlyDeleted();
-          const nextFetchedItems = data.filter((item) => !recentlyDeletedEntityIds.has(item._id));
+          const nextFetchedItems = dedupeEntitiesById(data).filter(
+            (item) => !recentlyDeletedEntityIds.has(item._id),
+          );
 
           if (merge) {
             const merged = new Map(this.items.map((item) => [item._id, item] as const));
