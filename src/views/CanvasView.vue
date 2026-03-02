@@ -189,6 +189,7 @@ interface EntityChatMessage {
 type MetadataFieldKey =
   | 'tags'
   | 'markers'
+  | 'phones'
   | 'skills'
   | 'importance'
   | 'links'
@@ -216,6 +217,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
   connection: [
     { key: 'tags', label: 'Теги' },
     { key: 'markers', label: 'Метки' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'roles', label: 'Роли' },
     { key: 'status', label: 'Статусы' },
     { key: 'links', label: 'Ссылки' },
@@ -226,6 +228,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'markers', label: 'Метки' },
     { key: 'skills', label: 'Навыки' },
     { key: 'importance', label: 'Значимость' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
     { key: 'roles', label: 'Роли' },
   ],
@@ -236,6 +239,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'departments', label: 'Отделы' },
     { key: 'stage', label: 'Стадии' },
     { key: 'risks', label: 'Риски' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   event: [
@@ -245,6 +249,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'location', label: 'Локации' },
     { key: 'participants', label: 'Участники' },
     { key: 'outcomes', label: 'Итоги' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   resource: [
@@ -254,6 +259,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'status', label: 'Статусы' },
     { key: 'importance', label: 'Значимость' },
     { key: 'owners', label: 'Владельцы' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   goal: [
@@ -263,6 +269,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'metrics', label: 'Метрики' },
     { key: 'owners', label: 'Ответственные' },
     { key: 'status', label: 'Статусы' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   result: [
@@ -272,6 +279,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'metrics', label: 'Метрики' },
     { key: 'importance', label: 'Значимость' },
     { key: 'owners', label: 'Ответственные' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   task: [
@@ -281,6 +289,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'status', label: 'Статусы' },
     { key: 'owners', label: 'Ответственные' },
     { key: 'date', label: 'Даты' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   project: [
@@ -290,6 +299,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'priority', label: 'Приоритеты' },
     { key: 'risks', label: 'Риски' },
     { key: 'owners', label: 'Ответственные' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   shape: [
@@ -297,12 +307,14 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'markers', label: 'Метки' },
     { key: 'importance', label: 'Значимость' },
     { key: 'status', label: 'Статусы' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
 };
 const PROFILE_METADATA_TARGETS: Record<MetadataFieldKey, number> = {
   tags: 4,
   markers: 3,
+  phones: 2,
   skills: 4,
   importance: 1,
   links: 2,
@@ -853,35 +865,21 @@ const entityInfoProfileProgress = computed(() => {
   if (!modal) return 0;
 
   const entity = entitiesStore.byId(modal.entityId);
-  const profile = toProfile(entity?.profile);
+  if (!entity) return 0;
 
-  const trimmedName = modal.name.trim();
-  const trimmedDescription = modal.description.trim();
-  const hasImage = typeof profile.image === 'string' && profile.image.trim().length > 0;
-  const hasEmoji = typeof profile.emoji === 'string' && profile.emoji.trim().length > 0;
-  const colorValue = typeof profile.color === 'string' ? profile.color.trim().toLowerCase() : '';
-  const hasCustomColor = Boolean(colorValue && colorValue !== '#1058ff');
+  const metadata = {
+    ...toProfile(entity.ai_metadata),
+    description: modal.description.trim(),
+  } as Record<string, unknown>;
+  for (const field of ENTITY_CONTEXT_FIELDS[modal.type] || []) {
+    metadata[field.key] = modal.metadataValues[field.key] || [];
+  }
 
-  const metadataCompletion = calculateMetadataCompletion(modal.type, modal.metadataValues);
-  const messageCount = modal.chatHistory.filter(
-    (message) => message.role === 'user' && (message.text.trim().length > 0 || message.attachments.length > 0),
-  ).length;
-
-  const nameScore = trimmedName ? Math.min(trimmedName.length / 20, 1) : 0;
-  const descriptionScore = trimmedDescription ? Math.min(trimmedDescription.length / 260, 1) : 0;
-  const mediaScore = hasImage ? 1 : hasEmoji ? 0.8 : hasCustomColor ? 0.45 : 0;
-  const docsScore = Math.min((modal.documents.length + modal.pendingUploads.length) / 3, 1);
-  const chatScore = Math.min(messageCount / 8, 1);
-
-  const weightedScore =
-    nameScore * 14 +
-    descriptionScore * 22 +
-    mediaScore * 16 +
-    metadataCompletion * 30 +
-    docsScore * 10 +
-    chatScore * 8;
-
-  return clampPercent(Math.round(weightedScore));
+  return calculateEntityProfileProgress({
+    ...entity,
+    name: modal.name.trim(),
+    ai_metadata: metadata,
+  });
 });
 
 const entityInfoProfileProgressDashoffset = computed(() => {
@@ -4405,6 +4403,9 @@ const _legacyEntityInfoBindings = [
   entityInfoModalIcon,
   entityInfoChatPlaceholder,
   entityInfoActiveFields,
+  clampPercent,
+  metadataFieldCompletion,
+  calculateMetadataCompletion,
   entityInfoProfileProgressDashoffset,
   entityInfoProfileProgressLevel,
   getModalFieldValues,

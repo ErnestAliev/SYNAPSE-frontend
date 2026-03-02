@@ -101,6 +101,7 @@ const ENTITY_FILTER_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'markers', label: 'Метки' },
     { key: 'skills', label: 'Навыки' },
     { key: 'importance', label: 'Значимость' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
     { key: 'roles', label: 'Роли' },
   ],
@@ -121,6 +122,7 @@ const ENTITY_FILTER_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'location', label: 'Локации' },
     { key: 'participants', label: 'Участники' },
     { key: 'outcomes', label: 'Итоги' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   resource: [
@@ -130,6 +132,7 @@ const ENTITY_FILTER_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'status', label: 'Статусы' },
     { key: 'importance', label: 'Значимость' },
     { key: 'owners', label: 'Владельцы' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   goal: [
@@ -139,6 +142,7 @@ const ENTITY_FILTER_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'metrics', label: 'Метрики' },
     { key: 'owners', label: 'Ответственные' },
     { key: 'status', label: 'Статусы' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   result: [
@@ -148,6 +152,7 @@ const ENTITY_FILTER_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'metrics', label: 'Метрики' },
     { key: 'importance', label: 'Значимость' },
     { key: 'owners', label: 'Ответственные' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   task: [
@@ -157,6 +162,7 @@ const ENTITY_FILTER_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'status', label: 'Статусы' },
     { key: 'owners', label: 'Ответственные' },
     { key: 'date', label: 'Даты' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   project: [
@@ -166,6 +172,7 @@ const ENTITY_FILTER_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'priority', label: 'Приоритеты' },
     { key: 'risks', label: 'Риски' },
     { key: 'owners', label: 'Ответственные' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   shape: [
@@ -173,6 +180,7 @@ const ENTITY_FILTER_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'markers', label: 'Метки' },
     { key: 'importance', label: 'Значимость' },
     { key: 'status', label: 'Статусы' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
 };
@@ -206,6 +214,7 @@ const projectDeleteTarget = ref<Entity | null>(null);
 const isProjectDeleteBusy = ref(false);
 const isCreateBusy = ref(false);
 const isConnectionImportModalOpen = ref(false);
+const connectionDialogMode = ref<'qr' | 'update' | 'monitor'>('qr');
 const isConnectionImportBusy = ref(false);
 const connectionImportMessage = ref('');
 const connectionImportError = ref('');
@@ -221,6 +230,8 @@ const connectionImportStats = ref<{
   newWithName: number;
   newWithoutName: number;
   importedWithImage: number;
+  updatedNames: number;
+  updatedImages: number;
 } | null>(null);
 const connectionMoveBusyById = ref<Record<string, boolean>>({});
 const connectionImportSessionId = ref('');
@@ -237,19 +248,19 @@ const connectionImportProgress = ref<{
   percent: number;
 } | null>(null);
 const connectionClientLogs = ref<Array<{ ts: string; step: string; data?: unknown }>>([]);
-const isConnectionCopyLogsBusy = ref(false);
-const connectionCopyLogsMessage = ref('');
 const isConnectionPhotosBusy = ref(false);
 const isDeleteWhatsappConfirmVisible = ref(false);
 const connectionBackgroundSyncActive = ref(false);
+const connectionBackgroundState = ref('');
+const connectionBackgroundLastCursor = ref(0);
+const connectionBackgroundLastState = ref('');
+const connectionAutoImportPending = ref(false);
+const connectionAwaitingBackgroundStart = ref(false);
 const connectionGlobalMessage = ref('');
 const connectionGlobalError = ref('');
 const connectionGlobalMessageTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const CONNECTION_IMPORT_REQUEST_TIMEOUT_MS = 180_000;
-const connectionSuccessAlert = ref<{
-  title: string;
-  message: string;
-} | null>(null);
+const WHATSAPP_BG_SESSION_STORAGE_KEY = 'synapse.whatsapp.background.session';
 
 interface WhatsappSessionStatus {
   sessionId: string;
@@ -263,39 +274,51 @@ interface WhatsappSessionStatus {
     processed?: number;
     percent?: number;
   };
-}
-
-interface WhatsappImportResult {
-  imported: number;
-  skipped: number;
-  total: number;
-  cursor?: number;
-  nextCursor?: number;
-  hasMore?: boolean;
-  batchSize?: number;
-  batchCount?: number;
-  matched?: number;
-  matchedByPhone?: number;
-  matchedByImportKey?: number;
-  matchedByJid?: number;
-  matchedByName?: number;
-  newAvailable?: number;
-  newWithName?: number;
-  newWithoutName?: number;
-  importedWithImage?: number;
-  entities?: Entity[];
-  session?: WhatsappSessionStatus;
-}
-
-interface WhatsappSessionLogsResponse {
-  sessionId: string;
-  status: string;
-  connector: string;
-  logs: Array<{ ts?: string; step?: string; data?: unknown }>;
+  backgroundImport?: {
+    state?: string;
+    includeImages?: boolean;
+    overwriteNames?: boolean;
+    cursor?: number;
+    total?: number;
+    imported?: number;
+    matched?: number;
+    newWithName?: number;
+    newWithoutName?: number;
+    importedWithImage?: number;
+    updatedNames?: number;
+    updatedImages?: number;
+    batchSize?: number;
+    startedAt?: string;
+    updatedAt?: string;
+    endedAt?: string;
+    error?: string;
+  };
 }
 
 interface WhatsappDeleteImportedResult {
   deleted: number;
+}
+
+function resetConnectionSessionStateToIdle() {
+  connectionImportSessionId.value = '';
+  connectionImportQrCode.value = '';
+  connectionImportSessionStatus.value = 'idle';
+  connectionBackgroundState.value = '';
+  connectionImportProgress.value = null;
+  connectionBackgroundSyncActive.value = false;
+  connectionAwaitingBackgroundStart.value = false;
+}
+
+function openDialogForCurrentConnectionSession() {
+  if (!connectionImportSessionId.value) return false;
+  connectionDialogMode.value = isConnectionImportActive.value
+    ? 'monitor'
+    : connectionImportSessionStatus.value === 'ready'
+      ? 'update'
+      : 'qr';
+  isConnectionImportModalOpen.value = true;
+  scheduleConnectionImportPoll(500);
+  return true;
 }
 
 interface ProjectPreviewPoint {
@@ -830,11 +853,72 @@ const filteredEntities = computed(() => {
 const filteredEntitiesCount = computed(() => filteredEntities.value.length);
 const totalEntitiesCount = computed(() => typedEntities.value.length);
 const filtersCounterLabel = computed(() => (activeType.value === 'connection' ? 'контактов' : 'элементов'));
+const isConnectionBackgroundRunning = computed(
+  () => connectionBackgroundState.value === 'running' || connectionBackgroundState.value === 'paused',
+);
+const isConnectionImportActive = computed(
+  () =>
+    connectionAwaitingBackgroundStart.value ||
+    isConnectionBackgroundRunning.value ||
+    connectionImportSessionStatus.value === 'importing',
+);
+const isConnectionCreateBlocked = computed(
+  () => activeType.value === 'connection' && (isConnectionImportActive.value || isConnectionImportBusy.value),
+);
 const showConnectionSyncBanner = computed(
   () =>
-    activeType.value === 'connection' &&
-    (connectionBackgroundSyncActive.value || Boolean(connectionGlobalMessage.value) || Boolean(connectionGlobalError.value)),
+    connectionBackgroundSyncActive.value || Boolean(connectionGlobalMessage.value) || Boolean(connectionGlobalError.value),
 );
+const connectionToolbarStatusLabel = computed(() => {
+  if (connectionAwaitingBackgroundStart.value || isConnectionBackgroundRunning.value || connectionImportSessionStatus.value === 'importing') {
+    const percent = Math.max(0, Math.min(100, Math.round(connectionImportProgress.value?.percent || 0)));
+    if (connectionBackgroundState.value === 'paused') {
+      return percent > 0 ? `Обновление на паузе ${percent}%` : 'Обновление на паузе';
+    }
+    return percent > 0 ? `Идет обновление ${percent}%` : 'Идет обновление';
+  }
+  if (connectionImportSessionStatus.value === 'ready') return 'Подключено';
+  if (['initializing', 'qr'].includes(connectionImportSessionStatus.value)) return 'Подключение...';
+  return 'Нет активных подключений';
+});
+
+function storeTrackedWhatsappBackgroundSession(sessionId: string) {
+  if (typeof window === 'undefined') return;
+  const normalized = typeof sessionId === 'string' ? sessionId.trim() : '';
+  if (!normalized) return;
+  try {
+    window.localStorage.setItem(
+      WHATSAPP_BG_SESSION_STORAGE_KEY,
+      JSON.stringify({
+        sessionId: normalized,
+        trackedAt: new Date().toISOString(),
+      }),
+    );
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function readTrackedWhatsappBackgroundSession() {
+  if (typeof window === 'undefined') return '';
+  try {
+    const raw = window.localStorage.getItem(WHATSAPP_BG_SESSION_STORAGE_KEY);
+    if (!raw) return '';
+    const parsed = JSON.parse(raw) as { sessionId?: unknown };
+    return typeof parsed?.sessionId === 'string' ? parsed.sessionId.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+function clearTrackedWhatsappBackgroundSession() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(WHATSAPP_BG_SESSION_STORAGE_KEY);
+  } catch {
+    // Ignore storage failures.
+  }
+}
 
 const firstEntity = computed<Entity | null>(() => {
   const entities = filteredEntities.value;
@@ -872,6 +956,13 @@ onMounted(async () => {
 
   applyStoredFiltersForType(activeType.value);
   void entitiesStore.fetchTypeIfNeeded(activeType.value);
+  const trackedSessionId = readTrackedWhatsappBackgroundSession();
+  if (trackedSessionId) {
+    connectionImportSessionId.value = trackedSessionId;
+    scheduleConnectionImportPoll(600);
+  } else if (activeType.value === 'connection') {
+    void fetchCurrentConnectionSession({ silent: true });
+  }
 });
 
 onBeforeUnmount(() => {
@@ -880,7 +971,6 @@ onBeforeUnmount(() => {
     clearTimeout(connectionGlobalMessageTimer.value);
     connectionGlobalMessageTimer.value = null;
   }
-  void stopConnectionSession({ silent: true });
 });
 
 watch(
@@ -910,22 +1000,20 @@ watch(activeType, () => {
   activeProjectRenameId.value = null;
   projectRenameDraft.value = '';
   projectDeleteTarget.value = null;
-  if (connectionImportPollTimer.value) {
+  if (connectionImportPollTimer.value && !isConnectionBackgroundRunning.value) {
     clearTimeout(connectionImportPollTimer.value);
     connectionImportPollTimer.value = null;
   }
   isConnectionImportModalOpen.value = false;
-  connectionImportSessionId.value = '';
-  connectionImportQrCode.value = '';
-  connectionImportSessionStatus.value = 'idle';
-  connectionImportMessage.value = '';
-  connectionImportError.value = '';
-  connectionImportStats.value = null;
-  connectionImportProgress.value = null;
-  connectionClientLogs.value = [];
-  connectionCopyLogsMessage.value = '';
-  isDeleteWhatsappConfirmVisible.value = false;
-  isConnectionPhotosBusy.value = false;
+  const trackedSessionId = readTrackedWhatsappBackgroundSession();
+  if (trackedSessionId && !connectionImportSessionId.value) {
+    connectionImportSessionId.value = trackedSessionId;
+  }
+  if (trackedSessionId) {
+    scheduleConnectionImportPoll(800);
+  } else if (activeType.value === 'connection') {
+    void fetchCurrentConnectionSession({ silent: true });
+  }
   applyStoredFiltersForType(activeType.value);
   void entitiesStore.fetchTypeIfNeeded(activeType.value);
 });
@@ -986,23 +1074,49 @@ function formatConnectionImportError(error: unknown) {
   return baseMessage;
 }
 
+async function fetchCurrentConnectionSession(options?: { silent?: boolean }) {
+  try {
+    const { data } = await apiClient.get<{ session?: WhatsappSessionStatus | null }>(
+      '/integrations/whatsapp/session/current',
+    );
+    if (data?.session) {
+      // Querying current session must not auto-trigger import.
+      connectionAutoImportPending.value = false;
+      applyConnectionSessionState(data.session);
+      const backgroundState =
+        typeof data.session?.backgroundImport?.state === 'string'
+          ? data.session.backgroundImport.state.trim().toLowerCase()
+          : '';
+      if (
+        ['initializing', 'qr', 'importing'].includes(data.session.status) ||
+        ['running', 'paused'].includes(backgroundState)
+      ) {
+        scheduleConnectionImportPoll(900);
+      }
+      return true;
+    }
+
+    resetConnectionSessionStateToIdle();
+    return false;
+  } catch (error) {
+    if (!options?.silent) {
+      connectionImportError.value = formatConnectionImportError(error);
+    }
+    return false;
+  }
+}
+
 async function createEntity() {
   if (activeType.value === 'connection') {
-    clearConnectionImportPoll();
-    connectionImportError.value = '';
-    connectionImportMessage.value = '';
-    connectionImportStats.value = null;
-    connectionImportProgress.value = null;
-    connectionClientLogs.value = [];
-    connectionCopyLogsMessage.value = '';
+    if (isConnectionImportActive.value || isConnectionBackgroundRunning.value) {
+      connectionDialogMode.value = 'monitor';
+      isConnectionImportModalOpen.value = true;
+      scheduleConnectionImportPoll(500);
+      return;
+    }
     isDeleteWhatsappConfirmVisible.value = false;
-    isConnectionPhotosBusy.value = false;
-    connectionImportSessionId.value = '';
-    connectionImportQrCode.value = '';
-    connectionImportSessionStatus.value = 'idle';
     appendConnectionClientLog('modal.open');
-    isConnectionImportModalOpen.value = true;
-    void startConnectionSession();
+    void openConnectionDialogFromButton();
     return;
   }
 
@@ -1063,7 +1177,7 @@ function applyConnectionSessionState(session: WhatsappSessionStatus | undefined)
       processed: Number(session.importProgress.processed) || 0,
       percent: Math.max(0, Math.min(100, Number(session.importProgress.percent) || 0)),
     };
-  } else if (session.status !== 'importing') {
+  } else if (session.status !== 'importing' && !connectionAwaitingBackgroundStart.value) {
     connectionImportProgress.value = null;
   }
 
@@ -1080,6 +1194,114 @@ function applyConnectionSessionState(session: WhatsappSessionStatus | undefined)
   } else if (connectionImportError.value && session.status !== 'error') {
     connectionImportError.value = '';
   }
+
+  const background = session.backgroundImport && typeof session.backgroundImport === 'object'
+    ? session.backgroundImport
+    : null;
+  const backgroundState =
+    typeof background?.state === 'string' ? background.state.trim().toLowerCase() : '';
+  connectionBackgroundState.value = backgroundState;
+  const backgroundCursor = Math.max(0, Number(background?.cursor) || 0);
+  const backgroundTotal = Math.max(0, Number(background?.total) || 0);
+  const backgroundRunning = backgroundState === 'running' || backgroundState === 'paused';
+  connectionBackgroundSyncActive.value = backgroundRunning;
+  if (backgroundRunning || ['completed', 'stopped', 'error'].includes(backgroundState)) {
+    connectionAwaitingBackgroundStart.value = false;
+  }
+
+  if (background) {
+    connectionImportStats.value = {
+      total: Math.max(0, Number(background.total) || 0),
+      imported: Math.max(0, Number(background.imported) || 0),
+      matched: Math.max(0, Number(background.matched) || 0),
+      matchedByPhone: 0,
+      matchedByImportKey: 0,
+      matchedByJid: 0,
+      matchedByName: 0,
+      newAvailable: Math.max(0, Number(background.imported) || 0),
+      newWithName: Math.max(0, Number(background.newWithName) || 0),
+      newWithoutName: Math.max(0, Number(background.newWithoutName) || 0),
+      importedWithImage: Math.max(0, Number(background.importedWithImage) || 0),
+      updatedNames: Math.max(0, Number(background.updatedNames) || 0),
+      updatedImages: Math.max(0, Number(background.updatedImages) || 0),
+    };
+
+    const total = backgroundTotal;
+    const processed = total > 0 ? Math.min(total, backgroundCursor) : backgroundCursor;
+    const percent = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : backgroundState === 'completed' ? 100 : 0;
+    if (backgroundRunning) {
+      connectionImportProgress.value = {
+        stage: backgroundState,
+        note: backgroundState === 'paused' ? 'Фоновый импорт на паузе' : 'Фоновый импорт контактов',
+        processed,
+        total,
+        percent,
+      };
+    }
+  }
+
+  const shouldAutoStartBackgroundImport =
+    connectionAutoImportPending.value &&
+    connectionImportSessionStatus.value === 'ready' &&
+    !backgroundRunning &&
+    !isConnectionImportBusy.value;
+  if (shouldAutoStartBackgroundImport) {
+    connectionAutoImportPending.value = false;
+    void importWhatsAppContacts({ auto: true });
+  }
+  if (['error', 'disconnected'].includes(connectionImportSessionStatus.value)) {
+    connectionAutoImportPending.value = false;
+    connectionAwaitingBackgroundStart.value = false;
+  }
+
+  if (backgroundRunning && backgroundCursor > 0 && backgroundCursor !== connectionBackgroundLastCursor.value) {
+    connectionBackgroundLastCursor.value = backgroundCursor;
+    void entitiesStore.fetchEntities({ silent: true });
+  }
+
+  if (backgroundState && backgroundState !== connectionBackgroundLastState.value) {
+    connectionBackgroundLastState.value = backgroundState;
+    if (backgroundState === 'completed') {
+      connectionAwaitingBackgroundStart.value = false;
+      connectionImportMessage.value = '';
+      clearTrackedWhatsappBackgroundSession();
+      const imported = Math.max(0, Number(background?.imported) || 0);
+      const updatedNames = Math.max(0, Number(background?.updatedNames) || 0);
+      const updatedImages = Math.max(0, Number(background?.updatedImages) || 0);
+      const completionMessage = `Загрузка WhatsApp завершена: новых ${imported}, обновлено имен ${updatedNames}, фото ${updatedImages}.`;
+      setConnectionGlobalMessage(
+        completionMessage,
+        5000,
+      );
+      connectionBackgroundSyncActive.value = false;
+      void entitiesStore.fetchEntities({ silent: true });
+    } else if (backgroundState === 'error') {
+      connectionAwaitingBackgroundStart.value = false;
+      connectionImportMessage.value = '';
+      clearTrackedWhatsappBackgroundSession();
+      connectionGlobalError.value = typeof background?.error === 'string' ? background.error : 'Ошибка фонового импорта.';
+      connectionBackgroundSyncActive.value = false;
+    } else if (backgroundState === 'stopped') {
+      connectionAwaitingBackgroundStart.value = false;
+      connectionImportMessage.value = '';
+      clearTrackedWhatsappBackgroundSession();
+      setConnectionGlobalMessage('Фоновый импорт остановлен.', 2800);
+      connectionBackgroundSyncActive.value = false;
+    } else if (backgroundState === 'paused') {
+      connectionAwaitingBackgroundStart.value = false;
+      if (connectionImportSessionId.value) {
+        storeTrackedWhatsappBackgroundSession(connectionImportSessionId.value);
+      }
+      setConnectionGlobalMessage('Фоновый импорт на паузе.');
+    } else if (backgroundState === 'running') {
+      connectionAwaitingBackgroundStart.value = false;
+      if (connectionImportSessionId.value) {
+        storeTrackedWhatsappBackgroundSession(connectionImportSessionId.value);
+      }
+      connectionGlobalError.value = '';
+      setConnectionGlobalMessage('Идет фоновая синхронизация WhatsApp-контактов.');
+    }
+  }
 }
 
 function scheduleConnectionImportPoll(delay = 1800) {
@@ -1090,7 +1312,6 @@ function scheduleConnectionImportPoll(delay = 1800) {
 }
 
 async function fetchConnectionSessionStatus() {
-  if (!isConnectionImportModalOpen.value) return;
   if (!connectionImportSessionId.value) return;
 
   try {
@@ -1099,30 +1320,44 @@ async function fetchConnectionSessionStatus() {
     );
     applyConnectionSessionState(data.session);
 
+    const backgroundState =
+      typeof data.session?.backgroundImport?.state === 'string'
+        ? data.session.backgroundImport.state.trim().toLowerCase()
+        : '';
     if (
       data.session &&
-      ['initializing', 'qr', 'importing'].includes(data.session.status)
+      (
+        isConnectionImportModalOpen.value ||
+        ['initializing', 'qr', 'importing'].includes(data.session.status) ||
+        ['running', 'paused'].includes(backgroundState)
+      )
     ) {
       scheduleConnectionImportPoll(1800);
     }
   } catch (error) {
     connectionImportError.value = formatConnectionImportError(error);
-    connectionImportSessionStatus.value = 'error';
     appendConnectionClientLog('session.poll.error', { message: connectionImportError.value });
-    clearConnectionImportPoll();
+    if (isConnectionBackgroundRunning.value) {
+      scheduleConnectionImportPoll(3000);
+    } else {
+      connectionImportSessionStatus.value = 'error';
+      clearConnectionImportPoll();
+    }
   }
 }
 
-async function startConnectionSession() {
+async function startConnectionSession(options?: { autoStartOnReady?: boolean; preserveMessages?: boolean }) {
   if (isConnectionImportBusy.value) return;
   isConnectionImportBusy.value = true;
-  connectionImportError.value = '';
-  connectionImportMessage.value = '';
-  connectionGlobalError.value = '';
-  connectionGlobalMessage.value = '';
-  connectionImportStats.value = null;
-  connectionImportProgress.value = null;
-  connectionCopyLogsMessage.value = '';
+  connectionAutoImportPending.value = options?.autoStartOnReady === true;
+  if (!options?.preserveMessages) {
+    connectionImportError.value = '';
+    connectionImportMessage.value = '';
+    connectionGlobalError.value = '';
+    connectionGlobalMessage.value = '';
+    connectionImportStats.value = null;
+    connectionImportProgress.value = null;
+  }
   appendConnectionClientLog('session.start.request');
   clearConnectionImportPoll();
 
@@ -1137,17 +1372,88 @@ async function startConnectionSession() {
       sessionId: data.session?.sessionId,
     });
 
-    if (data.session && ['initializing', 'qr', 'importing'].includes(data.session.status)) {
+    const backgroundState =
+      typeof data.session?.backgroundImport?.state === 'string'
+        ? data.session.backgroundImport.state.trim().toLowerCase()
+        : '';
+    if (
+      data.session &&
+      (
+        ['initializing', 'qr', 'importing'].includes(data.session.status) ||
+        ['running', 'paused'].includes(backgroundState)
+      )
+    ) {
       scheduleConnectionImportPoll(1200);
     }
+    return data.session;
   } catch (error) {
     connectionImportError.value = formatConnectionImportError(error);
     connectionImportSessionStatus.value = 'error';
     appendConnectionClientLog('session.start.error', { message: connectionImportError.value });
     clearConnectionImportPoll();
+    return null;
   } finally {
     isConnectionImportBusy.value = false;
   }
+}
+
+async function openConnectionDialogFromButton() {
+  if (isConnectionImportBusy.value || isConnectionPhotosBusy.value) return;
+
+  if (!connectionImportSessionId.value) {
+    const hasCurrentSession = await fetchCurrentConnectionSession({ silent: true });
+    if (hasCurrentSession) {
+      openDialogForCurrentConnectionSession();
+      return;
+    }
+  }
+
+  if (connectionImportSessionId.value && isConnectionImportActive.value) {
+    connectionDialogMode.value = 'monitor';
+    isConnectionImportModalOpen.value = true;
+    scheduleConnectionImportPoll(500);
+    return;
+  }
+
+  if (connectionImportSessionId.value && connectionImportSessionStatus.value === 'ready') {
+    connectionDialogMode.value = 'update';
+    if (!isConnectionImportActive.value) {
+      connectionImportMessage.value = '';
+    }
+    isConnectionImportModalOpen.value = true;
+    scheduleConnectionImportPoll(800);
+    return;
+  }
+
+  const session = await startConnectionSession({ autoStartOnReady: false });
+  if (!session) return;
+
+  const status = typeof session.status === 'string' ? session.status.trim().toLowerCase() : 'idle';
+  const backgroundState =
+    typeof session.backgroundImport?.state === 'string' ? session.backgroundImport.state.trim().toLowerCase() : '';
+  const backgroundRunning = backgroundState === 'running' || backgroundState === 'paused';
+
+  if (backgroundRunning || status === 'importing') {
+    connectionDialogMode.value = 'monitor';
+    isConnectionImportModalOpen.value = true;
+    scheduleConnectionImportPoll(500);
+    return;
+  }
+
+  if (status === 'ready') {
+    connectionDialogMode.value = 'update';
+    if (!isConnectionImportActive.value) {
+      connectionImportMessage.value = '';
+    }
+    isConnectionImportModalOpen.value = true;
+    connectionAutoImportPending.value = false;
+    return;
+  }
+
+  connectionDialogMode.value = 'qr';
+  isConnectionImportModalOpen.value = true;
+  connectionAutoImportPending.value = true;
+  scheduleConnectionImportPoll(500);
 }
 
 async function stopConnectionSession(options?: { silent?: boolean }) {
@@ -1162,10 +1468,17 @@ async function stopConnectionSession(options?: { silent?: boolean }) {
       connectionImportError.value = formatConnectionImportError(error);
     }
   } finally {
+    clearTrackedWhatsappBackgroundSession();
     connectionImportSessionId.value = '';
     connectionImportQrCode.value = '';
     connectionImportSessionStatus.value = 'idle';
     connectionImportProgress.value = null;
+    connectionBackgroundState.value = '';
+    connectionBackgroundLastState.value = '';
+    connectionBackgroundLastCursor.value = 0;
+    connectionAwaitingBackgroundStart.value = false;
+    connectionAutoImportPending.value = false;
+    connectionDialogMode.value = 'qr';
     isDeleteWhatsappConfirmVisible.value = false;
   }
 }
@@ -1173,13 +1486,53 @@ async function stopConnectionSession(options?: { silent?: boolean }) {
 async function closeConnectionImportModal() {
   if (isConnectionImportBusy.value || isConnectionPhotosBusy.value) return;
   appendConnectionClientLog('modal.close');
-  clearConnectionImportPoll();
-  await stopConnectionSession({ silent: true });
+  if (isConnectionBackgroundRunning.value) {
+    setConnectionGlobalMessage('Импорт продолжается в фоне. Сообщим, когда загрузка завершится.');
+    scheduleConnectionImportPoll(1400);
+  } else if (!connectionBackgroundSyncActive.value) {
+    clearConnectionImportPoll();
+  }
   isConnectionImportModalOpen.value = false;
 }
 
-function closeConnectionSuccessAlert() {
-  connectionSuccessAlert.value = null;
+async function disconnectWhatsappSession() {
+  if (isConnectionImportBusy.value || isConnectionPhotosBusy.value) return;
+  isConnectionImportBusy.value = true;
+  connectionImportError.value = '';
+  try {
+    await stopConnectionSession();
+    connectionBackgroundSyncActive.value = false;
+    clearConnectionImportPoll();
+    setConnectionGlobalMessage('WhatsApp-сессия отключена.', 2600);
+    isConnectionImportModalOpen.value = false;
+  } finally {
+    isConnectionImportBusy.value = false;
+  }
+}
+
+async function openConnectionControlPanel() {
+  if (connectionImportSessionId.value) {
+    try {
+      const { data } = await apiClient.get<{ session: WhatsappSessionStatus }>(
+        `/integrations/whatsapp/session/${connectionImportSessionId.value}`,
+      );
+      applyConnectionSessionState(data.session);
+    } catch {
+      resetConnectionSessionStateToIdle();
+    }
+  }
+
+  if (!connectionImportSessionId.value) {
+    const hasCurrentSession = await fetchCurrentConnectionSession({ silent: true });
+    if (hasCurrentSession) {
+      openDialogForCurrentConnectionSession();
+      return;
+    }
+    void openConnectionDialogFromButton();
+    return;
+  }
+
+  openDialogForCurrentConnectionSession();
 }
 
 function setConnectionGlobalMessage(message: string, autoClearMs = 0) {
@@ -1207,36 +1560,9 @@ function setConnectionGlobalMessage(message: string, autoClearMs = 0) {
   }, autoClearMs);
 }
 
-function waitFor(ms: number) {
-  return new Promise<void>((resolve) => {
-    window.setTimeout(() => resolve(), ms);
-  });
-}
-
-async function ensureConnectionSessionForBackgroundSync() {
-  try {
-    const { data } = await apiClient.post<{ session: WhatsappSessionStatus }>(
-      '/integrations/whatsapp/session/start',
-      {},
-    );
-    if (data.session) {
-      applyConnectionSessionState(data.session);
-      appendConnectionClientLog('background.session.ensure', {
-        status: data.session.status,
-        sessionId: data.session.sessionId,
-      });
-    }
-    return data.session;
-  } catch (error) {
-    appendConnectionClientLog('background.session.ensure.error', {
-      message: formatConnectionImportError(error),
-    });
-    return null;
-  }
-}
-
-async function importWhatsAppContacts() {
+async function importWhatsAppContacts(options?: { auto?: boolean; closeModalOnStart?: boolean; overwriteNames?: boolean }) {
   if (isConnectionImportBusy.value) return;
+  if (isConnectionBackgroundRunning.value) return;
   if (!connectionImportSessionId.value) {
     connectionImportError.value = 'Сначала запустите подключение WhatsApp.';
     return;
@@ -1247,214 +1573,163 @@ async function importWhatsAppContacts() {
   }
 
   isConnectionImportBusy.value = true;
-  connectionImportError.value = '';
-  connectionImportMessage.value = '';
-  connectionImportStats.value = null;
-  connectionImportSessionStatus.value = 'importing';
+  connectionAwaitingBackgroundStart.value = true;
+  if (!options?.auto) {
+    connectionImportError.value = '';
+    connectionImportMessage.value = '';
+  }
   connectionImportProgress.value = {
     stage: 'prepare',
-    note: 'Подготовка импорта с фото',
+    note: 'Запуск фонового импорта',
     processed: 0,
     total: 0,
     percent: 5,
   };
-  appendConnectionClientLog('import.request', { sessionId: connectionImportSessionId.value });
+  appendConnectionClientLog('import.background.start.request', { sessionId: connectionImportSessionId.value });
+  clearConnectionImportPoll();
 
   try {
-    const batchSize = 80;
-    let cursor = 0;
-    let total = 0;
-    let hasMore = true;
-    let batchNumber = 0;
-
-    let importedTotal = 0;
-    let matchedTotal = 0;
-    let matchedByPhoneTotal = 0;
-    let matchedByImportKeyTotal = 0;
-    let matchedByJidTotal = 0;
-    let matchedByNameTotal = 0;
-    let newAvailableTotal = 0;
-    let newWithNameTotal = 0;
-    let newWithoutNameTotal = 0;
-    let importedWithImageTotal = 0;
-
-    while (hasMore) {
-      batchNumber += 1;
-      let data: WhatsappImportResult | null = null;
-      let attempt = 0;
-
-      while (!data && attempt < 3) {
-        attempt += 1;
-        try {
-          const response = await apiClient.post<WhatsappImportResult>('/integrations/whatsapp/import', {
-            sessionId: connectionImportSessionId.value,
-            includeImages: true,
-            cursor,
-            batchSize,
-          }, {
-            timeout: CONNECTION_IMPORT_REQUEST_TIMEOUT_MS,
-          });
-          data = response.data;
-        } catch (error) {
-          const status = axios.isAxiosError(error) ? Number(error.response?.status) || 0 : 0;
-          const canRetry = status === 404 || status === 409 || status === 429 || status >= 500 || status === 0;
-          if (!canRetry || attempt >= 3) {
-            throw error;
-          }
-          appendConnectionClientLog('import.batch.retry', {
-            batchNumber,
-            attempt,
-            status,
-            message: formatConnectionImportError(error),
-          });
-          const session = await ensureConnectionSessionForBackgroundSync();
-          if (!session || session.status !== 'ready') {
-            throw error;
-          }
-          connectionImportSessionId.value = session.sessionId || connectionImportSessionId.value;
-          await waitFor(700 * attempt);
-        }
-      }
-
-      if (!data) {
-        break;
-      }
-
-      applyConnectionSessionState(data.session);
-
-      const batchImported = Number(data.imported) || 0;
-      const batchMatched = Number(data.matched ?? data.skipped) || 0;
-      const batchMatchedByPhone = Number(data.matchedByPhone) || 0;
-      const batchMatchedByImportKey = Number(data.matchedByImportKey) || 0;
-      const batchMatchedByJid = Number(data.matchedByJid) || 0;
-      const batchMatchedByName = Number(data.matchedByName) || 0;
-      const batchNewAvailable = Number(data.newAvailable ?? batchImported) || 0;
-      const batchNewWithName = Number(data.newWithName) || 0;
-      const batchNewWithoutName = Number(data.newWithoutName) || 0;
-      const batchImportedWithImage = Number(data.importedWithImage) || 0;
-      const nextCursor = Math.max(0, Number(data.nextCursor ?? cursor + (Number(data.batchCount) || 0)));
-
-      total = Math.max(total, Number(data.total) || 0);
-      importedTotal += batchImported;
-      matchedTotal += batchMatched;
-      matchedByPhoneTotal += batchMatchedByPhone;
-      matchedByImportKeyTotal += batchMatchedByImportKey;
-      matchedByJidTotal += batchMatchedByJid;
-      matchedByNameTotal += batchMatchedByName;
-      newAvailableTotal += batchNewAvailable;
-      newWithNameTotal += batchNewWithName;
-      newWithoutNameTotal += batchNewWithoutName;
-      importedWithImageTotal += batchImportedWithImage;
-
-      connectionImportStats.value = {
-        total,
-        imported: importedTotal,
-        matched: matchedTotal,
-        matchedByPhone: matchedByPhoneTotal,
-        matchedByImportKey: matchedByImportKeyTotal,
-        matchedByJid: matchedByJidTotal,
-        matchedByName: matchedByNameTotal,
-        newAvailable: newAvailableTotal,
-        newWithName: newWithNameTotal,
-        newWithoutName: newWithoutNameTotal,
-        importedWithImage: importedWithImageTotal,
-      };
-
-      const importedEntities = Array.isArray(data.entities) ? data.entities : [];
-      if (importedEntities.length) {
-        const existingIds = new Set(entitiesStore.items.map((item) => item._id));
-        const newItems = importedEntities.filter((item) => item && !existingIds.has(item._id));
-        if (newItems.length) {
-          entitiesStore.items = [...newItems, ...entitiesStore.items];
-        }
-      }
-
-      if (batchImported > 0) {
-        entitiesStore.triggerFlash('connection');
-      }
-
-      const processed = total > 0 ? Math.min(total, nextCursor) : nextCursor;
-      const percent = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 100;
-      connectionImportProgress.value = {
-        stage: 'import',
-        note: `Импорт контактов с фото (пакет ${batchNumber})`,
-        processed,
-        total,
-        percent,
-      };
-      connectionImportMessage.value = `Пакет ${batchNumber}: +${batchImported} новых, ${batchMatched} совпадений.`;
-
-      appendConnectionClientLog('import.batch.response', {
-        batchNumber,
-        cursor,
-        nextCursor,
-        total,
-        imported: batchImported,
-        matched: batchMatched,
-        importedWithImage: batchImportedWithImage,
-      });
-
-      cursor = nextCursor;
-      hasMore = Boolean(data.hasMore) && nextCursor > 0 && (total === 0 || nextCursor < total);
-      if (total > 0 && nextCursor >= total) {
-        hasMore = false;
-      }
+    const { data } = await apiClient.post<{ started: boolean; session: WhatsappSessionStatus }>(
+      '/integrations/whatsapp/import/background/start',
+      {
+        sessionId: connectionImportSessionId.value,
+        includeImages: true,
+        overwriteNames: options?.overwriteNames === true,
+        cursor: 0,
+        batchSize: 80,
+      },
+      {
+        timeout: CONNECTION_IMPORT_REQUEST_TIMEOUT_MS,
+      },
+    );
+    applyConnectionSessionState(data.session);
+    if (!['running', 'paused'].includes(connectionBackgroundState.value)) {
+      connectionAwaitingBackgroundStart.value = true;
     }
-
-    // FIX B: Modal is open — quiz may be active. Defer the full refresh
-    // until the modal closes (see watch on entityInfoEntityId below).
-    if (entityInfoEntityId.value) {
-      pendingEntitiesRefetch.value = true;
-    } else {
-      await entitiesStore.fetchEntities({ silent: true });
+    connectionBackgroundSyncActive.value = true;
+    if (data.session?.sessionId) {
+      storeTrackedWhatsappBackgroundSession(data.session.sessionId);
     }
-
-    const successMessage =
-      importedTotal > 0
-        ? `Новых: ${importedTotal} (с фото: ${importedWithImageTotal}, с именем: ${newWithNameTotal}, без имени: ${newWithoutNameTotal}). Совпадений: ${matchedTotal}.`
-        : matchedTotal > 0
-          ? `Новых контактов нет. Совпадений: ${matchedTotal}.`
-          : 'Контакты не найдены для импорта.';
-
-    connectionImportMessage.value = successMessage;
-    appendConnectionClientLog('import.response', {
-      total,
-      imported: importedTotal,
-      matched: matchedTotal,
-      matchedByPhone: matchedByPhoneTotal,
-      matchedByImportKey: matchedByImportKeyTotal,
-      matchedByJid: matchedByJidTotal,
-      matchedByName: matchedByNameTotal,
-      newAvailable: newAvailableTotal,
-      newWithName: newWithNameTotal,
-      newWithoutName: newWithoutNameTotal,
-      importedWithImage: importedWithImageTotal,
+    connectionImportMessage.value =
+      options?.overwriteNames === true
+        ? 'Перезапись контактов запущена: синхронизация идет в фоне, можно продолжать работу.'
+        : 'Импорт запущен: синхронизация идет в фоне, можно продолжать работу.';
+    appendConnectionClientLog('import.background.start.response', {
+      sessionId: data.session?.sessionId,
+      state: data.session?.backgroundImport?.state,
     });
-
-    connectionImportProgress.value = {
-      stage: 'done',
-      note: 'Импорт завершен',
-      processed: total,
-      total,
-      percent: 100,
-    };
-
-    connectionSuccessAlert.value = {
-      title: 'Импорт завершен',
-      message: successMessage,
-    };
-
-    isConnectionImportModalOpen.value = false;
-    clearConnectionImportPoll();
-    await stopConnectionSession({ silent: true });
-
-    await nextTick();
-    collectionViewRef.value?.scrollTo({ top: 0, behavior: 'auto' });
+    scheduleConnectionImportPoll(1200);
+    setConnectionGlobalMessage('Идет фоновая синхронизация контактов WhatsApp.');
+    connectionAutoImportPending.value = false;
+    connectionDialogMode.value = 'monitor';
+    if (options?.auto || options?.closeModalOnStart) {
+      isConnectionImportModalOpen.value = false;
+      if (options?.auto) {
+        setConnectionGlobalMessage('QR подтвержден. Импорт запущен в фоне, сообщим о завершении.');
+      } else {
+        setConnectionGlobalMessage(
+          options?.overwriteNames === true
+            ? 'Перезапись контактов запущена в фоне.'
+            : 'Обновление контактов запущено в фоне.',
+        );
+      }
+    } else {
+      isConnectionImportModalOpen.value = true;
+    }
   } catch (error) {
+    connectionAwaitingBackgroundStart.value = false;
+    connectionBackgroundSyncActive.value = false;
+    connectionBackgroundState.value = '';
+    if (connectionImportSessionId.value) {
+      connectionImportSessionStatus.value = 'ready';
+    }
     connectionImportError.value = formatConnectionImportError(error);
-    appendConnectionClientLog('import.error', { message: connectionImportError.value });
+    if (options?.closeModalOnStart) {
+      connectionGlobalError.value = connectionImportError.value;
+    }
+    appendConnectionClientLog('import.background.start.error', { message: connectionImportError.value });
   } finally {
     isConnectionImportBusy.value = false;
+  }
+}
+
+async function triggerContactsUpdateFromConnected() {
+  if (isConnectionImportBusy.value || isConnectionPhotosBusy.value) return;
+  isConnectionImportModalOpen.value = false;
+  await importWhatsAppContacts({ closeModalOnStart: true });
+}
+
+async function triggerContactsOverwriteFromConnected() {
+  if (isConnectionImportBusy.value || isConnectionPhotosBusy.value) return;
+  isConnectionImportModalOpen.value = false;
+  await importWhatsAppContacts({ closeModalOnStart: true, overwriteNames: true });
+}
+
+async function pauseBackgroundImport() {
+  if (!connectionImportSessionId.value || isConnectionImportBusy.value) return;
+  isConnectionImportBusy.value = true;
+  connectionAwaitingBackgroundStart.value = false;
+  connectionBackgroundState.value = 'paused';
+  connectionImportError.value = '';
+  try {
+    const { data } = await apiClient.post<{ paused: boolean; session: WhatsappSessionStatus }>(
+      '/integrations/whatsapp/import/background/pause',
+      { sessionId: connectionImportSessionId.value },
+    );
+    applyConnectionSessionState(data.session);
+    connectionImportMessage.value = 'Фоновый импорт поставлен на паузу.';
+    scheduleConnectionImportPoll(1200);
+  } catch (error) {
+    connectionImportError.value = formatConnectionImportError(error);
+  } finally {
+    isConnectionImportBusy.value = false;
+  }
+}
+
+async function resumeBackgroundImport() {
+  if (!connectionImportSessionId.value || isConnectionImportBusy.value) return;
+  isConnectionImportBusy.value = true;
+  connectionAwaitingBackgroundStart.value = false;
+  connectionBackgroundState.value = 'running';
+  connectionImportError.value = '';
+  try {
+    const { data } = await apiClient.post<{ resumed: boolean; session: WhatsappSessionStatus }>(
+      '/integrations/whatsapp/import/background/resume',
+      { sessionId: connectionImportSessionId.value },
+    );
+    applyConnectionSessionState(data.session);
+    connectionImportMessage.value = 'Фоновый импорт продолжен.';
+    scheduleConnectionImportPoll(1200);
+  } catch (error) {
+    connectionImportError.value = formatConnectionImportError(error);
+  } finally {
+    isConnectionImportBusy.value = false;
+  }
+}
+
+async function stopBackgroundImportAndClose() {
+  if (!connectionImportSessionId.value || isConnectionImportBusy.value) {
+    isConnectionImportModalOpen.value = false;
+    return;
+  }
+  isConnectionImportBusy.value = true;
+  connectionAwaitingBackgroundStart.value = false;
+  connectionImportError.value = '';
+  try {
+    const { data } = await apiClient.post<{ stopped: boolean; session: WhatsappSessionStatus }>(
+      '/integrations/whatsapp/import/background/stop',
+      { sessionId: connectionImportSessionId.value },
+    );
+    applyConnectionSessionState(data.session);
+    connectionImportMessage.value = 'Фоновый импорт остановлен.';
+    connectionBackgroundSyncActive.value = false;
+    clearTrackedWhatsappBackgroundSession();
+    clearConnectionImportPoll();
+  } catch (error) {
+    connectionImportError.value = formatConnectionImportError(error);
+  } finally {
+    isConnectionImportBusy.value = false;
+    isConnectionImportModalOpen.value = false;
   }
 }
 
@@ -1497,6 +1772,8 @@ async function confirmDeleteImportedWhatsApp() {
 }
 
 function connectionSessionStatusLabel() {
+  if (connectionBackgroundState.value === 'running') return 'Фоновая синхронизация';
+  if (connectionBackgroundState.value === 'paused') return 'Синхронизация на паузе';
   const status = connectionImportSessionStatus.value;
   if (status === 'ready') return 'Подключено';
   if (status === 'qr') return 'Ожидает сканирования QR';
@@ -1509,56 +1786,12 @@ function connectionSessionStatusLabel() {
 
 function connectionSessionActionLabel() {
   const status = connectionImportSessionStatus.value;
-  if (status === 'ready') return 'Обновить QR';
+  if (status === 'ready') return 'Обновить';
   if (status === 'qr') return 'Обновить QR';
   if (status === 'initializing') return 'Генерация...';
-  return 'Повторить';
-}
-
-async function copyConnectionLogs() {
-  if (isConnectionCopyLogsBusy.value) return;
-  isConnectionCopyLogsBusy.value = true;
-  connectionCopyLogsMessage.value = '';
-
-  try {
-    let serverLogs: unknown[] = [];
-    if (connectionImportSessionId.value) {
-      try {
-        const { data } = await apiClient.get<WhatsappSessionLogsResponse>(
-          `/integrations/whatsapp/session/${connectionImportSessionId.value}/logs`,
-        );
-        serverLogs = Array.isArray(data.logs) ? data.logs : [];
-      } catch (error) {
-        appendConnectionClientLog('logs.fetch.error', {
-          message: entitiesStore.formatApiError(error),
-        });
-      }
-    }
-
-    const payload = {
-      exportedAt: new Date().toISOString(),
-      sessionId: connectionImportSessionId.value,
-      status: connectionImportSessionStatus.value,
-      progress: connectionImportProgress.value,
-      stats: connectionImportStats.value,
-      message: connectionImportMessage.value,
-      error: connectionImportError.value,
-      clientLogs: connectionClientLogs.value,
-      serverLogs,
-    };
-    const text = JSON.stringify(payload, null, 2);
-    await navigator.clipboard.writeText(text);
-    connectionCopyLogsMessage.value = 'Логи скопированы.';
-    appendConnectionClientLog('logs.copy.success', {
-      clientLogs: connectionClientLogs.value.length,
-      serverLogs: Array.isArray(serverLogs) ? serverLogs.length : 0,
-    });
-  } catch {
-    connectionCopyLogsMessage.value = 'Не удалось скопировать логи.';
-    appendConnectionClientLog('logs.copy.error');
-  } finally {
-    isConnectionCopyLogsBusy.value = false;
-  }
+  if (status === 'idle') return 'Получить QR';
+  if (status === 'error' || status === 'disconnected') return 'Повторить';
+  return 'Обновить';
 }
 
 function connectionPhone(entity: Entity) {
@@ -1595,6 +1828,24 @@ function companyPhone(entity: Entity) {
   return connectionPhone(entity);
 }
 
+function collectEntityPhones(entity: Entity) {
+  const profile = toProfile(entity);
+  const metadata = toMetadata(entity);
+  const rawValues = [
+    typeof profile.phone === 'string' ? profile.phone : '',
+    ...toStringArray(profile.phones),
+    ...toStringArray(metadata.phones),
+  ];
+
+  const unique: string[] = [];
+  for (const value of rawValues) {
+    const trimmed = value.trim();
+    if (!trimmed || unique.includes(trimmed)) continue;
+    unique.push(trimmed);
+  }
+  return unique;
+}
+
 function setConnectionMoveBusy(entityId: string, busy: boolean) {
   connectionMoveBusyById.value = {
     ...connectionMoveBusyById.value,
@@ -1614,15 +1865,25 @@ async function moveConnectionTo(entity: Entity, targetType: 'person' | 'company'
 
   try {
     const currentProfile = toProfile(entity);
+    const currentMetadata = toMetadata(entity);
+    const phones = collectEntityPhones(entity);
+    const primaryPhone = phones[0] || '';
     const nextProfile = {
       ...currentProfile,
+      phone: primaryPhone,
+      phones,
       // После переноса из "Подключение" в категорию сущность должна считаться категоризированной.
       categoryLocked: true,
+    };
+    const nextMetadata = {
+      ...currentMetadata,
+      phones,
     };
 
     await entitiesStore.updateEntity(entity._id, {
       type: targetType,
       profile: nextProfile,
+      ai_metadata: nextMetadata,
       canvas_data: undefined,
     });
     entitiesStore.triggerFlash(targetType);
@@ -1841,6 +2102,15 @@ watch(entityInfoEntityId, (id) => {
         </div>
         <div v-if="activeType === 'connection'" class="connection-toolbar-actions">
           <button
+            type="button"
+            class="connection-toolbar-btn status"
+            :class="{ active: connectionImportSessionStatus === 'ready' || isConnectionImportActive }"
+            :disabled="isConnectionImportBusy"
+            @click="openConnectionControlPanel"
+          >
+            {{ connectionToolbarStatusLabel }}
+          </button>
+          <button
             v-if="!isDeleteWhatsappConfirmVisible"
             type="button"
             class="connection-toolbar-btn danger"
@@ -1875,14 +2145,13 @@ watch(entityInfoEntityId, (id) => {
       <span class="connection-sync-text">
         {{ connectionGlobalError || connectionGlobalMessage }}
       </span>
-      <span v-if="connectionBackgroundSyncActive" class="connection-sync-badge">Фоновая загрузка</span>
     </div>
 
     <section ref="collectionViewRef" class="collection-view">
       <div v-if="entitiesStore.loading" class="state">Загрузка...</div>
       <div v-else-if="entitiesStore.error" class="state state-error">{{ entitiesStore.error }}</div>
       <div v-else class="grid-layout">
-        <button class="create-card" :disabled="isCreateBusy" @click="createEntity">
+        <button class="create-card" :disabled="isCreateBusy || isConnectionCreateBlocked" @click="createEntity">
           <AppIcon name="plus" />
           <span class="create-card-label">{{ createButtonLabel }}</span>
         </button>
@@ -2264,56 +2533,147 @@ watch(entityInfoEntityId, (id) => {
       @pointerdown.self="closeConnectionImportModal"
     >
       <div class="connection-import-card" @pointerdown.stop>
-        <h3 class="connection-import-title">Подключение WhatsApp</h3>
-        <p class="connection-import-text">
-          Сканируйте QR-код и импортируйте контакты один раз. Мы не получаем постоянный доступ к вашей адресной книге.
+        <h3 class="connection-import-title">
+          {{ connectionDialogMode === 'update' ? 'Подключено' : 'Подключение WhatsApp' }}
+        </h3>
+        <p v-if="connectionDialogMode === 'qr'" class="connection-import-text">
+          Сканируйте QR-код в WhatsApp. После сканирования окно закроется, а синхронизация контактов запустится автоматически в фоне.
+        </p>
+        <p v-else-if="connectionDialogMode === 'update'" class="connection-import-text">
+          WhatsApp уже подключен.
+        </p>
+        <p v-else class="connection-import-text">
+          Фоновая синхронизация уже запущена. Можно поставить на паузу, остановить или отключить сессию.
         </p>
         <p class="connection-import-note">
-          Разовое подключение: если в WhatsApp появятся новые контакты, запустите импорт повторно.
+          {{
+            connectionDialogMode === 'update'
+              ? 'Окно можно закрыть: загрузка продолжится в фоне.'
+              : 'Окно можно закрыть: загрузка продолжится в фоне, а по завершении придет уведомление.'
+          }}
         </p>
 
         <div
+          v-if="connectionDialogMode !== 'update'"
           class="connection-status-badge"
-          :class="`status-${connectionImportSessionStatus}`"
+          :class="[
+            `status-${connectionImportSessionStatus}`,
+            { 'status-importing': connectionBackgroundState === 'running' || connectionBackgroundState === 'paused' },
+          ]"
         >
           {{ connectionSessionStatusLabel() }}
         </div>
 
         <div
-          v-if="connectionImportQrCode && connectionImportSessionStatus !== 'importing'"
+          v-if="connectionDialogMode === 'qr' && connectionImportQrCode && !isConnectionBackgroundRunning && ['initializing', 'qr'].includes(connectionImportSessionStatus)"
           class="connection-qr-wrap"
         >
           <img class="connection-qr-image" :src="connectionImportQrCode" alt="WhatsApp QR" />
           <p class="connection-qr-hint">Сканируйте QR-код в WhatsApp на телефоне.</p>
         </div>
         <div
-          v-else-if="connectionImportSessionStatus !== 'importing'"
+          v-else-if="connectionDialogMode === 'qr' && !isConnectionBackgroundRunning && ['initializing', 'qr'].includes(connectionImportSessionStatus)"
           class="connection-qr-placeholder"
         >
           QR загружается. Если код не появился, нажмите «{{ connectionSessionActionLabel() }}».
         </div>
 
-        <div class="connection-import-actions">
+        <div v-if="connectionDialogMode === 'qr'" class="connection-import-actions">
           <button
             type="button"
             class="connection-link-btn"
-            :disabled="isConnectionImportBusy || isConnectionPhotosBusy || connectionImportSessionStatus === 'initializing' || connectionImportSessionStatus === 'importing'"
-            @click="startConnectionSession"
+            :disabled="isConnectionImportBusy || isConnectionPhotosBusy || connectionImportSessionStatus === 'initializing'"
+            @click="() => startConnectionSession({ autoStartOnReady: true })"
           >
             {{ connectionSessionActionLabel() }}
           </button>
           <button
-            v-if="connectionImportSessionStatus === 'ready'"
             type="button"
-            class="connection-import-btn"
+            class="connection-link-btn"
             :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
-            @click="importWhatsAppContacts"
+            @click="closeConnectionImportModal"
           >
-            {{ isConnectionImportBusy ? 'Импорт...' : 'Импортировать контакты' }}
+            Отмена
+          </button>
+          <button
+            v-if="connectionImportSessionId"
+            type="button"
+            class="connection-link-btn"
+            :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
+            @click="disconnectWhatsappSession"
+          >
+            Отключить
           </button>
         </div>
 
-        <div v-if="connectionImportProgress" class="connection-progress-wrap">
+        <div v-else-if="connectionDialogMode === 'update'" class="connection-import-actions">
+          <button
+            type="button"
+            class="connection-link-btn"
+            :disabled="
+              isConnectionImportBusy ||
+                isConnectionPhotosBusy ||
+                isConnectionBackgroundRunning ||
+                connectionImportSessionStatus !== 'ready'
+            "
+            @click="triggerContactsUpdateFromConnected"
+          >
+            Обновить
+          </button>
+          <button
+            type="button"
+            class="connection-link-btn"
+            :disabled="
+              isConnectionImportBusy ||
+                isConnectionPhotosBusy ||
+                isConnectionBackgroundRunning ||
+                connectionImportSessionStatus !== 'ready'
+            "
+            @click="triggerContactsOverwriteFromConnected"
+          >
+            Перезаписать
+          </button>
+          <button
+            type="button"
+            class="connection-link-btn"
+            :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
+            @click="closeConnectionImportModal"
+          >
+            Отмена
+          </button>
+        </div>
+
+        <div v-else class="connection-import-actions">
+          <button
+            v-if="connectionBackgroundState === 'running'"
+            type="button"
+            class="connection-link-btn"
+            :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
+            @click="pauseBackgroundImport"
+          >
+            Пауза
+          </button>
+          <button
+            v-if="connectionBackgroundState === 'paused'"
+            type="button"
+            class="connection-link-btn"
+            :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
+            @click="resumeBackgroundImport"
+          >
+            Продолжить
+          </button>
+          <button
+            v-if="connectionBackgroundState === 'running' || connectionBackgroundState === 'paused'"
+            type="button"
+            class="connection-link-btn danger"
+            :disabled="isConnectionImportBusy || isConnectionPhotosBusy"
+            @click="stopBackgroundImportAndClose"
+          >
+            Стоп
+          </button>
+        </div>
+
+        <div v-if="connectionDialogMode === 'monitor' && connectionImportProgress" class="connection-progress-wrap">
           <div class="connection-progress-head">
             <span>{{ connectionImportProgress.note || 'Импорт контактов' }}</span>
             <span>{{ Math.round(connectionImportProgress.percent) }}%</span>
@@ -2328,64 +2688,67 @@ watch(entityInfoEntityId, (id) => {
             {{ connectionImportProgress.processed }} / {{ connectionImportProgress.total }}
           </div>
         </div>
-
-        <p v-if="connectionImportSessionStatus === 'importing'" class="connection-step-hint">
-          Идет импорт контактов. QR скрыт до завершения шага.
-        </p>
-        <p v-else-if="connectionImportSessionStatus !== 'ready'" class="connection-step-hint">
-          1) Сканируйте QR в WhatsApp -> Связанные устройства. 2) Дождитесь статуса «Подключено». 3) Нажмите «Импортировать контакты».
-        </p>
-
-        <div v-if="connectionImportStats" class="connection-import-stats">
-          <span>Всего найдено: {{ connectionImportStats.total }}</span>
-          <span>Совпадения: {{ connectionImportStats.matched }}</span>
-          <span>Новых доступно: {{ connectionImportStats.newAvailable }}</span>
-          <span>Совпадений по телефону: {{ connectionImportStats.matchedByPhone }}</span>
-          <span>Совпадений по ключу: {{ connectionImportStats.matchedByImportKey }}</span>
-          <span>Совпадений по JID: {{ connectionImportStats.matchedByJid }}</span>
-          <span>Совпадений по имени: {{ connectionImportStats.matchedByName }}</span>
-          <span>Новых с именем: {{ connectionImportStats.newWithName }}</span>
-          <span>Новых без имени: {{ connectionImportStats.newWithoutName }}</span>
-          <span>Импортировано сразу с фото: {{ connectionImportStats.importedWithImage }}</span>
+        <div
+          v-else-if="connectionDialogMode === 'monitor'"
+          class="connection-progress-wrap"
+        >
+          <div class="connection-progress-head">
+            <span>Ожидание данных прогресса</span>
+            <span>0%</span>
+          </div>
+          <div class="connection-progress-track">
+            <div class="connection-progress-fill" :style="{ width: '0%' }"></div>
+          </div>
         </div>
 
-        <p v-if="connectionImportMessage" class="connection-import-message">
+        <p v-if="connectionDialogMode === 'qr' && connectionAutoImportPending" class="connection-step-hint">
+          1) Откройте WhatsApp -> Связанные устройства. 2) Сканируйте QR. 3) Импорт начнется автоматически.
+        </p>
+        <p
+          v-if="connectionImportSessionStatus === 'importing' || connectionBackgroundState === 'running'"
+          class="connection-step-hint"
+        >
+          Идет импорт контактов. Можно поставить паузу или остановить задачу.
+        </p>
+        <p v-else-if="connectionBackgroundState === 'paused'" class="connection-step-hint">
+          Импорт на паузе. Нажмите «Продолжить», чтобы докачать контакты.
+        </p>
+        <p v-else-if="connectionDialogMode === 'update' && connectionImportSessionStatus === 'ready'" class="connection-step-hint">
+          «Обновить» запускает обычную синхронизацию. «Перезаписать» повторно обходит контакты и обновляет имена WhatsApp в разделе Подключение.
+        </p>
+        <p v-else-if="connectionDialogMode === 'update' && connectionImportSessionStatus !== 'ready'" class="connection-step-hint">
+          Сессия не готова к обновлению. Нажмите кнопку статуса на панели и отсканируйте QR заново.
+        </p>
+
+        <div
+          v-if="(connectionDialogMode === 'monitor' || connectionDialogMode === 'update') && connectionImportStats"
+          class="connection-import-stats"
+        >
+          <span>Всего найдено: {{ connectionImportStats.total }}</span>
+          <span>Импортировано: {{ connectionImportStats.imported }}</span>
+          <span>Совпадения: {{ connectionImportStats.matched }}</span>
+          <span>С именем: {{ connectionImportStats.newWithName }}</span>
+          <span>Без имени: {{ connectionImportStats.newWithoutName }}</span>
+          <span>Фото при импорте: {{ connectionImportStats.importedWithImage }}</span>
+          <span>Обновлено имен: {{ connectionImportStats.updatedNames }}</span>
+          <span>Обновлено фото: {{ connectionImportStats.updatedImages }}</span>
+        </div>
+        <p v-else-if="connectionDialogMode === 'update'" class="connection-step-hint">
+          Статистика пока недоступна. Запустите обновление, чтобы получить актуальные данные.
+        </p>
+
+        <p
+          v-if="connectionImportMessage && (connectionDialogMode !== 'update' || isConnectionImportActive)"
+          class="connection-import-message"
+        >
           {{ connectionImportMessage }}
         </p>
         <p v-if="connectionImportError" class="connection-import-error">
           {{ connectionImportError }}
         </p>
-        <div class="connection-logs-actions">
-          <button
-            type="button"
-            class="connection-log-btn"
-            :disabled="isConnectionCopyLogsBusy"
-            @click="copyConnectionLogs"
-          >
-            {{ isConnectionCopyLogsBusy ? 'Сбор логов...' : 'Скопировать логи' }}
-          </button>
-          <span v-if="connectionCopyLogsMessage" class="connection-log-copy-message">
-            {{ connectionCopyLogsMessage }}
-          </span>
-        </div>
       </div>
     </div>
 
-    <div
-      v-if="connectionSuccessAlert"
-      class="connection-success-overlay"
-      @pointerdown.self="closeConnectionSuccessAlert"
-    >
-      <div class="connection-success-card" @pointerdown.stop>
-        <h3 class="connection-success-title">{{ connectionSuccessAlert.title }}</h3>
-        <p class="connection-success-text">{{ connectionSuccessAlert.message }}</p>
-        <div class="connection-success-actions">
-          <button type="button" class="connection-success-btn" @click="closeConnectionSuccessAlert">
-            OK
-          </button>
-        </div>
-      </div>
-    </div>
   </main>
 </template>
 
@@ -2445,17 +2808,6 @@ watch(entityInfoEntityId, (id) => {
   flex: 1;
   min-width: 0;
   line-height: 1.35;
-}
-
-.connection-sync-badge {
-  flex-shrink: 0;
-  border: 1px solid #bcd3ff;
-  background: #edf4ff;
-  color: #1058ff;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-  padding: 4px 8px;
 }
 
 .search-bar {
@@ -2555,6 +2907,18 @@ watch(entityInfoEntityId, (id) => {
 .connection-toolbar-btn:disabled {
   opacity: 0.65;
   cursor: not-allowed;
+}
+
+.connection-toolbar-btn.status {
+  border-color: #bcd3ff;
+  background: #edf4ff;
+  color: #1058ff;
+}
+
+.connection-toolbar-btn.status.active {
+  border-color: #86efac;
+  background: #ecfdf5;
+  color: #047857;
 }
 
 .connection-toolbar-btn.danger {
@@ -3006,50 +3370,6 @@ watch(entityInfoEntityId, (id) => {
   line-height: 1.4;
 }
 
-.connection-provider-item {
-  border-radius: 12px;
-  border: 1px solid #dbe7ff;
-  background: #f8fbff;
-  padding: 12px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.connection-provider-item.active {
-  border-color: #98bcff;
-  background: #eff5ff;
-}
-
-.connection-provider-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: #1058ff;
-  color: #ffffff;
-  font-size: 14px;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.connection-provider-content {
-  min-width: 0;
-}
-
-.connection-provider-name {
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.connection-provider-hint {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.3;
-}
-
 .connection-status-badge {
   align-self: flex-start;
   border-radius: 999px;
@@ -3182,8 +3502,7 @@ watch(entityInfoEntityId, (id) => {
   font-weight: 600;
 }
 
-.connection-link-btn,
-.connection-import-btn {
+.connection-link-btn {
   height: 34px;
   border-radius: 10px;
   border: 1px solid #dbe4f3;
@@ -3195,21 +3514,23 @@ watch(entityInfoEntityId, (id) => {
   cursor: pointer;
 }
 
-.connection-import-btn {
-  border-color: #bcd3ff;
-  background: #edf4ff;
-  color: #1058ff;
-}
-
-.connection-link-btn:hover:not(:disabled),
-.connection-import-btn:hover:not(:disabled) {
+.connection-link-btn:hover:not(:disabled) {
   border-color: #97b9ff;
 }
 
-.connection-link-btn:disabled,
-.connection-import-btn:disabled {
+.connection-link-btn:disabled {
   opacity: 0.65;
   cursor: not-allowed;
+}
+
+.connection-link-btn.danger {
+  border-color: #fecaca;
+  background: #fff1f2;
+  color: #b91c1c;
+}
+
+.connection-link-btn.danger:hover:not(:disabled) {
+  border-color: #fca5a5;
 }
 
 .connection-import-message {
@@ -3231,98 +3552,6 @@ watch(entityInfoEntityId, (id) => {
   color: #475569;
   font-size: 12px;
   line-height: 1.4;
-}
-
-.connection-logs-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.connection-log-btn {
-  height: 30px;
-  border-radius: 10px;
-  border: 1px solid #dbe4f3;
-  background: #ffffff;
-  color: #334155;
-  font-size: 11px;
-  font-weight: 700;
-  padding: 0 10px;
-  cursor: pointer;
-}
-
-.connection-log-btn:hover:not(:disabled) {
-  border-color: #97b9ff;
-}
-
-.connection-log-btn:disabled {
-  opacity: 0.7;
-  cursor: wait;
-}
-
-.connection-log-copy-message {
-  color: #475569;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.connection-success-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 142;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(15, 23, 42, 0.36);
-}
-
-.connection-success-card {
-  width: min(380px, calc(100% - 28px));
-  border-radius: 14px;
-  border: 1px solid #dbe4f3;
-  background: #ffffff;
-  box-shadow: 0 22px 44px rgba(15, 23, 42, 0.3);
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.connection-success-title {
-  margin: 0;
-  color: #0f172a;
-  font-size: 16px;
-  font-weight: 800;
-}
-
-.connection-success-text {
-  margin: 0;
-  color: #334155;
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-.connection-success-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.connection-success-btn {
-  height: 34px;
-  min-width: 84px;
-  border-radius: 10px;
-  border: 1px solid #bcd3ff;
-  background: #edf4ff;
-  color: #1058ff;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 0 12px;
-  cursor: pointer;
-}
-
-.connection-success-btn:hover {
-  border-color: #97b9ff;
 }
 
 .entity-phone-meta {

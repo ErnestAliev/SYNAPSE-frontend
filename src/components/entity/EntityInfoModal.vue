@@ -185,6 +185,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'markers', label: 'Метки' },
     { key: 'skills', label: 'Навыки' },
     { key: 'importance', label: 'Значимость' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
     { key: 'roles', label: 'Роли' },
   ],
@@ -205,6 +206,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'location', label: 'Локации' },
     { key: 'participants', label: 'Участники' },
     { key: 'outcomes', label: 'Итоги' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   resource: [
@@ -214,6 +216,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'status', label: 'Статусы' },
     { key: 'importance', label: 'Значимость' },
     { key: 'owners', label: 'Владельцы' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   goal: [
@@ -223,6 +226,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'metrics', label: 'Метрики' },
     { key: 'owners', label: 'Ответственные' },
     { key: 'status', label: 'Статусы' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   result: [
@@ -232,6 +236,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'metrics', label: 'Метрики' },
     { key: 'importance', label: 'Значимость' },
     { key: 'owners', label: 'Ответственные' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   task: [
@@ -241,6 +246,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'status', label: 'Статусы' },
     { key: 'owners', label: 'Ответственные' },
     { key: 'date', label: 'Даты' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   project: [
@@ -250,6 +256,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'priority', label: 'Приоритеты' },
     { key: 'risks', label: 'Риски' },
     { key: 'owners', label: 'Ответственные' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
   shape: [
@@ -257,6 +264,7 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'markers', label: 'Метки' },
     { key: 'importance', label: 'Значимость' },
     { key: 'status', label: 'Статусы' },
+    { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
   ],
 };
@@ -2632,7 +2640,18 @@ const entityProfileFilledFieldCount = computed(() => {
   const currentDraft = draft.value;
   if (!currentDraft) return 0;
 
-  let filled = currentDraft.description.trim() ? 1 : 0;
+  let filled = currentDraft.name.trim() ? 1 : 0;
+  if (currentDraft.description.trim()) {
+    filled += 1;
+  }
+
+  const profile = toProfile(currentEntity.value?.profile);
+  const image = typeof profile.image === 'string' ? profile.image.trim() : '';
+  const logoImage = logoImageFromProfile(profile).trim();
+  if (image || logoImage) {
+    filled += 1;
+  }
+
   for (const field of activeFields.value) {
     if ((currentDraft.metadataValues[field.key] || []).length > 0) {
       filled += 1;
@@ -2641,7 +2660,7 @@ const entityProfileFilledFieldCount = computed(() => {
   return filled;
 });
 
-const entityProfileTotalFieldCount = computed(() => activeFields.value.length + 1);
+const entityProfileTotalFieldCount = computed(() => activeFields.value.length + 3);
 
 const chatPlaceholder = computed(() => {
   const type = draft.value?.type || 'shape';

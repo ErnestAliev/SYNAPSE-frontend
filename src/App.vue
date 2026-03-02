@@ -1,16 +1,25 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import AppHeader from './components/layout/AppHeader.vue';
 import AgentChatDock from './components/ui/AgentChatDock.vue';
 import { useEntitiesStore } from './stores/entities';
 import { useAuthStore } from './stores/auth';
+import { apiClient } from './services/api';
 
 const entitiesStore = useEntitiesStore();
 const authStore = useAuthStore();
 const route = useRoute();
+const router = useRouter();
 const settingsMenuRef = ref<HTMLElement | null>(null);
 const settingsOpen = ref(false);
+const whatsappImportMonitorTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+const whatsappCompletionNotice = ref<{
+  title: string;
+  message: string;
+  sessionId: string;
+} | null>(null);
+const WHATSAPP_BG_SESSION_STORAGE_KEY = 'synapse.whatsapp.background.session';
 
 const showWorkspaceExtras = computed(() => {
   if (!authStore.isAuthenticated) return false;
@@ -32,6 +41,100 @@ function toggleSettingsMenu() {
   settingsOpen.value = !settingsOpen.value;
 }
 
+function readTrackedWhatsappSessionId() {
+  if (typeof window === 'undefined') return '';
+  try {
+    const raw = window.localStorage.getItem(WHATSAPP_BG_SESSION_STORAGE_KEY);
+    if (!raw) return '';
+    const parsed = JSON.parse(raw) as { sessionId?: unknown };
+    return typeof parsed?.sessionId === 'string' ? parsed.sessionId.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+function clearTrackedWhatsappSessionId() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(WHATSAPP_BG_SESSION_STORAGE_KEY);
+  } catch {
+    // Ignore storage cleanup errors.
+  }
+}
+
+function scheduleWhatsappImportMonitor(delayMs = 2200) {
+  if (whatsappImportMonitorTimer.value) {
+    clearTimeout(whatsappImportMonitorTimer.value);
+    whatsappImportMonitorTimer.value = null;
+  }
+  whatsappImportMonitorTimer.value = setTimeout(() => {
+    void pollWhatsappImportState();
+  }, delayMs);
+}
+
+async function pollWhatsappImportState() {
+  if (!authStore.isAuthenticated) return;
+  const sessionId = readTrackedWhatsappSessionId();
+  if (!sessionId) return;
+
+  try {
+    const { data } = await apiClient.get<{
+      session?: {
+        status?: string;
+        backgroundImport?: {
+          state?: string;
+          imported?: number;
+          updatedNames?: number;
+          updatedImages?: number;
+        };
+      };
+    }>(`/integrations/whatsapp/session/${sessionId}`);
+    const session = data?.session;
+    const background = session?.backgroundImport || {};
+    const state = typeof background.state === 'string' ? background.state.trim().toLowerCase() : '';
+
+    if (state === 'running' || state === 'paused') {
+      scheduleWhatsappImportMonitor(2200);
+      return;
+    }
+
+    if (state === 'completed') {
+      clearTrackedWhatsappSessionId();
+      const imported = Math.max(0, Number(background.imported) || 0);
+      const updatedNames = Math.max(0, Number(background.updatedNames) || 0);
+      const updatedImages = Math.max(0, Number(background.updatedImages) || 0);
+      whatsappCompletionNotice.value = {
+        title: 'Загрузка WhatsApp завершена',
+        message: `Новых: ${imported}, обновлено имен: ${updatedNames}, фото: ${updatedImages}.`,
+        sessionId,
+      };
+      return;
+    }
+
+    if (
+      state === 'stopped' ||
+      state === 'error' ||
+      (typeof session?.status === 'string' && session.status.trim().toLowerCase() === 'disconnected')
+    ) {
+      clearTrackedWhatsappSessionId();
+      return;
+    }
+
+    scheduleWhatsappImportMonitor(2600);
+  } catch {
+    scheduleWhatsappImportMonitor(3600);
+  }
+}
+
+function closeWhatsappCompletionNotice() {
+  whatsappCompletionNotice.value = null;
+}
+
+async function openWhatsappConnectionsFromNotice() {
+  whatsappCompletionNotice.value = null;
+  await router.push('/entities/connection');
+}
+
 function updateViewportBottomOffset() {
   if (typeof window === 'undefined') return;
 
@@ -49,6 +152,7 @@ onMounted(async () => {
   await authStore.bootstrap();
   if (authStore.isAuthenticated) {
     await entitiesStore.bootstrap({ deferConnection: true });
+    scheduleWhatsappImportMonitor(1200);
   }
   document.addEventListener('pointerdown', onPointerDown);
   window.addEventListener('resize', updateViewportBottomOffset);
@@ -60,6 +164,10 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   entitiesStore.stopRealtimeSync();
+  if (whatsappImportMonitorTimer.value) {
+    clearTimeout(whatsappImportMonitorTimer.value);
+    whatsappImportMonitorTimer.value = null;
+  }
   document.removeEventListener('pointerdown', onPointerDown);
   window.removeEventListener('resize', updateViewportBottomOffset);
   window.removeEventListener('orientationchange', updateViewportBottomOffset);
@@ -72,6 +180,7 @@ watch(
   () => authStore.isAuthenticated,
   async (isAuthenticated, wasAuthenticated) => {
     if (isAuthenticated) {
+      scheduleWhatsappImportMonitor(1200);
       entitiesStore.startRealtimeSync();
       if (!entitiesStore.initialized) {
         await entitiesStore.bootstrap({ deferConnection: true });
@@ -83,6 +192,12 @@ watch(
     }
 
     if (wasAuthenticated) {
+      clearTrackedWhatsappSessionId();
+      whatsappCompletionNotice.value = null;
+      if (whatsappImportMonitorTimer.value) {
+        clearTimeout(whatsappImportMonitorTimer.value);
+        whatsappImportMonitorTimer.value = null;
+      }
       entitiesStore.stopRealtimeSync();
       entitiesStore.items = [];
       entitiesStore.initialized = false;
@@ -118,6 +233,25 @@ watch(
     <main class="app-content">
       <RouterView />
     </main>
+
+    <div
+      v-if="whatsappCompletionNotice"
+      class="whatsapp-complete-overlay"
+      @pointerdown.self="closeWhatsappCompletionNotice"
+    >
+      <div class="whatsapp-complete-card" @pointerdown.stop>
+        <h3 class="whatsapp-complete-title">{{ whatsappCompletionNotice.title }}</h3>
+        <p class="whatsapp-complete-text">{{ whatsappCompletionNotice.message }}</p>
+        <div class="whatsapp-complete-actions">
+          <button type="button" class="whatsapp-complete-btn primary" @click="openWhatsappConnectionsFromNotice">
+            Посмотреть
+          </button>
+          <button type="button" class="whatsapp-complete-btn" @click="closeWhatsappCompletionNotice">
+            Позже
+          </button>
+        </div>
+      </div>
+    </div>
 
     <AgentChatDock v-if="showWorkspaceExtras" />
 
@@ -233,6 +367,68 @@ watch(
   font-size: 12px;
   font-weight: 600;
   color: #64748b;
+}
+
+.whatsapp-complete-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.34);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 220;
+  padding: 24px;
+}
+
+.whatsapp-complete-card {
+  width: min(440px, 100%);
+  border-radius: 16px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.2);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.whatsapp-complete-title {
+  margin: 0;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.whatsapp-complete-text {
+  margin: 0;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.whatsapp-complete-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.whatsapp-complete-btn {
+  height: 34px;
+  min-width: 86px;
+  border-radius: 10px;
+  border: 1px solid #bcd3ff;
+  background: #edf4ff;
+  color: #1058ff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.whatsapp-complete-btn.primary {
+  border-color: #1058ff;
+  background: #1058ff;
+  color: #ffffff;
 }
 
 @media (max-width: 768px) {
