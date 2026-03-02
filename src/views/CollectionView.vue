@@ -245,6 +245,7 @@ const connectionBackgroundSyncActive = ref(false);
 const connectionGlobalMessage = ref('');
 const connectionGlobalError = ref('');
 const connectionGlobalMessageTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+const CONNECTION_IMPORT_REQUEST_TIMEOUT_MS = 180_000;
 const connectionSuccessAlert = ref<{
   title: string;
   message: string;
@@ -956,6 +957,14 @@ function appendConnectionClientLog(step: string, data?: unknown) {
 }
 
 function formatConnectionImportError(error: unknown) {
+  if (
+    axios.isAxiosError(error) &&
+    !error.response &&
+    (error.code === 'ECONNABORTED' || /timeout/i.test(String(error.message || '')))
+  ) {
+    return 'Импорт занял слишком много времени для текущего таймаута клиента. Повторите снова — запрос будет ждать дольше.';
+  }
+
   if (axios.isAxiosError(error) && !error.response) {
     return 'Сервис подключения временно недоступен (backend перезапускается или недоступен). Повторите через 1-2 минуты.';
   }
@@ -1282,6 +1291,8 @@ async function importWhatsAppContacts() {
             includeImages: true,
             cursor,
             batchSize,
+          }, {
+            timeout: CONNECTION_IMPORT_REQUEST_TIMEOUT_MS,
           });
           data = response.data;
         } catch (error) {
