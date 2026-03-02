@@ -623,7 +623,11 @@ function metadataList(entity: Entity, key: MetadataFieldKey) {
 
 function hasEntityPhoto(entity: Entity) {
   const image = entityImage(entity);
-  return typeof image === 'string' && image.trim().length > 0;
+  if (typeof image === 'string' && image.trim().length > 0) {
+    return true;
+  }
+  const profile = toProfile(entity);
+  return profile.has_image === true || profile.hasImage === true;
 }
 
 function hasEntityName(entity: Entity) {
