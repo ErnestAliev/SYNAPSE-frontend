@@ -1154,7 +1154,12 @@ async function syncScopeHistoryFromServer(targetScopeKey = scopeKey.value) {
     if (activeSyncVersion.value !== syncVersion) return;
 
     const localMessages = normalizeChatMessages(messagesByScope.value[targetScopeKey] || []);
-    const hasPendingChanges = hasPendingScopeChanges(targetScopeKey);
+    // Also treat the scope as having pending changes while an AI request is in
+    // flight: the user message was already pushed locally but the AI response
+    // hasn't arrived yet. Without this guard an SSE from another device could
+    // overwrite local state and wipe out the in-progress user message.
+    const isSendingInThisScope = isSending.value && targetScopeKey === scopeKey.value;
+    const hasPendingChanges = hasPendingScopeChanges(targetScopeKey) || isSendingInThisScope;
     if (!hasPendingChanges) {
       if (!areMessagesEqual(localMessages, remoteMessages)) {
         setScopeMessages(targetScopeKey, remoteMessages);
