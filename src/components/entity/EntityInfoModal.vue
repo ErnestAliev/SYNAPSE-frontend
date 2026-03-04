@@ -6,7 +6,7 @@ import ProfileProgressRing from '../ui/ProfileProgressRing.vue';
 import { useEntitiesStore } from '../../stores/entities';
 import { useAuthStore } from '../../stores/auth';
 import { calculateEntityProfileProgress } from '../../utils/profileProgress';
-import { analyzeEntityWithAi } from '../../services/entityAi';
+import { analyzeEntityWithAi, type EntityAiSuggestion } from '../../services/entityAi';
 import {
   SYSTEM_SOCIAL_LOGOS,
   addCustomLogo,
@@ -279,6 +279,7 @@ const pendingComposerHeightReset = ref(false);
 const isVoiceListening = ref(false);
 const isVoiceSubmitting = ref(false);
 const isAiRequestInFlight = ref(false);
+const isModalClosing = ref(false);
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
 const voiceRestartTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const voiceShouldRestart = ref(false);
@@ -746,6 +747,7 @@ function clearSaveTimer() {
 }
 
 function closeModal() {
+  isModalClosing.value = true;
   const currentDraft = draft.value;
   if (currentDraft) {
     persistDraft(currentDraft.entityId);
@@ -1484,6 +1486,80 @@ function parseRequestError(error: unknown) {
   return 'LLM request failed';
 }
 
+function applyAiResponseToStore(
+  entityId: string,
+  response: { suggestion?: EntityAiSuggestion } | null,
+  assistantText: string,
+  debugAttachments: EntityAttachment[] = [],
+  chatHistoryOverride?: EntityChatMessage[],
+) {
+  const entity = entitiesStore.byId(entityId);
+  if (!entity) return;
+
+  const aiMetadata = toProfile(entity.ai_metadata);
+  const nextMetadata: Record<string, unknown> = { ...aiMetadata };
+
+  if (response?.suggestion?.status === 'ready') {
+    if (response.suggestion.description) {
+      nextMetadata.description = response.suggestion.description;
+    }
+
+    const fields = response.suggestion.fields || {};
+    for (const field of getEntityContextFields(entity.type)) {
+      const rawValues = fields[field.key];
+      const nextValues = Array.isArray(rawValues)
+        ? rawValues.filter((value): value is string => typeof value === 'string')
+        : [];
+      nextMetadata[field.key] = nextValues
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+        .slice(0, 16);
+
+      if (field.key === 'importance' && nextValues.length) {
+        nextMetadata.importance_source = 'manual';
+      }
+    }
+  }
+
+  const serializeChatMessage = (message: EntityChatMessage) => ({
+    id: message.id,
+    role: message.role,
+    text: message.text,
+    createdAt: message.createdAt,
+    attachments: message.attachments.map((attachment) => ({
+      id: attachment.id,
+      name: attachment.name,
+      mime: attachment.mime,
+      size: attachment.size,
+      data: attachment.data,
+    })),
+  });
+
+  const existingHistory = Array.isArray(chatHistoryOverride)
+    ? chatHistoryOverride.map(serializeChatMessage)
+    : Array.isArray(aiMetadata.chat_history)
+      ? aiMetadata.chat_history
+      : [];
+  nextMetadata.chat_history = [
+    ...existingHistory,
+    {
+      id: createLocalChatMessageId(),
+      role: 'assistant',
+      text: assistantText,
+      createdAt: getIsoNow(),
+      attachments: debugAttachments.map((attachment) => ({
+        id: attachment.id,
+        name: attachment.name,
+        mime: attachment.mime,
+        size: attachment.size,
+        data: attachment.data,
+      })),
+    },
+  ];
+
+  entitiesStore.queueEntityUpdate(entityId, { ai_metadata: nextMetadata }, { delay: 0 });
+}
+
 function openChatAttachment(attachment: EntityAttachment) {
   if (typeof window === 'undefined') return;
   if (!attachment.data) return;
@@ -1548,7 +1624,13 @@ async function onSendInput() {
   try {
     const response = await analyzeEntityWithAi(requestPayload);
 
-    if (!draft.value || draft.value.entityId !== activeDraft.entityId) {
+    const debugAttachments = response.debug ? [buildDebugAttachment(response.debug)] : [];
+    const assistantText = response.reply || 'Готово.';
+    const historyOverride =
+      draft.value && draft.value.entityId === activeDraft.entityId ? draft.value.chatHistory : undefined;
+    const shouldApplyToStore = isModalClosing.value || !draft.value || draft.value.entityId !== activeDraft.entityId;
+    if (shouldApplyToStore) {
+      applyAiResponseToStore(activeDraft.entityId, response, assistantText, debugAttachments, historyOverride);
       return;
     }
 
@@ -1570,14 +1652,22 @@ async function onSendInput() {
       }
     }
 
-    const debugAttachments = response.debug ? [buildDebugAttachment(response.debug)] : [];
-    pushChatMessage('assistant', response.reply || 'Готово.', debugAttachments);
+    pushChatMessage('assistant', assistantText, debugAttachments);
     scheduleSave();
     await nextTick();
     scrollEntityChatToBottom('auto');
   } catch (error: unknown) {
     const debugAttachments = [buildDebugAttachment(buildLlmErrorDebugPayload(error, requestPayload))];
-    pushChatMessage('assistant', `Не удалось получить ответ от LLM. ${parseRequestError(error)}`, debugAttachments);
+    const assistantText = `Не удалось получить ответ от LLM. ${parseRequestError(error)}`;
+    const historyOverride =
+      draft.value && draft.value.entityId === activeDraft.entityId ? draft.value.chatHistory : undefined;
+    const shouldApplyToStore = isModalClosing.value || !draft.value || draft.value.entityId !== activeDraft.entityId;
+    if (shouldApplyToStore) {
+      applyAiResponseToStore(activeDraft.entityId, null, assistantText, debugAttachments, historyOverride);
+      return;
+    }
+
+    pushChatMessage('assistant', assistantText, debugAttachments);
     await nextTick();
     scrollEntityChatToBottom('auto');
     scheduleSave();
@@ -2441,6 +2531,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  isModalClosing.value = true;
   const currentDraft = draft.value;
   if (currentDraft) {
     persistDraft(currentDraft.entityId);
