@@ -121,6 +121,8 @@ interface MetadataFieldConfig {
 
 const DEFAULT_METADATA_FIELD_MAX_LENGTH = 32;
 const LINKS_METADATA_FIELD_MAX_LENGTH = 2048;
+const PHONE_DISPLAY_MAX_LENGTH = 17;
+const PHONE_DIGITS_MAX_LENGTH = 11;
 const LINK_CHIP_FALLBACK_LABEL = 'Website';
 const IMPORTANCE_LEVELS = ['Низкая', 'Средняя', 'Высокая'] as const;
 const IMPORTANCE_LEVEL_MAP: Record<string, (typeof IMPORTANCE_LEVELS)[number]> = {
@@ -412,6 +414,81 @@ function toMetadataStringArray(value: unknown) {
   return toStringArray(value);
 }
 
+function normalizePhoneDigits(value: string) {
+  let digits = value.replace(/\D/g, '');
+  if (!digits) return '';
+
+  if (digits.length === 10) {
+    digits = `7${digits}`;
+  }
+  if (digits.startsWith('8')) {
+    digits = `7${digits.slice(1)}`;
+  }
+  if (!digits.startsWith('7')) {
+    digits = `7${digits.slice(1)}`;
+  }
+  if (digits.length > PHONE_DIGITS_MAX_LENGTH) {
+    digits = digits.slice(0, PHONE_DIGITS_MAX_LENGTH);
+  }
+  return digits;
+}
+
+function formatPhoneValue(value: string) {
+  const digits = normalizePhoneDigits(value);
+  if (!digits) return '';
+
+  const countryCode = digits.slice(0, 1);
+  const local = digits.slice(1);
+  const parts = [local.slice(0, 3), local.slice(3, 6), local.slice(6, 8), local.slice(8, 10)].filter(Boolean);
+  return parts.length ? `+ ${countryCode} ${parts.join(' ')}` : `+ ${countryCode}`;
+}
+
+function normalizeMetadataValue(fieldKey: string, value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (fieldKey === 'phones') {
+    return formatPhoneValue(trimmed);
+  }
+  return trimmed;
+}
+
+function metadataValueDedupeKey(fieldKey: string, value: string) {
+  if (fieldKey === 'phones') {
+    return normalizePhoneDigits(value);
+  }
+  return value.trim().toLowerCase();
+}
+
+function normalizeMetadataValues(fieldKey: string, values: string[]) {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+
+  for (const raw of values) {
+    const nextValue = normalizeMetadataValue(fieldKey, raw);
+    if (!nextValue) continue;
+    const key = metadataValueDedupeKey(fieldKey, nextValue);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(nextValue);
+  }
+
+  return normalized;
+}
+
+function hasMetadataValue(fieldKey: string, values: string[], target: string) {
+  const targetKey = metadataValueDedupeKey(fieldKey, target);
+  if (!targetKey) return false;
+  return values.some((item) => metadataValueDedupeKey(fieldKey, item) === targetKey);
+}
+
+function formatMetadataValueForDisplay(fieldKey: string, value: string) {
+  if (fieldKey === 'phones') {
+    const formatted = formatPhoneValue(value);
+    return formatted || value;
+  }
+  return value;
+}
+
 function normalizeImportanceLabel(value: string) {
   const normalized = value.trim().toLowerCase();
   if (!normalized) return '';
@@ -442,7 +519,7 @@ function buildEntityMetadataValues(type: EntityType, metadata: Record<string, un
     values[field.key] =
       field.key === 'importance'
         ? normalizeImportanceArray(metadata[field.key])
-        : toMetadataStringArray(metadata[field.key]);
+        : normalizeMetadataValues(field.key, toMetadataStringArray(metadata[field.key]));
   }
   return values;
 }
@@ -470,7 +547,7 @@ function buildEntityMetadataResetPayload(currentMetadata: Record<string, unknown
   };
 
   const preserved = toProfile(currentMetadata);
-  const preservedPhones = Array.isArray(preserved.phones) ? preserved.phones : [];
+  const preservedPhones = normalizeMetadataValues('phones', toStringArray(preserved.phones));
 
   for (const key of ALL_METADATA_FIELD_KEYS) {
     if (key === 'phones') {
@@ -716,7 +793,10 @@ function persistDraft(entityId: string) {
     })),
   };
   for (const field of getEntityContextFields(currentDraft.type)) {
-    nextMetadata[field.key] = currentDraft.metadataValues[field.key] || [];
+    nextMetadata[field.key] = normalizeMetadataValues(field.key, currentDraft.metadataValues[field.key] || []).slice(
+      0,
+      24,
+    );
   }
 
   const hasImportanceField = getEntityContextFields(currentDraft.type).some(
@@ -972,13 +1052,21 @@ function getFieldPlaceholder(field: MetadataFieldConfig) {
 }
 
 function getMetadataFieldMaxLength(fieldKey: string) {
+  if (fieldKey === 'phones') {
+    return PHONE_DISPLAY_MAX_LENGTH;
+  }
   return fieldKey === 'links' ? LINKS_METADATA_FIELD_MAX_LENGTH : DEFAULT_METADATA_FIELD_MAX_LENGTH;
 }
 
 function onFieldDraftInput(fieldKey: string, event: Event) {
   const input = event.target as HTMLInputElement | null;
   if (!input || !draft.value) return;
-  draft.value.fieldDrafts[fieldKey] = input.value.slice(0, getMetadataFieldMaxLength(fieldKey));
+  const rawValue = fieldKey === 'phones' ? formatPhoneValue(input.value) : input.value;
+  const nextDraft = rawValue.slice(0, getMetadataFieldMaxLength(fieldKey));
+  draft.value.fieldDrafts[fieldKey] = nextDraft;
+  if (input.value !== nextDraft) {
+    input.value = nextDraft;
+  }
 }
 
 function setFieldInputRef(fieldKey: string, element: unknown) {
@@ -1015,7 +1103,10 @@ function onFieldDraftKeydown(fieldKey: string, event: KeyboardEvent) {
 function startEditFieldValue(fieldKey: string, value: string) {
   if (!draft.value) return;
   editingFieldValue.value = { fieldKey, originalValue: value };
-  draft.value.fieldDrafts[fieldKey] = value.slice(0, getMetadataFieldMaxLength(fieldKey));
+  draft.value.fieldDrafts[fieldKey] = normalizeMetadataValue(fieldKey, value).slice(
+    0,
+    getMetadataFieldMaxLength(fieldKey),
+  );
   focusFieldInput(fieldKey, true);
 }
 
@@ -1053,9 +1144,10 @@ function getLinkChipLabel(value: string) {
 function addFieldValue(fieldKey: string) {
   if (!draft.value) return;
   const isImportanceField = fieldKey === 'importance';
-  let nextValue = (draft.value.fieldDrafts[fieldKey] || '')
-    .trim()
-    .slice(0, getMetadataFieldMaxLength(fieldKey));
+  let nextValue = normalizeMetadataValue(fieldKey, draft.value.fieldDrafts[fieldKey] || '').slice(
+    0,
+    getMetadataFieldMaxLength(fieldKey),
+  );
   if (isImportanceField) {
     if (!draft.value.description.trim()) {
       draft.value.metadataValues[fieldKey] = [];
@@ -1090,19 +1182,21 @@ function addFieldValue(fieldKey: string) {
       return;
     }
 
-    const originalIndex = values.indexOf(editing.originalValue);
+    const originalIndex = values.findIndex(
+      (item) => metadataValueDedupeKey(fieldKey, item) === metadataValueDedupeKey(fieldKey, editing.originalValue),
+    );
     let changed = false;
 
     if (originalIndex >= 0) {
       if (values[originalIndex] !== nextValue) {
-        if (values.includes(nextValue)) {
+        if (hasMetadataValue(fieldKey, values, nextValue)) {
           values.splice(originalIndex, 1);
         } else {
           values[originalIndex] = nextValue;
         }
         changed = true;
       }
-    } else if (!values.includes(nextValue)) {
+    } else if (!hasMetadataValue(fieldKey, values, nextValue)) {
       values.push(nextValue);
       changed = true;
     }
@@ -1127,7 +1221,7 @@ function addFieldValue(fieldKey: string) {
     draft.value.fieldDrafts[fieldKey] = '';
     return;
   }
-  if (!values.includes(nextValue)) {
+  if (!hasMetadataValue(fieldKey, values, nextValue)) {
     draft.value.metadataValues[fieldKey] = [...values, nextValue];
     scheduleSave();
   }
@@ -1136,8 +1230,9 @@ function addFieldValue(fieldKey: string) {
 
 function removeFieldValue(fieldKey: string, value: string) {
   if (!draft.value) return;
+  const removeKey = metadataValueDedupeKey(fieldKey, value);
   draft.value.metadataValues[fieldKey] = (draft.value.metadataValues[fieldKey] || []).filter(
-    (item) => item !== value,
+    (item) => metadataValueDedupeKey(fieldKey, item) !== removeKey,
   );
   if (fieldKey === 'importance') {
     draft.value.importanceSource = 'auto';
@@ -1597,10 +1692,10 @@ async function onSendInput() {
         const nextValues = Array.isArray(rawValues)
           ? rawValues.filter((value): value is string => typeof value === 'string')
           : [];
-        draft.value.metadataValues[field.key] = nextValues
-          .map((value) => value.trim())
-          .filter((value) => value.length > 0)
-          .slice(0, 16);
+        draft.value.metadataValues[field.key] = normalizeMetadataValues(
+          field.key,
+          nextValues.map((value) => value.trim()).filter((value) => value.length > 0),
+        ).slice(0, 16);
       }
     }
 
@@ -2448,7 +2543,10 @@ watch(
 
         const rawRemote = remoteMeta[field.key];
         const remoteValues = Array.isArray(rawRemote)
-          ? rawRemote.filter((v) => typeof v === 'string').map((v) => v.trim()).filter(Boolean)
+          ? normalizeMetadataValues(
+              field.key,
+              rawRemote.filter((v): v is string => typeof v === 'string').map((v) => v.trim()).filter(Boolean),
+            )
           : [];
 
         const localValues = (Array.isArray(draft.value.metadataValues[field.key])
@@ -2644,7 +2742,7 @@ onBeforeUnmount(() => {
                       :title="field.key === 'links' ? value : 'Редактировать'"
                       @click="field.key === 'links' ? openFieldLink(value) : startEditFieldValue(field.key, value)"
                     >
-                      {{ field.key === 'links' ? getLinkChipLabel(value) : value }}
+                      {{ field.key === 'links' ? getLinkChipLabel(value) : formatMetadataValueForDisplay(field.key, value) }}
                     </button>
                     <button
                       type="button"

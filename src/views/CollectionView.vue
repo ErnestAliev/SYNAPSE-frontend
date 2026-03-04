@@ -1774,6 +1774,35 @@ function companyPhone(entity: Entity) {
   return connectionPhone(entity);
 }
 
+function normalizeEntityPhoneDigits(value: string) {
+  let digits = value.replace(/\D/g, '');
+  if (!digits) return '';
+
+  if (digits.length === 10) {
+    digits = `7${digits}`;
+  }
+  if (digits.startsWith('8')) {
+    digits = `7${digits.slice(1)}`;
+  }
+  if (!digits.startsWith('7')) {
+    digits = `7${digits.slice(1)}`;
+  }
+  if (digits.length > 11) {
+    digits = digits.slice(0, 11);
+  }
+  return digits;
+}
+
+function formatEntityPhone(value: string) {
+  const digits = normalizeEntityPhoneDigits(value);
+  if (!digits) return '';
+
+  const countryCode = digits.slice(0, 1);
+  const local = digits.slice(1);
+  const parts = [local.slice(0, 3), local.slice(3, 6), local.slice(6, 8), local.slice(8, 10)].filter(Boolean);
+  return parts.length ? `+ ${countryCode} ${parts.join(' ')}` : `+ ${countryCode}`;
+}
+
 function collectEntityPhones(entity: Entity) {
   const profile = toProfile(entity);
   const metadata = toMetadata(entity);
@@ -1784,10 +1813,13 @@ function collectEntityPhones(entity: Entity) {
   ];
 
   const unique: string[] = [];
+  const seenDigits = new Set<string>();
   for (const value of rawValues) {
-    const trimmed = value.trim();
-    if (!trimmed || unique.includes(trimmed)) continue;
-    unique.push(trimmed);
+    const formatted = formatEntityPhone(value.trim());
+    const dedupeKey = normalizeEntityPhoneDigits(formatted);
+    if (!formatted || !dedupeKey || seenDigits.has(dedupeKey)) continue;
+    seenDigits.add(dedupeKey);
+    unique.push(formatted);
   }
   return unique;
 }
