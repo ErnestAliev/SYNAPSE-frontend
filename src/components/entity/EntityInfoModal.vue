@@ -449,7 +449,7 @@ function buildEntityFieldDrafts(type: EntityType) {
   return fieldDrafts;
 }
 
-function buildEntityMetadataResetPayload() {
+function buildEntityMetadataResetPayload(currentMetadata: Record<string, unknown> = {}) {
   const resetPayload: Record<string, unknown> = {
     description: '',
     text_input: '',
@@ -463,7 +463,14 @@ function buildEntityMetadataResetPayload() {
     importance_source: 'auto',
   };
 
+  const preserved = toProfile(currentMetadata);
+  const preservedPhones = Array.isArray(preserved.phones) ? preserved.phones : [];
+
   for (const key of ALL_METADATA_FIELD_KEYS) {
+    if (key === 'phones') {
+      resetPayload[key] = preservedPhones;
+      continue;
+    }
     resetPayload[key] = [];
   }
 
@@ -871,12 +878,14 @@ function closeClearChatConfirm() {
 async function confirmClearChatHistory() {
   const currentDraft = draft.value;
   if (!currentDraft || isProjectActionBusy.value) return;
+  const entity = entitiesStore.byId(currentDraft.entityId);
+  if (!entity) return;
 
   isProjectActionBusy.value = true;
   clearSaveTimer();
   stopVoiceCapture();
 
-  const resetMetadata = buildEntityMetadataResetPayload();
+  const resetMetadata = buildEntityMetadataResetPayload(toProfile(entity.ai_metadata));
 
   try {
     await entitiesStore.updateEntity(currentDraft.entityId, {
@@ -898,7 +907,7 @@ async function confirmClearChatHistory() {
     resetChatInputSize();
     syncDescriptionHeightFromContent(true);
     scrollEntityChatToBottom('auto');
-    projectActionMessage.value = 'Данные очищены. Сохранены только имя и фото.';
+    projectActionMessage.value = 'Данные очищены. Сохранены только имя, фото и телефон.';
   } catch {
     projectActionMessage.value = 'Не удалось очистить данные.';
   } finally {
