@@ -114,6 +114,7 @@ const panelRef = ref<HTMLElement | null>(null);
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
 const voiceRestartTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const voiceShouldRestart = ref(false);
+const voiceCaptureSessionId = ref(0);
 const voiceSessionBaseText = ref('');
 const voiceCommittedText = ref('');
 const pendingComposerHeightReset = ref(false);
@@ -1484,6 +1485,9 @@ async function confirmClearAllChatHistory() {
 
 async function sendMessage() {
   if (isSending.value) return;
+  if (isVoiceListening.value) {
+    stopVoiceCapture();
+  }
 
   const value = messageDraft.value.trim();
   const attachments = [...pendingUploads.value];
@@ -1625,6 +1629,7 @@ function applyVoiceDraft(interimText = '') {
 }
 
 function stopVoiceCapture() {
+  voiceCaptureSessionId.value += 1;
   voiceShouldRestart.value = false;
   clearVoiceRestartTimer();
   isVoiceListening.value = false;
@@ -1667,6 +1672,8 @@ function startVoiceCapture() {
   voiceSessionBaseText.value = messageDraft.value.trim();
   voiceCommittedText.value = '';
   voiceShouldRestart.value = true;
+  voiceCaptureSessionId.value += 1;
+  const sessionId = voiceCaptureSessionId.value;
 
   const createRecognition = () => {
     const recognition = new RecognitionCtor();
@@ -1675,6 +1682,7 @@ function startVoiceCapture() {
     recognition.interimResults = true;
 
     recognition.onresult = (event: unknown) => {
+      if (voiceCaptureSessionId.value !== sessionId || !voiceShouldRestart.value) return;
       const payload = event as {
         resultIndex?: number;
         results?: ArrayLike<ArrayLike<{ transcript?: string }> & { isFinal?: boolean }>;
@@ -1702,6 +1710,7 @@ function startVoiceCapture() {
     };
 
     recognition.onend = () => {
+      if (voiceCaptureSessionId.value !== sessionId) return;
       activeVoiceRecognition.value = null;
       if (!voiceShouldRestart.value) {
         isVoiceListening.value = false;
@@ -1710,7 +1719,7 @@ function startVoiceCapture() {
 
       clearVoiceRestartTimer();
       voiceRestartTimer.value = setTimeout(() => {
-        if (!voiceShouldRestart.value) return;
+        if (voiceCaptureSessionId.value !== sessionId || !voiceShouldRestart.value) return;
         try {
           const nextRecognition = createRecognition();
           nextRecognition.start();
