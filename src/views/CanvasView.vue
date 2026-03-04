@@ -1966,6 +1966,16 @@ function persistEntityInfoDraft(entityId: string) {
     nextMetadata[field.key] = draft.metadataValues[field.key] || [];
   }
 
+  // Keep pending analysis flag while background LLM is running.
+  if (entitiesStore.isEntityAiPending(entityId)) {
+    nextMetadata.analysis_pending = true;
+    if (typeof aiMetadata.analysis_started_at === 'string' && aiMetadata.analysis_started_at.trim()) {
+      nextMetadata.analysis_started_at = aiMetadata.analysis_started_at;
+    } else {
+      nextMetadata.analysis_started_at = new Date().toISOString();
+    }
+  }
+
   entitiesStore.queueEntityUpdate(
     entityId,
     {

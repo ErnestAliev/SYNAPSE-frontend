@@ -729,6 +729,16 @@ function persistDraft(entityId: string) {
       currentDraft.importanceSource === 'manual' && normalizedImportance.length ? 'manual' : 'auto';
   }
 
+  // Keep pending analysis flag while background LLM is running.
+  if (entitiesStore.isEntityAiPending(entityId)) {
+    nextMetadata.analysis_pending = true;
+    if (typeof aiMetadata.analysis_started_at === 'string' && aiMetadata.analysis_started_at.trim()) {
+      nextMetadata.analysis_started_at = aiMetadata.analysis_started_at;
+    } else {
+      nextMetadata.analysis_started_at = new Date().toISOString();
+    }
+  }
+
   entitiesStore.queueEntityUpdate(
     entityId,
     {
