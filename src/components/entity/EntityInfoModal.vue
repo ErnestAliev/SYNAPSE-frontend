@@ -6,7 +6,7 @@ import ProfileProgressRing from '../ui/ProfileProgressRing.vue';
 import { useEntitiesStore } from '../../stores/entities';
 import { useAuthStore } from '../../stores/auth';
 import { calculateEntityProfileProgress } from '../../utils/profileProgress';
-import { analyzeEntityWithAi } from '../../services/entityAi';
+import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../../services/entityAi';
 import {
   SYSTEM_SOCIAL_LOGOS,
   addCustomLogo,
@@ -1564,7 +1564,7 @@ async function onSendInput() {
   try {
     const response = await analyzeEntityWithAi(requestPayload);
 
-    if (response && 'status' in response && response.status === 'processing') {
+    if (isEntityAiProcessingResponse(response)) {
       localAiRequestInFlight.value = false;
       return;
     }

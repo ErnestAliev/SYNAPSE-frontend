@@ -60,6 +60,12 @@ export interface EntityAiAnalyzeProcessingResponse {
 
 export type EntityAiAnalyzeResult = EntityAiAnalyzeResponse | EntityAiAnalyzeProcessingResponse;
 
+export function isEntityAiProcessingResponse(
+  response: EntityAiAnalyzeResult,
+): response is EntityAiAnalyzeProcessingResponse {
+  return Boolean(response && 'status' in response && response.status === 'processing');
+}
+
 export async function analyzeEntityWithAi(payload: EntityAiAnalyzePayload) {
   const { data } = await apiClient.post<EntityAiAnalyzeResult>('/ai/entity-analyze', payload, {
     timeout: 150_000,

@@ -10,7 +10,7 @@ import AppIcon from '../components/ui/AppIcon.vue';
 import ProfileProgressRing from '../components/ui/ProfileProgressRing.vue';
 import { useEntitiesStore } from '../stores/entities';
 import { useAuthStore } from '../stores/auth';
-import { analyzeEntityWithAi } from '../services/entityAi';
+import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../services/entityAi';
 import { calculateEntityProfileProgress } from '../utils/profileProgress';
 import type { LogoLibraryItem } from '../data/logoLibrary';
 import type {
@@ -2237,7 +2237,7 @@ async function onInfoSendInput() {
       debug: import.meta.env.DEV,
     });
 
-    if (response && 'status' in response && response.status === 'processing') {
+    if (isEntityAiProcessingResponse(response)) {
       localEntityInfoAiRequestInFlight.value = false;
       return;
     }
