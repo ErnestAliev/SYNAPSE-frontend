@@ -55,7 +55,7 @@ export interface EntityAiAnalyzeResponse {
 
 export async function analyzeEntityWithAi(payload: EntityAiAnalyzePayload) {
   const { data } = await apiClient.post<EntityAiAnalyzeResponse>('/ai/entity-analyze', payload, {
-    timeout: 90_000,
+    timeout: 150_000,
   });
   return data;
 }
