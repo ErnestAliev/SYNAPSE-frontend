@@ -1671,6 +1671,7 @@ async function onSendInput() {
 
     if (isEntityAiProcessingResponse(response)) {
       localAiRequestInFlight.value = false;
+      entitiesStore.setEntityAiPending(activeDraft.entityId, false);
       return;
     }
 
