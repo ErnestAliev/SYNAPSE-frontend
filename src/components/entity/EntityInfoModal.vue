@@ -6,7 +6,7 @@ import ProfileProgressRing from '../ui/ProfileProgressRing.vue';
 import { useEntitiesStore } from '../../stores/entities';
 import { useAuthStore } from '../../stores/auth';
 import { calculateEntityProfileProgress } from '../../utils/profileProgress';
-import { analyzeEntityWithAi, entityQuizStep, type EntityQuizOption, type EntityQuizStepResponse } from '../../services/entityAi';
+import { analyzeEntityWithAi } from '../../services/entityAi';
 import {
   SYSTEM_SOCIAL_LOGOS,
   addCustomLogo,
@@ -77,26 +77,6 @@ interface EntityChatMessage {
   text: string;
   createdAt: string;
   attachments: EntityAttachment[];
-  quiz: EntityChatQuizState | null;
-}
-
-interface EntityChatQuizState {
-  questionId: string;
-  /** Unique ID for the quiz run this question belongs to.
-   *  Primary component of the dedup key: (quizRunId, questionId) is unique
-   *  across runs so a restart produces a fresh run that won't get filtered.
-   *  Declared as `string | undefined` (not optional) so TS enforces that
-   *  every construction site always sets it explicitly. */
-  quizRunId: string | undefined;
-  mode: 'quiz_step' | 'quiz_stop_check';
-  quizMode: 'standard' | 'my';
-  expectsType: 'choice_or_text' | 'text';
-  options: EntityQuizOption[];
-  answered: boolean;
-  selectedOptionId: string;
-  selectedText: string;
-  recommendedOptionId?: string;
-  stepVersion?: number;
 }
 
 interface EmojiRecord {
@@ -271,8 +251,6 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
 const ALL_METADATA_FIELD_KEYS = Array.from(
   new Set(Object.values(ENTITY_CONTEXT_FIELDS).flatMap((fields) => fields.map((field) => field.key))),
 ) as MetadataFieldKey[];
-const QUIZ_PROFILE_SUMMARY_QUESTION_ID = 'P9_PROFILE_SUMMARY';
-const QUIZ_THINKING_INDICATOR_DELAY_MS = 380;
 
 const entitiesStore = useEntitiesStore();
 const authStore = useAuthStore();
@@ -301,15 +279,6 @@ const pendingComposerHeightReset = ref(false);
 const isVoiceListening = ref(false);
 const isVoiceSubmitting = ref(false);
 const isAiRequestInFlight = ref(false);
-const isQuizRequestInFlight = ref(false);
-const isQuizThinkingVisible = ref(false);
-const quizThinkingText = ref('Готовлю следующий вопрос...');
-const quizThinkingTimer = ref<ReturnType<typeof setTimeout> | null>(null);
-const lastQuizStepVersion = ref(0);
-const currentQuizStep = ref<EntityQuizStepResponse | null>(null);
-const activeQuizCustomInputMessageId = ref('');
-const activeQuizCustomInputText = ref('');
-const quizCustomInputRefs = ref<Record<string, HTMLInputElement | null>>({});
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
 const voiceRestartTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const voiceShouldRestart = ref(false);
@@ -486,8 +455,6 @@ function buildEntityMetadataResetPayload() {
     text_input: '',
     voice_input: '',
     chat_history: [],
-    quiz_state: null,
-    quiz_my: null,
     documents: [],
     description_history: [],
     description_meta: {},
@@ -509,13 +476,6 @@ function createLocalAttachmentId() {
 
 function createLocalChatMessageId() {
   return `msg-${Date.now()}-${Math.floor(Math.random() * 100_000)}`;
-}
-
-function createClientEventId() {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
-  }
-  return `evt-${Date.now()}-${Math.floor(Math.random() * 100_000)}`;
 }
 
 function createLocalNodeId() {
@@ -546,55 +506,6 @@ function normalizeChatHistory(value: unknown) {
   if (!Array.isArray(value)) {
     return [] as EntityChatMessage[];
   }
-
-  const normalizeQuizOptions = (rawOptions: unknown) => {
-    const source = Array.isArray(rawOptions) ? rawOptions : [];
-    return source
-      .slice(0, 4)
-      .map((item, index) => {
-        const record = toProfile(item);
-        const text = typeof record.text === 'string' ? record.text.trim() : '';
-        if (!text) return null;
-        return {
-          id: typeof record.id === 'string' && record.id.trim() ? record.id.trim() : String(index + 1),
-          text,
-        } satisfies EntityQuizOption;
-      })
-      .filter((item): item is EntityQuizOption => Boolean(item));
-  };
-
-  const normalizeQuizState = (rawQuiz: unknown) => {
-    const quiz = toProfile(rawQuiz);
-    const questionId = typeof quiz.questionId === 'string' ? quiz.questionId.trim() : '';
-    if (!questionId) return null;
-    const modeRaw = typeof quiz.mode === 'string' ? quiz.mode.trim().toLowerCase() : '';
-    const mode = modeRaw === 'quiz_stop_check' ? 'quiz_stop_check' : 'quiz_step';
-    const options = normalizeQuizOptions(quiz.options);
-    const quizMode = typeof quiz.quizMode === 'string' && quiz.quizMode.trim().toLowerCase() === 'my' ? 'my' : 'standard';
-    const expectsType = (() => {
-      if (typeof quiz.expectsType === 'string' && quiz.expectsType.trim().toLowerCase() === 'text') {
-        return 'text' as const;
-      }
-      if (isQuizProfileSummaryQuestion(questionId) || !options.length) {
-        return 'text' as const;
-      }
-      return 'choice_or_text' as const;
-    })();
-    const selectedOptionId = typeof quiz.selectedOptionId === 'string' ? quiz.selectedOptionId.trim() : '';
-    const selectedText = typeof quiz.selectedText === 'string' ? quiz.selectedText.trim() : '';
-
-    return {
-      questionId,
-      quizRunId: (typeof quiz.quizRunId === 'string' ? quiz.quizRunId.trim() : undefined) ?? undefined,
-      mode,
-      quizMode,
-      expectsType,
-      options,
-      answered: quiz.answered === true,
-      selectedOptionId,
-      selectedText,
-    } satisfies EntityChatQuizState;
-  };
 
   return value
     .map((item) => {
@@ -630,7 +541,6 @@ function normalizeChatHistory(value: unknown) {
         text,
         createdAt,
         attachments,
-        quiz: normalizeQuizState(record.quiz),
       } satisfies EntityChatMessage;
     })
     .filter((message): message is EntityChatMessage => Boolean(message));
@@ -728,10 +638,6 @@ function loadDraft(entityId: string) {
     })
     .filter((doc): doc is NonNullable<typeof doc> => Boolean(doc));
 
-  // FIX D: Preserve quiz state if loadDraft is called for the same entity
-  // while a quiz step is active (e.g., triggered by an SSE-driven store update).
-  const quizWasActive = draft.value?.entityId === entity._id && currentQuizStep.value !== null;
-
   draft.value = {
     entityId: entity._id,
     name: entity.name || '',
@@ -746,12 +652,6 @@ function loadDraft(entityId: string) {
     pendingUploads: [],
     chatHistory: normalizeChatHistory(aiMetadata.chat_history),
   };
-  if (!quizWasActive) {
-    currentQuizStep.value = null;
-    stopQuizThinkingIndicator();
-    closeQuizCustomInput();
-    quizCustomInputRefs.value = {};
-  }
 
   isProjectAddConfirmOpen.value = false;
   projectActionMessage.value = '';
@@ -793,26 +693,6 @@ function persistDraft(entityId: string) {
         size: attachment.size,
         data: attachment.data,
       })),
-      ...(message.quiz
-        ? {
-            quiz: {
-              questionId: message.quiz.questionId,
-              // quizRunId must be persisted so other devices can reconstruct
-              // the dedup key (quizRunId, questionId) after an SSE reload.
-              quizRunId: message.quiz.quizRunId,
-              mode: message.quiz.mode,
-              quizMode: message.quiz.quizMode,
-              expectsType: message.quiz.expectsType,
-              options: message.quiz.options.map((option) => ({
-                id: option.id,
-                text: option.text,
-              })),
-              answered: message.quiz.answered,
-              selectedOptionId: message.quiz.selectedOptionId,
-              selectedText: message.quiz.selectedText,
-            },
-          }
-        : {}),
     })),
     documents: currentDraft.documents.map((doc) => ({
       id: doc.id,
@@ -822,10 +702,6 @@ function persistDraft(entityId: string) {
       data: doc.data,
     })),
   };
-  // Quiz state is owned by server orchestrator. Do not overwrite it from local autosave snapshot.
-  delete nextMetadata.quiz_state;
-  delete nextMetadata.quiz_my;
-
   for (const field of getEntityContextFields(currentDraft.type)) {
     nextMetadata[field.key] = currentDraft.metadataValues[field.key] || [];
   }
@@ -875,16 +751,12 @@ function closeModal() {
     persistDraft(currentDraft.entityId);
   }
   clearSaveTimer();
-  stopQuizThinkingIndicator();
   stopVoiceCapture();
   selectedProjectId.value = '';
   isProjectAddConfirmOpen.value = false;
   isDeleteConfirmOpen.value = false;
   isChatClearConfirmOpen.value = false;
   isMineToggleBusy.value = false;
-  currentQuizStep.value = null;
-  closeQuizCustomInput();
-  quizCustomInputRefs.value = {};
   closeProfileFooter();
   emit('close');
 }
@@ -1017,9 +889,6 @@ async function confirmClearChatHistory() {
     currentDraft.documents = [];
     currentDraft.pendingUploads = [];
     currentDraft.chatHistory = [];
-    currentQuizStep.value = null;
-    closeQuizCustomInput();
-    quizCustomInputRefs.value = {};
     currentDraft.importanceSource = 'auto';
     currentDraft.metadataValues = buildEntityMetadataValues(currentDraft.type, resetMetadata);
     currentDraft.fieldDrafts = buildEntityFieldDrafts(currentDraft.type);
@@ -1504,93 +1373,10 @@ function normalizeChatText(value: string) {
   return value.replace(/\r\n/g, '\n').trim();
 }
 
-function normalizeQuizStepOptions(rawOptions: EntityQuizOption[] | undefined) {
-  const source = Array.isArray(rawOptions) ? rawOptions : [];
-  // B1: NEVER re-index option IDs. Use the exact id from the backend.
-  // The old fallback `id || String(index + 1)` was silently remapping ids 5,6 -> 1,2
-  // causing 409/restart when optionId sent back to backend didn't match.
-  return source
-    .slice(0, 6)
-    .map((item) => {
-      const id = item?.id != null ? String(item.id).trim() : '';
-      const text = item?.text != null ? String(item.text).trim() : '';
-      if (!id || !text) return null;
-      return { id, text } satisfies EntityQuizOption;
-    })
-    .filter((item): item is EntityQuizOption => Boolean(item));
-}
-
-function getQuizCustomOptionId(message: EntityChatMessage): string {
-  if (!message.quiz || !message.quiz.options.length) return '4';
-  const lastOption = message.quiz.options[message.quiz.options.length - 1];
-  return lastOption ? lastOption.id : '4';
-}
-
-function isQuizCustomOption(message: EntityChatMessage, optionId: string): boolean {
-  return optionId === getQuizCustomOptionId(message);
-}
-
-function isQuizProfileSummaryQuestion(questionId: string) {
-  return questionId.trim().toUpperCase() === QUIZ_PROFILE_SUMMARY_QUESTION_ID;
-}
-
-function clearQuizThinkingTimer() {
-  if (!quizThinkingTimer.value) return;
-  clearTimeout(quizThinkingTimer.value);
-  quizThinkingTimer.value = null;
-}
-
-function stopQuizThinkingIndicator() {
-  clearQuizThinkingTimer();
-  isQuizThinkingVisible.value = false;
-}
-
-function startQuizThinkingIndicator(action: 'start' | 'answer', questionId = '', isTextStep = false) {
-  stopQuizThinkingIndicator();
-  if (action !== 'answer') return;
-  quizThinkingText.value = isTextStep || isQuizProfileSummaryQuestion(questionId)
-    ? 'Завершаю обработку...'
-    : 'Думаю...';
-  quizThinkingTimer.value = setTimeout(() => {
-    isQuizThinkingVisible.value = true;
-  }, QUIZ_THINKING_INDICATOR_DELAY_MS);
-}
-
-function buildQuizChatState(step: EntityQuizStepResponse): EntityChatQuizState | null {
-  if (step.mode !== 'quiz_step' && step.mode !== 'quiz_stop_check') return null;
-  const questionId = typeof step.questionId === 'string' ? step.questionId.trim() : '';
-  if (!questionId) return null;
-  const quizMode = step.quizMode === 'my' ? 'my' : 'standard';
-  const expectsType =
-    step.expects && typeof step.expects.type === 'string' && step.expects.type.trim().toLowerCase() === 'text'
-      ? 'text'
-      : Array.isArray(step.options) && step.options.length
-        ? 'choice_or_text'
-        : 'text';
-  const options = expectsType === 'text' ? [] : normalizeQuizStepOptions(step.options);
-  // Use the backend-generated quizRunId as the primary dedup discriminator.
-  const quizRunId: string | undefined =
-    typeof step.quizRunId === 'string' && step.quizRunId.trim() ? step.quizRunId.trim() : undefined;
-  return {
-    questionId,
-    quizRunId,
-    stepVersion: typeof step.stepVersion === 'number' ? step.stepVersion : undefined,
-    mode: step.mode,
-    quizMode,
-    expectsType,
-    options,
-    answered: false,
-    selectedOptionId: '',
-    selectedText: '',
-    recommendedOptionId: typeof step.recommendedOptionId === 'string' ? step.recommendedOptionId.trim() : '',
-  };
-}
-
 function pushChatMessage(
   role: EntityChatRole,
   text: string,
   attachments: EntityAttachment[] = [],
-  quiz: EntityChatQuizState | null = null,
 ) {
   if (!draft.value) return;
   const normalized = normalizeChatText(text);
@@ -1604,153 +1390,8 @@ function pushChatMessage(
       text: normalized,
       createdAt: getIsoNow(),
       attachments: attachments.map((attachment) => ({ ...attachment })),
-      quiz: quiz ? { ...quiz, options: quiz.options.map((option) => ({ ...option })) } : null,
     },
   ];
-}
-
-/**
- * Build a stable dedup key for an assistant quiz message.
- *
- * Priority:
- *   1. quizRunId present AND questionId present  → `run:${quizRunId}|qid:${questionId}`
- *   2. questionId present only                   → `qid:${questionId}`
- *   3. Neither (edge case)                       → djb2 hash of the question text
- */
-function buildQuizDedupKey(
-  questionId: string,
-  quizRunId: string | undefined,
-  questionText: string,
-): string {
-  if (questionId && quizRunId) return `run:${quizRunId}|qid:${questionId}`;
-  if (questionId) return `qid:${questionId}`;
-  // Fallback: djb2 hash of question text (catches blank questionId edge cases)
-  let hash = 5381;
-  for (let i = 0; i < questionText.length; i++) {
-    hash = ((hash << 5) + hash) ^ questionText.charCodeAt(i);
-    hash = hash >>> 0; // keep uint32
-  }
-  return `txt:${hash}`;
-}
-
-/**
- * Dedup guard for assistant quiz messages.
- * Checks chatHistory for an existing message whose quiz dedup key matches.
- * Prevents the same question from appearing twice on 409 retry or SSE replay.
- */
-function isQuizStepDuplicate(
-  questionId: string,
-  quizRunId: string | undefined,
-  questionText: string,
-): boolean {
-  if (!draft.value) return false;
-  const incomingKey = buildQuizDedupKey(questionId, quizRunId, questionText);
-  return draft.value.chatHistory.some((msg) => {
-    if (msg.role !== 'assistant' || !msg.quiz) return false;
-    const msgKey = buildQuizDedupKey(
-      msg.quiz.questionId,
-      msg.quiz.quizRunId,
-      msg.text,
-    );
-    return msgKey === incomingKey;
-  });
-}
-
-const activeQuizMessageId = computed(() => {
-  const currentDraft = draft.value;
-  if (!currentDraft) return '';
-  for (let index = currentDraft.chatHistory.length - 1; index >= 0; index -= 1) {
-    const message = currentDraft.chatHistory[index];
-    if (!message) continue;
-    if (message.role !== 'assistant' || !message.quiz) continue;
-    if (!message.quiz.answered) return message.id;
-  }
-  return '';
-});
-
-function findChatMessage(messageId: string) {
-  const currentDraft = draft.value;
-  if (!currentDraft) return null;
-  return currentDraft.chatHistory.find((item) => item.id === messageId) || null;
-}
-
-function patchChatQuizState(messageId: string, patch: Partial<EntityChatQuizState>) {
-  const currentDraft = draft.value;
-  if (!currentDraft) return;
-  const index = currentDraft.chatHistory.findIndex((item) => item.id === messageId);
-  if (index < 0) return;
-  const message = currentDraft.chatHistory[index];
-  if (!message || !message.quiz) return;
-  currentDraft.chatHistory[index] = {
-    ...message,
-    quiz: {
-      ...message.quiz,
-      ...patch,
-      options: (patch.options || message.quiz.options).map((option) => ({ ...option })),
-    },
-  };
-}
-
-function isQuizMessageInteractionDisabled(message: EntityChatMessage) {
-  if (!message.quiz) return true;
-  if (message.quiz.answered) return true;
-  if (isAiRequestInFlight.value || isQuizRequestInFlight.value || isVoiceSubmitting.value) return true;
-  // Derive liveness purely from chatHistory so device B (which never set
-  // currentQuizStep) still gets live buttons after an SSE reload.
-  return activeQuizMessageId.value !== message.id;
-}
-
-function isQuizOptionSelected(message: EntityChatMessage, optionId: string) {
-  return Boolean(message.quiz && message.quiz.answered && message.quiz.selectedOptionId === optionId);
-}
-
-function isQuizCustomInputOpen(message: EntityChatMessage) {
-  return activeQuizCustomInputMessageId.value === message.id;
-}
-
-function bindQuizCustomInputRef(messageId: string, element: unknown) {
-  quizCustomInputRefs.value[messageId] = element instanceof HTMLInputElement ? element : null;
-}
-
-function closeQuizCustomInput(messageId?: string) {
-  if (messageId && activeQuizCustomInputMessageId.value !== messageId) return;
-  activeQuizCustomInputMessageId.value = '';
-  activeQuizCustomInputText.value = '';
-}
-
-function openQuizCustomInput(message: EntityChatMessage) {
-  if (!message.quiz) return;
-  if (isQuizMessageInteractionDisabled(message)) return;
-  activeQuizCustomInputMessageId.value = message.id;
-  activeQuizCustomInputText.value = '';
-  void nextTick(() => {
-    const input = quizCustomInputRefs.value[message.id];
-    input?.focus();
-  });
-}
-
-function sendQuizAnswerFromMessage(message: EntityChatMessage, payload: { optionId: string; answerText: string }) {
-  if (!message.quiz || !draft.value) return;
-  if (message.quiz.answered || isQuizMessageInteractionDisabled(message)) return;
-
-  const answerText = normalizeChatText(payload.answerText);
-  if (!answerText) return;
-
-  patchChatQuizState(message.id, {
-    answered: true,
-    selectedOptionId: payload.optionId,
-    selectedText: answerText,
-  });
-  closeQuizCustomInput(message.id);
-  pushChatMessage('user', answerText);
-  scheduleSave();
-  void runEntityQuizStep({
-    action: 'answer',
-    questionId: message.quiz.questionId,
-    quizMode: message.quiz.quizMode,
-    optionId: payload.optionId,
-    answerText,
-  });
 }
 
 function toAiAttachmentPayload(attachment: EntityAttachment) {
@@ -1843,358 +1484,6 @@ function parseRequestError(error: unknown) {
   return 'LLM request failed';
 }
 
-function extractQuizStepFromHttpError(error: unknown): EntityQuizStepResponse | null {
-  if (typeof error !== 'object' || !error || !('response' in error)) return null;
-  const axiosError = error as {
-    response?: {
-      status?: number;
-      data?: unknown;
-    };
-  };
-  const status = Number(axiosError.response?.status);
-  if (status !== 409) return null;
-  
-  const rawData = toProfile(axiosError.response?.data);
-  const candidate = toProfile(
-    rawData.step ?? rawData.payload ?? rawData.response ?? rawData
-  );
-
-  const mode = typeof candidate.mode === 'string' ? candidate.mode.trim() : '';
-  const questionId = typeof candidate.questionId === 'string' ? candidate.questionId.trim() : '';
-  const questionText = typeof candidate.questionText === 'string' ? candidate.questionText.trim() : '';
-  
-  if (!mode || !questionId || !questionText) return null;
-  
-  return candidate as unknown as EntityQuizStepResponse;
-}
-
-function mapPatchKeyToFieldKey(key: string) {
-  return key.endsWith('Add') ? key.slice(0, -3) : key;
-}
-
-function normalizeQuizFieldValue(fieldKey: string, value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) return '';
-
-  if (fieldKey === 'links') {
-    return normalizeLinkForOpen(trimmed);
-  }
-
-  if (fieldKey === 'importance') {
-    return normalizeImportanceLabel(trimmed);
-  }
-
-  return trimmed.slice(0, getMetadataFieldMaxLength(fieldKey));
-}
-
-function mergeQuizFieldValues(fieldKey: string, existing: string[], patchValues: string[]) {
-  const dedup = new Set<string>();
-  const nextValues: string[] = [];
-  const maxItems = fieldKey === 'importance' ? 1 : 24;
-
-  const pushValue = (rawValue: string) => {
-    const normalized = normalizeQuizFieldValue(fieldKey, rawValue);
-    if (!normalized) return;
-    const key = normalized.toLowerCase();
-    if (dedup.has(key)) return;
-    dedup.add(key);
-    nextValues.push(normalized);
-  };
-
-  for (const value of existing) {
-    pushValue(value);
-    if (nextValues.length >= maxItems) return nextValues;
-  }
-  for (const value of patchValues) {
-    pushValue(value);
-    if (nextValues.length >= maxItems) return nextValues;
-  }
-
-  return nextValues;
-}
-
-function applyQuizDraftUpdate(response: EntityQuizStepResponse) {
-  if (!draft.value) return;
-  const update = response?.draftUpdate;
-  if (!update || typeof update !== 'object') return;
-
-  const nextDescription = typeof update.description === 'string' ? update.description.trim() : '';
-  if (nextDescription) {
-    draft.value.description = nextDescription;
-  }
-
-  const fieldsPatch = update.fieldsPatch && typeof update.fieldsPatch === 'object' ? update.fieldsPatch : {};
-  for (const [patchKey, rawValues] of Object.entries(fieldsPatch)) {
-    const fieldKey = mapPatchKeyToFieldKey(patchKey);
-    const patchValues = Array.isArray(rawValues)
-      ? rawValues.filter((item): item is string => typeof item === 'string')
-      : [];
-    if (!patchValues.length) continue;
-
-    // B (frontend): if the field doesn't exist yet in metadataValues, initialize it —
-    // do NOT skip it. The old hasOwnProperty guard was silently dropping rolesAdd when
-    // the entity hadn't loaded roles yet (e.g. draft freshly created).
-    const existing = Array.isArray(draft.value.metadataValues[fieldKey])
-      ? draft.value.metadataValues[fieldKey]
-      : [];
-    draft.value.metadataValues[fieldKey] = mergeQuizFieldValues(fieldKey, existing, patchValues);
-    if (fieldKey === 'importance' && draft.value.metadataValues[fieldKey].length) {
-      draft.value.importanceSource = 'manual';
-    }
-  }
-
-  scheduleSave();
-
-  // B1: If response includes updatedEntity, nothing extra needed on draft — the backend
-  // already persists quiz_state as completed. The 'start' guard on backend returns
-  // quiz_completed without restarting when lastQuestion.mode === 'quiz_completed'.
-}
-
-function applyUpdatedEntityFromQuizResponse(response: EntityQuizStepResponse) {
-  const rawUpdated = (response as unknown as { updatedEntity?: unknown }).updatedEntity;
-  const entity = toProfile(rawUpdated);
-  const id = typeof entity._id === 'string' ? entity._id : '';
-  if (!id) return;
-  entitiesStore.applyLocalEntityPatch(id, entity as unknown as Partial<Entity>);
-}
-
-
-function formatQuizQuestionForChat(step: EntityQuizStepResponse) {
-  return step.questionText.trim();
-}
-
-function setQuizStep(response: EntityQuizStepResponse | null) {
-  currentQuizStep.value = response;
-  if (response?.mode === 'quiz_completed') {
-    currentQuizStep.value = null;
-  }
-}
-
-async function runEntityQuizStep(payload: {
-  action: 'start' | 'answer';
-  quizMode?: 'standard' | 'my';
-  questionId?: string;
-  answerText?: string;
-  optionId?: string;
-}) {
-  const currentDraft = draft.value;
-  if (!currentDraft) {
-    isVoiceSubmitting.value = false;
-    return;
-  }
-  if (isQuizRequestInFlight.value || isAiRequestInFlight.value) {
-    isVoiceSubmitting.value = false;
-    return;
-  }
-
-  const isTextStepAnswer =
-    payload.action === 'answer' &&
-    currentQuizStep.value?.mode === 'quiz_step' &&
-    currentQuizStep.value.expects &&
-    typeof currentQuizStep.value.expects.type === 'string' &&
-    currentQuizStep.value.expects.type.trim().toLowerCase() === 'text';
-  startQuizThinkingIndicator(payload.action, payload.questionId || '', isTextStepAnswer);
-  isQuizRequestInFlight.value = true;
-  const clientEventId = payload.action === 'answer' ? createClientEventId() : '';
-  const requestedQuizMode = (() => {
-    if (payload.quizMode === 'my' || payload.quizMode === 'standard') {
-      return payload.quizMode;
-    }
-
-    if (currentQuizStep.value?.quizMode === 'my') {
-      return 'my';
-    }
-
-    const entity = currentEntity.value;
-    if (!entity) {
-      return 'standard';
-    }
-
-    if (entity.type === 'person') {
-      return toBooleanFlag(entity.is_me) ? 'my' : 'standard';
-    }
-
-    return toBooleanFlag(entity.is_mine) ? 'my' : 'standard';
-  })();
-  const requestPayload = {
-    entityId: currentDraft.entityId,
-    action: payload.action,
-    client_event_id: clientEventId,
-    questionId: payload.questionId || '',
-    input: {
-      activeQuestion: {
-        questionId: payload.questionId || '',
-      },
-    },
-    answerText: payload.answerText || '',
-    optionId: payload.optionId || '',
-    quizMode: requestedQuizMode,
-    debug: true,
-  };
-
-  let shouldAutostartVoiceForTextStep = false;
-    try {
-      const response = await entityQuizStep(requestPayload);
-      if (!draft.value || draft.value.entityId !== currentDraft.entityId) {
-        return;
-      }
-
-      const incomingVersion = Number(response.stepVersion || 0);
-      if (incomingVersion > 0) {
-        if (incomingVersion < lastQuizStepVersion.value) {
-          return;
-        }
-        lastQuizStepVersion.value = incomingVersion;
-      }
-
-      applyUpdatedEntityFromQuizResponse(response);
-
-    // B2: guard against backend returning quiz_step with no options (would cause silent freeze)
-    if (response.mode === 'quiz_step' && (!Array.isArray(response.options) || response.options.length === 0) && response.expects?.type !== 'text') {
-      pushChatMessage('assistant', 'Ошибка: сервер вернул шаг квиза без вариантов ответа. Обнови страницу или повтори. (step without options)');
-      stopVoiceCapture();
-      await nextTick();
-      scrollEntityChatToBottom('auto');
-      return;
-    }
-
-      applyQuizDraftUpdate(response);
-    const debugAttachments = response.debug ? [buildDebugAttachment(response.debug)] : [];
-    const quizState = buildQuizChatState(response);
-    // Only push the question if it is not already in chat history (dedup by quizRunId + questionId).
-    const qRunId = typeof response.quizRunId === 'string' && response.quizRunId.trim() ? response.quizRunId.trim() : undefined;
-    if (!isQuizStepDuplicate(response.questionId, qRunId, response.questionText)) {
-      pushChatMessage('assistant', formatQuizQuestionForChat(response), debugAttachments, quizState);
-    }
-    scheduleSave();
-    setQuizStep(response);
-    if (response.mode === 'quiz_completed') {
-      stopVoiceCapture();
-    }
-    shouldAutostartVoiceForTextStep = Boolean(
-      response.mode === 'quiz_step' &&
-        response.expects &&
-        typeof response.expects.type === 'string' &&
-        response.expects.type.trim().toLowerCase() === 'text',
-    );
-    await nextTick();
-    scrollEntityChatToBottom('auto');
-  } catch (error) {
-    const syncResponse = extractQuizStepFromHttpError(error);
-    if (syncResponse && draft.value && draft.value.entityId === currentDraft.entityId) {
-      const incomingVersion = Number(syncResponse.stepVersion || 0);
-      if (incomingVersion > 0) {
-        if (incomingVersion < lastQuizStepVersion.value) {
-          return;
-        }
-        lastQuizStepVersion.value = incomingVersion;
-      }
-
-      applyQuizDraftUpdate(syncResponse);
-      applyUpdatedEntityFromQuizResponse(syncResponse);
-      const debugAttachments = syncResponse.debug ? [buildDebugAttachment(syncResponse.debug)] : [];
-      // Dedup — 409 can replay the same question; don't show it twice.
-      const syncRunId = typeof syncResponse.quizRunId === 'string' && syncResponse.quizRunId.trim() ? syncResponse.quizRunId.trim() : undefined;
-      if (!isQuizStepDuplicate(syncResponse.questionId, syncRunId, syncResponse.questionText)) {
-        pushChatMessage('assistant', formatQuizQuestionForChat(syncResponse), debugAttachments, buildQuizChatState(syncResponse));
-      }
-      scheduleSave();
-      setQuizStep(syncResponse);
-      if (syncResponse.mode === 'quiz_completed') {
-        stopVoiceCapture();
-      }
-      shouldAutostartVoiceForTextStep = Boolean(
-        syncResponse.mode === 'quiz_step' &&
-          syncResponse.expects &&
-          typeof syncResponse.expects.type === 'string' &&
-          syncResponse.expects.type.trim().toLowerCase() === 'text',
-      );
-      await nextTick();
-      scrollEntityChatToBottom('auto');
-      return;
-    }
-    
-    const is409 = typeof error === 'object' && error !== null && 'response' in error && (error as any).response?.status === 409;
-    if (is409 && draft.value && draft.value.entityId === currentDraft.entityId) {
-      const debugAttachments = [buildDebugAttachment(buildLlmErrorDebugPayload(error, requestPayload))];
-      pushChatMessage('assistant', 'Квиз уже обработал запрос (409), но сервер не вернул шаг. Ожидается корректный step в ответе 409 от сервера.', debugAttachments);
-      await nextTick();
-      scrollEntityChatToBottom('auto');
-      return;
-    }
-
-    const debugAttachments = [buildDebugAttachment(buildLlmErrorDebugPayload(error, requestPayload))];
-    pushChatMessage('assistant', `Не удалось получить шаг квиза. ${parseRequestError(error)}`, debugAttachments);
-    await nextTick();
-    scrollEntityChatToBottom('auto');
-    scheduleSave();
-  } finally {
-    isVoiceSubmitting.value = false;
-    isQuizRequestInFlight.value = false;
-    stopQuizThinkingIndicator();
-    if (shouldAutostartVoiceForTextStep && !isVoiceListening.value) {
-      startVoiceCapture();
-    }
-  }
-}
-
-function startEntityQuiz() {
-  if (!draft.value) return;
-  if (isMineToggleBusy.value) return;
-  void runEntityQuizStep({ action: 'start' });
-}
-
-const ACCESS_ROLE_QUIZ_QUESTION_ID = 'ACCESS_ROLE';
-
-const ACCESS_ROLE_OPTION_TOOLTIPS: Record<string, string> = {
-  '1': 'Активный, общительный, везде бывает, сводит людей. Узнать: по соцсетям/чатам видно, что он постоянно на встречах и знакомит людей.',
-  '2': 'Ресурс/влияние (деньги, статус, доступ), но сам редко «проводит» дальше. Через него обычно не идёт цепочка знакомств.',
-  '3': 'Помогает пройти: подсказывает кому/как писать, делает интро, ускоряет доступ.',
-  '4': 'Блокирует/тормозит доступ: фильтрует, не пропускает, формально отшивает или «держит дверь».',
-  '5': 'Недостаточно данных, пока не ясно.',
-  '6': 'Ввести свою роль текстом.',
-};
-
-function getQuizOptionTooltip(message: EntityChatMessage, optionId: string): string {
-  const questionId = message.quiz?.questionId ?? '';
-  if (questionId.toUpperCase() === ACCESS_ROLE_QUIZ_QUESTION_ID) {
-    return ACCESS_ROLE_OPTION_TOOLTIPS[optionId] ?? '';
-  }
-  return '';
-}
-
-function onQuizOptionSelect(message: EntityChatMessage, optionId: string) {
-  if (!message.quiz) return;
-  const option = message.quiz.options.find((item) => item.id === optionId);
-  const optionText = option?.text || `Ответ ${optionId}`;
-
-  if (isQuizCustomOption(message, optionId)) {
-    openQuizCustomInput(message);
-    return;
-  }
-
-  sendQuizAnswerFromMessage(message, {
-    optionId,
-    answerText: optionText,
-  });
-}
-
-function onQuizCustomInputKeydown(event: KeyboardEvent, message: EntityChatMessage) {
-  if (event.key !== 'Enter') return;
-  event.preventDefault();
-  void submitQuizCustomAnswer(message);
-}
-
-async function submitQuizCustomAnswer(message: EntityChatMessage) {
-  if (!message.quiz) return;
-  const answerText = normalizeChatText(activeQuizCustomInputText.value);
-  if (!answerText) return;
-  sendQuizAnswerFromMessage(message, {
-    optionId: getQuizCustomOptionId(message),
-    answerText,
-  });
-}
-
 function openChatAttachment(attachment: EntityAttachment) {
   if (typeof window === 'undefined') return;
   if (!attachment.data) return;
@@ -2211,7 +1500,7 @@ function openChatAttachment(attachment: EntityAttachment) {
 
 async function onSendInput() {
   if (!draft.value) return;
-  if (isAiRequestInFlight.value || isQuizRequestInFlight.value || isVoiceSubmitting.value) return;
+  if (isAiRequestInFlight.value || isVoiceSubmitting.value) return;
 
   const voiceSubmitStarted = isVoiceListening.value;
   if (voiceSubmitStarted) {
@@ -2223,39 +1512,6 @@ async function onSendInput() {
     const message = normalizeChatText(draft.value.textInput);
   const attachments = [...draft.value.pendingUploads];
   if (!message && !attachments.length) return;
-
-  // Derive active quiz step from chatHistory — works on all devices, not just
-  // the one that received the quiz step response into currentQuizStep.
-  const activeQuizMsgId = activeQuizMessageId.value;
-  const activeQuizMsg = activeQuizMsgId ? findChatMessage(activeQuizMsgId) : null;
-  if (activeQuizMsg?.quiz && !activeQuizMsg.quiz.answered) {
-    if (!message) return;
-    patchChatQuizState(activeQuizMsg.id, {
-      answered: true,
-      selectedOptionId: '4',
-      selectedText: message,
-    });
-    closeQuizCustomInput(activeQuizMsg.id);
-    pushChatMessage('user', message, attachments);
-    draft.value.pendingUploads = [];
-    draft.value.documents = Array.from(
-      new Map([...draft.value.documents, ...attachments].map((attachment) => [attachment.id, attachment])).values(),
-    );
-    draft.value.textInput = '';
-    draft.value.voiceInput = '';
-    resetChatInputSize();
-    scheduleSave();
-    void nextTick(() => {
-      scrollEntityChatToBottom('auto');
-    });
-    void runEntityQuizStep({
-      action: 'answer',
-      questionId: activeQuizMsg.quiz.questionId,
-      quizMode: activeQuizMsg.quiz.quizMode,
-      answerText: message,
-    });
-    return;
-  }
 
   pushChatMessage('user', message, attachments);
   draft.value.pendingUploads = [];
@@ -2692,24 +1948,6 @@ const progressEntity = computed<Entity | null>(() => {
         size: attachment.size,
         data: attachment.data,
       })),
-      ...(message.quiz
-        ? {
-            quiz: {
-              questionId: message.quiz.questionId,
-              quizRunId: message.quiz.quizRunId,
-              mode: message.quiz.mode,
-              quizMode: message.quiz.quizMode,
-              expectsType: message.quiz.expectsType,
-              options: message.quiz.options.map((option) => ({
-                id: option.id,
-                text: option.text,
-              })),
-              answered: message.quiz.answered,
-              selectedOptionId: message.quiz.selectedOptionId,
-              selectedText: message.quiz.selectedText,
-            },
-          }
-        : {}),
     })),
   } as Record<string, unknown>;
 
@@ -3141,12 +2379,11 @@ watch(
     }
     // SSE live-update: when the entity store receives entity.updated from the
     // server, merge the remote chatHistory into the local draft so other devices
-    // see new quiz questions (and get live buttons) without a page reload.
+    // see new chat messages without a page reload.
     if (
       entity &&
       draft.value &&
       entity._id === draft.value.entityId &&
-      !isQuizRequestInFlight.value &&
       !isAiRequestInFlight.value
     ) {
       const remoteMeta = toProfile(entity.ai_metadata);
@@ -3209,7 +2446,6 @@ onBeforeUnmount(() => {
     persistDraft(currentDraft.entityId);
   }
   clearSaveTimer();
-  stopQuizThinkingIndicator();
   stopVoiceCapture();
   stopDescriptionResize();
   if (typeof window !== 'undefined') {
@@ -3405,83 +2641,8 @@ onBeforeUnmount(() => {
                 {{ attachment.name }}
               </button>
             </div>
-            <div
-              v-if="
-                message.role === 'assistant' &&
-                message.quiz &&
-                message.quiz.options &&
-                message.quiz.options.length
-              "
-              class="entity-chat-quiz-inline"
-            >
-              <div class="entity-info-quiz-options">
-                <div
-                  v-for="option in message.quiz.options"
-                  :key="`${message.id}:${option.id}`"
-                  class="entity-info-quiz-option-wrap"
-                  :data-tooltip="getQuizOptionTooltip(message, option.id) || undefined"
-                >
-                  <button
-                    type="button"
-                    class="entity-info-quiz-option-btn"
-                    :class="{ selected: isQuizOptionSelected(message, option.id), recommended: message.quiz?.recommendedOptionId === option.id && !isQuizOptionSelected(message, option.id) }"
-                    :disabled="isQuizMessageInteractionDisabled(message) || isQuizCustomInputOpen(message)"
-                    @click="onQuizOptionSelect(message, option.id)"
-                  >
-                    {{ option.id }}. {{ option.text }}
-                  </button>
-                </div>
-              </div>
-              <div
-                v-if="isQuizCustomInputOpen(message)"
-                class="entity-chat-quiz-custom"
-              >
-                <input
-                  :ref="(element) => bindQuizCustomInputRef(message.id, element)"
-                  v-model="activeQuizCustomInputText"
-                  class="entity-chat-quiz-custom-input"
-                  type="text"
-                  placeholder="Введи свой вариант…"
-                  :disabled="isQuizRequestInFlight || isAiRequestInFlight"
-                  @keydown="onQuizCustomInputKeydown($event, message)"
-                />
-                <button
-                  type="button"
-                  class="entity-chat-quiz-custom-btn send"
-                  :disabled="isQuizRequestInFlight || isAiRequestInFlight || !activeQuizCustomInputText.trim()"
-                  @click="submitQuizCustomAnswer(message)"
-                >
-                  Отправить
-                </button>
-                <button
-                  type="button"
-                  class="entity-chat-quiz-custom-btn cancel"
-                  :disabled="isQuizRequestInFlight || isAiRequestInFlight"
-                  @click="closeQuizCustomInput(message.id)"
-                >
-                  Отмена
-                </button>
-              </div>
-            </div>
-            <div
-              v-else-if="
-                message.role === 'assistant' &&
-                message.quiz &&
-                message.quiz.expectsType === 'text'
-              "
-              class="entity-chat-quiz-inline"
-            >
-              <p class="entity-chat-quiz-freeform-hint">
-                Ответьте свободным текстом или голосом.
-              </p>
-            </div>
           </div>
           <time class="entity-chat-time">{{ toDisplayTime(message.createdAt) }}</time>
-        </article>
-        <article v-if="isQuizThinkingVisible" class="entity-chat-message assistant">
-          <div class="entity-chat-bubble thinking">
-            <span class="entity-chat-thinking-text">{{ quizThinkingText }}</span>
-          </div>
         </article>
         <article v-if="isAiRequestInFlight" class="entity-chat-message assistant">
           <div class="entity-chat-bubble thinking">
@@ -3514,7 +2675,7 @@ onBeforeUnmount(() => {
             v-model="draft.textInput"
             class="entity-info-chat-input"
             :placeholder="chatPlaceholder"
-            :disabled="isAiRequestInFlight || isQuizRequestInFlight || isVoiceSubmitting"
+            :disabled="isAiRequestInFlight || isVoiceSubmitting"
             rows="1"
             @input="onTextInput"
             @keydown="onChatComposerKeydown"
@@ -3527,7 +2688,7 @@ onBeforeUnmount(() => {
               type="button"
               class="entity-info-chat-icon-btn"
               title="Загрузка документа"
-              :disabled="isAiRequestInFlight || isQuizRequestInFlight || isVoiceSubmitting"
+              :disabled="isAiRequestInFlight || isVoiceSubmitting"
               @click="docInputRef?.click()"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -3549,7 +2710,7 @@ onBeforeUnmount(() => {
               class="entity-info-chat-icon-btn"
               :class="{ active: isVoiceListening }"
               title="Голосовой ввод"
-              :disabled="isAiRequestInFlight || isQuizRequestInFlight || isVoiceSubmitting"
+              :disabled="isAiRequestInFlight || isVoiceSubmitting"
               @click="onVoiceToggle"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -3560,20 +2721,6 @@ onBeforeUnmount(() => {
               </svg>
             </button>
 
-            <button
-              type="button"
-              class="entity-info-chat-icon-btn"
-              :class="{ active: Boolean(activeQuizMessageId) }"
-              title="Квиз"
-              :disabled="isAiRequestInFlight || isQuizRequestInFlight || isVoiceSubmitting || isMineToggleBusy"
-              @click="startEntityQuiz"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M9.5 9a2.5 2.5 0 1 1 4.3 1.7c-.8.8-1.8 1.3-1.8 2.8" />
-                <circle cx="12" cy="17.2" r="1" />
-                <circle cx="12" cy="12" r="9" />
-              </svg>
-            </button>
           </div>
 
           <div class="entity-info-title-actions entity-info-chat-tools-actions">
@@ -3625,7 +2772,7 @@ onBeforeUnmount(() => {
             type="button"
             class="entity-info-chat-icon-btn send entity-info-chat-tools-send"
             title="Отправить"
-            :disabled="isAiRequestInFlight || isQuizRequestInFlight || isVoiceSubmitting"
+            :disabled="isAiRequestInFlight || isVoiceSubmitting"
             @click="onSendInput"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -4674,162 +3821,6 @@ onBeforeUnmount(() => {
   padding: 4px 8px;
 }
 
-.entity-info-quiz-options {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.entity-info-quiz-option-wrap {
-  position: relative;
-  width: 100%;
-}
-
-.entity-info-quiz-option-wrap[data-tooltip]:hover::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
-  background: #1e2333;
-  color: #e8ecf4;
-  font-size: 11.5px;
-  font-family: inherit;
-  line-height: 1.45;
-  padding: 7px 11px;
-  border-radius: 9px;
-  white-space: pre-wrap;
-  max-width: 230px;
-  width: max-content;
-  z-index: 999;
-  pointer-events: none;
-  box-shadow: 0 4px 18px rgba(0,0,0,0.20);
-  animation: none;
-  transition: none;
-}
-
-.entity-chat-quiz-inline {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.entity-chat-quiz-freeform-hint {
-  margin: 0;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.3;
-}
-
-.entity-info-quiz-option-btn {
-  width: 100%;
-  min-height: 30px;
-  border-radius: 10px;
-  border: 1px solid #dbe4f3;
-  background: #f8fafc;
-  color: #334155;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.2;
-  padding: 6px 8px;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    color 0.16s ease,
-    border-color 0.16s ease,
-    background-color 0.16s ease;
-}
-
-.entity-info-quiz-option-btn:hover:not(:disabled) {
-  color: #1058ff;
-  border-color: #bfd5ff;
-  background: #eef4ff;
-}
-
-.entity-info-quiz-option-btn.selected {
-  color: #1d4ed8;
-  border-color: #b9ccf9;
-  background: #e9f0ff;
-}
-
-.entity-info-quiz-option-btn:disabled {
-  cursor: not-allowed;
-  color: #8a96ab;
-  border-color: #dce5f2;
-  background: #f3f6fb;
-}
-
-@keyframes quizRecommendedPulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 88, 255, 0.18); }
-  50% { box-shadow: 0 0 0 4px rgba(16, 88, 255, 0.10); }
-}
-
-.entity-info-quiz-option-btn.recommended {
-  border-color: #7ba7ff;
-  color: #1d4ed8;
-  animation: quizRecommendedPulse 1.4s ease-in-out infinite;
-}
-
-.entity-chat-quiz-custom {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 6px;
-  align-items: center;
-}
-
-.entity-chat-quiz-custom-input {
-  width: 100%;
-  min-width: 0;
-  height: 30px;
-  border-radius: 9px;
-  border: 1px solid #dbe4f3;
-  background: #ffffff;
-  color: #0f172a;
-  font-size: 12px;
-  padding: 0 9px;
-  outline: none;
-}
-
-.entity-chat-quiz-custom-input:focus {
-  border-color: #9cb9ff;
-}
-
-.entity-chat-quiz-custom-btn {
-  height: 30px;
-  border-radius: 9px;
-  border: 1px solid #dbe4f3;
-  background: #f8fafc;
-  color: #334155;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 0 10px;
-  cursor: pointer;
-  transition:
-    color 0.16s ease,
-    border-color 0.16s ease,
-    background-color 0.16s ease;
-}
-
-.entity-chat-quiz-custom-btn.send:hover:not(:disabled) {
-  color: #1058ff;
-  border-color: #bfd5ff;
-  background: #eef4ff;
-}
-
-.entity-chat-quiz-custom-btn.cancel:hover:not(:disabled) {
-  color: #334155;
-  border-color: #cad6ea;
-  background: #edf2f9;
-}
-
-.entity-chat-quiz-custom-btn:disabled {
-  cursor: not-allowed;
-  color: #8a96ab;
-  border-color: #dce5f2;
-  background: #f3f6fb;
-}
-
 .entity-info-chat-tools {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
@@ -4993,18 +3984,6 @@ onBeforeUnmount(() => {
   .entity-info-chat-feed {
     padding: 8px;
     gap: 7px;
-  }
-
-  .entity-info-quiz-options {
-    grid-template-columns: 1fr;
-  }
-
-  .entity-chat-quiz-custom {
-    grid-template-columns: 1fr;
-  }
-
-  .entity-chat-quiz-custom-btn {
-    width: 100%;
   }
 
   .entity-info-menu-footer {

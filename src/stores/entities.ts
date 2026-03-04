@@ -434,7 +434,7 @@ export const useEntitiesStore = defineStore('entities', {
         const existing = nextItems[existingIndex]!;
         const rel = compareEntityVersion(normalizedEntity, existing);
         if (rel === 'older') {
-          // FIX A: Strictly older snapshot — skip to protect active quiz context.
+          // Strictly older snapshot — skip to protect active local state.
           return;
         }
         if (rel === 'equal_or_unknown') {

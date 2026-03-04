@@ -203,10 +203,10 @@ const selectedFieldFilters = ref<Record<string, string[]>>({});
 const quickEntityFilters = ref<QuickEntityFilters>(createDefaultQuickFilters());
 const isHydratingFilterPrefs = ref(false);
 const entityInfoEntityId = ref<string | null>(null);
-// FIX B: Deferred full-refresh flag. Set when a fetchEntities() call was
+// Deferred full-refresh flag. Set when a fetchEntities() call was
 // requested while the EntityInfoModal was open. The fetch runs as soon as
 // the modal closes so we never miss the refresh but also never stomp
-// mid-quiz entity state.
+// mid-edit entity state.
 const pendingEntitiesRefetch = ref(false);
 const activeProjectRenameId = ref<string | null>(null);
 const projectRenameDraft = ref('');
@@ -2007,8 +2007,8 @@ function closeEntityInfoModal() {
   entityInfoEntityId.value = null;
 }
 
-// FIX B: When the modal closes, flush any pending full-refresh that was
-// deferred while a quiz was potentially active inside the modal.
+// When the modal closes, flush any pending full-refresh that was
+// deferred while the modal was open.
 watch(entityInfoEntityId, (id) => {
   if (id !== null) return; // modal is still open
   if (!pendingEntitiesRefetch.value) return;
