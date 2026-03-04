@@ -530,7 +530,18 @@ const entityInfoDocInputRef = ref<HTMLInputElement | null>(null);
 const entityInfoChatInputRef = ref<HTMLTextAreaElement | null>(null);
 const entityInfoChatFeedRef = ref<HTMLElement | null>(null);
 const isVoiceListening = ref(false);
-const isEntityInfoAiRequestInFlight = ref(false);
+const localEntityInfoAiRequestInFlight = ref(false);
+const isEntityInfoAiRequestInFlight = computed(() => {
+  const entityId = entityInfoModal.value?.entityId;
+  if (!entityId) return localEntityInfoAiRequestInFlight.value;
+  const entity = entitiesStore.byId(entityId);
+  const entityPending = Boolean(toProfile(entity?.ai_metadata).analysis_pending);
+  return (
+    localEntityInfoAiRequestInFlight.value ||
+    entitiesStore.isEntityAiPending(entityId) ||
+    entityPending
+  );
+});
 const pendingComposerHeightReset = ref(false);
 const infoSaveTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const activeVoiceRecognition = ref<{
@@ -2208,7 +2219,8 @@ async function onInfoSendInput() {
 
   scheduleEntityInfoSave();
 
-  isEntityInfoAiRequestInFlight.value = true;
+  localEntityInfoAiRequestInFlight.value = true;
+  entitiesStore.setEntityAiPending(draft.entityId, true);
   try {
     const response = await analyzeEntityWithAi({
       entityId: draft.entityId,
@@ -2225,8 +2237,14 @@ async function onInfoSendInput() {
       debug: import.meta.env.DEV,
     });
 
+    if (response && 'status' in response && response.status === 'processing') {
+      localEntityInfoAiRequestInFlight.value = false;
+      return;
+    }
+
     const currentDraft = entityInfoModal.value;
     if (!currentDraft || currentDraft.entityId !== draft.entityId) {
+      entitiesStore.setEntityAiPending(draft.entityId, false);
       return;
     }
 
@@ -2250,16 +2268,18 @@ async function onInfoSendInput() {
 
     const debugAttachments = response.debug ? [buildEntityInfoDebugAttachment(response.debug)] : [];
     pushChatMessage('assistant', response.reply || 'Готово.', debugAttachments);
+    entitiesStore.setEntityAiPending(draft.entityId, false);
     scheduleEntityInfoSave();
     await nextTick();
     scrollEntityChatToBottom('auto');
   } catch (error: unknown) {
     pushChatMessage('assistant', `Не удалось получить ответ от LLM. ${parseEntityInfoRequestError(error)}`);
+    entitiesStore.setEntityAiPending(draft.entityId, false);
     scheduleEntityInfoSave();
     await nextTick();
     scrollEntityChatToBottom('auto');
   } finally {
-    isEntityInfoAiRequestInFlight.value = false;
+    localEntityInfoAiRequestInFlight.value = false;
   }
 }
 

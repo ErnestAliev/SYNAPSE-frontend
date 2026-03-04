@@ -50,6 +50,7 @@ interface EntitiesState {
   flashStates: Partial<Record<EntityType, number | null>>;
   lastCreatedIdByType: Partial<Record<EntityType, string | null>>;
   loadedTypes: Partial<Record<EntityType, boolean>>;
+  aiAnalyzePendingById: Record<string, boolean>;
 }
 
 interface FetchEntitiesOptions {
@@ -70,6 +71,12 @@ function createInitialLoadedTypeState(): Partial<Record<EntityType, boolean>> {
     acc[type] = false;
     return acc;
   }, {} as Partial<Record<EntityType, boolean>>);
+}
+
+function normalizeAiPendingFlag(entity: Entity) {
+  const metadata = (entity as { ai_metadata?: unknown }).ai_metadata as Record<string, unknown> | undefined;
+  if (!metadata || typeof metadata !== 'object') return false;
+  return Boolean((metadata as Record<string, unknown>).analysis_pending);
 }
 
 function mergeEntityPatch(base: Partial<Entity>, patch: Partial<Entity>): Partial<Entity> {
@@ -257,6 +264,7 @@ export const useEntitiesStore = defineStore('entities', {
       return acc;
     }, {} as Partial<Record<EntityType, string | null>>),
     loadedTypes: createInitialLoadedTypeState(),
+    aiAnalyzePendingById: {},
   }),
 
   getters: {
@@ -264,6 +272,7 @@ export const useEntitiesStore = defineStore('entities', {
     byId: (state) => (id: string) => state.items.find((item) => item._id === id),
     countByType: (state) => (type: EntityType) =>
       state.items.filter((item) => item.type === type).length,
+    isEntityAiPending: (state) => (id: string) => Boolean(state.aiAnalyzePendingById[id]),
   },
 
   actions: {
@@ -288,6 +297,16 @@ export const useEntitiesStore = defineStore('entities', {
       bufferedEntityPatches.delete(id);
       bufferedEntityPatchInFlight.delete(id);
       bufferedEntityPatchRetryCounts.delete(id);
+    },
+
+    setEntityAiPending(id: string, pending: boolean) {
+      const normalizedId = normalizeEntityId(id);
+      if (!normalizedId) return;
+      if (pending) {
+        this.aiAnalyzePendingById[normalizedId] = true;
+      } else {
+        delete this.aiAnalyzePendingById[normalizedId];
+      }
     },
 
     applyLocalEntityPatch(id: string, payload: Partial<Entity>) {
@@ -424,6 +443,7 @@ export const useEntitiesStore = defineStore('entities', {
 
       cleanupExpiredRecentlyDeleted();
       clearRecentlyDeleted([normalizedEntity._id]);
+      this.setEntityAiPending(normalizedEntity._id, normalizeAiPendingFlag(normalizedEntity));
 
       const nextItems = [...this.items];
       const existingIndex = nextItems.findIndex(
@@ -471,6 +491,7 @@ export const useEntitiesStore = defineStore('entities', {
       const removedEntityIds = new Set(normalizedIds);
       for (const removedEntityId of removedEntityIds) {
         this.clearBufferedPatchState(removedEntityId);
+        this.setEntityAiPending(removedEntityId, false);
       }
 
       markRecentlyDeleted(removedEntityIds);

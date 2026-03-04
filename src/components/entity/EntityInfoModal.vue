@@ -278,7 +278,13 @@ const infoSaveTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const pendingComposerHeightReset = ref(false);
 const isVoiceListening = ref(false);
 const isVoiceSubmitting = ref(false);
-const isAiRequestInFlight = ref(false);
+const localAiRequestInFlight = ref(false);
+const isAiRequestInFlight = computed(() => {
+  const entityId = draft.value?.entityId || currentEntity.value?._id;
+  if (!entityId) return localAiRequestInFlight.value;
+  const entityPending = Boolean(toProfile(currentEntity.value?.ai_metadata).analysis_pending);
+  return localAiRequestInFlight.value || entitiesStore.isEntityAiPending(entityId) || entityPending;
+});
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
 const voiceRestartTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const voiceShouldRestart = ref(false);
@@ -1539,7 +1545,8 @@ async function onSendInput() {
   const activeDraft = draft.value;
   if (!activeDraft) return;
 
-  isAiRequestInFlight.value = true;
+  localAiRequestInFlight.value = true;
+  entitiesStore.setEntityAiPending(activeDraft.entityId, true);
   const requestPayload = {
     entityId: activeDraft.entityId,
     message,
@@ -1557,9 +1564,15 @@ async function onSendInput() {
   try {
     const response = await analyzeEntityWithAi(requestPayload);
 
+    if (response && 'status' in response && response.status === 'processing') {
+      localAiRequestInFlight.value = false;
+      return;
+    }
+
     const debugAttachments = response.debug ? [buildDebugAttachment(response.debug)] : [];
     const assistantText = response.reply || 'Готово.';
     if (!draft.value || draft.value.entityId !== activeDraft.entityId) {
+      entitiesStore.setEntityAiPending(activeDraft.entityId, false);
       return;
     }
 
@@ -1582,6 +1595,7 @@ async function onSendInput() {
     }
 
     pushChatMessage('assistant', assistantText, debugAttachments);
+    entitiesStore.setEntityAiPending(activeDraft.entityId, false);
     scheduleSave();
     await nextTick();
     scrollEntityChatToBottom('auto');
@@ -1589,15 +1603,17 @@ async function onSendInput() {
     const debugAttachments = [buildDebugAttachment(buildLlmErrorDebugPayload(error, requestPayload))];
     const assistantText = `Не удалось получить ответ от LLM. ${parseRequestError(error)}`;
     if (!draft.value || draft.value.entityId !== activeDraft.entityId) {
+      entitiesStore.setEntityAiPending(activeDraft.entityId, false);
       return;
     }
 
     pushChatMessage('assistant', assistantText, debugAttachments);
+    entitiesStore.setEntityAiPending(activeDraft.entityId, false);
     await nextTick();
     scrollEntityChatToBottom('auto');
     scheduleSave();
   } finally {
-    isAiRequestInFlight.value = false;
+    localAiRequestInFlight.value = false;
   }
   } finally {
     if (voiceSubmitStarted) {

@@ -53,8 +53,15 @@ export interface EntityAiAnalyzeResponse {
   debug?: Record<string, unknown>;
 }
 
+export interface EntityAiAnalyzeProcessingResponse {
+  status: 'processing';
+  message?: string;
+}
+
+export type EntityAiAnalyzeResult = EntityAiAnalyzeResponse | EntityAiAnalyzeProcessingResponse;
+
 export async function analyzeEntityWithAi(payload: EntityAiAnalyzePayload) {
-  const { data } = await apiClient.post<EntityAiAnalyzeResponse>('/ai/entity-analyze', payload, {
+  const { data } = await apiClient.post<EntityAiAnalyzeResult>('/ai/entity-analyze', payload, {
     timeout: 150_000,
   });
   return data;
