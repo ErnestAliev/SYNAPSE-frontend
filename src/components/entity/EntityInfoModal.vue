@@ -1698,7 +1698,6 @@ async function onSendInput() {
     if (isEntityAiProcessingResponse(response)) {
       console.log('[Modal] submitChatMessage → background job, waiting for SSE entity.updated');
       localAiRequestInFlight.value = false;
-      entitiesStore.setEntityAiPending(activeDraft.entityId, false);
       return;
     }
 
