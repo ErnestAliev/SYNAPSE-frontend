@@ -520,7 +520,7 @@ export const useEntitiesStore = defineStore('entities', {
       if (eventType === 'entity.updated') {
         const entity = payload.entity as Entity | undefined;
         if (!entity?._id) return;
-        const aiMeta = (entity as Record<string, unknown>).ai_metadata as Record<string, unknown> | undefined;
+        const aiMeta = (entity as unknown as Record<string, unknown>).ai_metadata as Record<string, unknown> | undefined;
         console.log('[SSE] entity.updated received', {
           id: entity._id,
           analysis_pending: aiMeta?.analysis_pending,
