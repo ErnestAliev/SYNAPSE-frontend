@@ -56,6 +56,19 @@ a {
   padding: 12px;
   max-width: 264px;
   word-break: break-word;
+  max-height: 50vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* On touch devices make the tooltip scrollable */
+@media (pointer: coarse) {
+  .entity-card-tooltip {
+    pointer-events: auto;
+    -webkit-overflow-scrolling: touch;
+    /* Slightly wider to be easier to tap */
+    max-width: 288px;
+  }
 }
 
 .entity-card-tooltip-name {
