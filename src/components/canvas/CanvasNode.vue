@@ -221,6 +221,9 @@ function onNodePointerDown(event: PointerEvent) {
   if (event.button !== 0) return;
   if (isLocked.value) return;
 
+  // In play mode don't initiate drag — let the click event handle the tap
+  if (props.playMode) return;
+
   const target = event.target as HTMLElement | null;
   if (target?.closest('.node-name-input')) {
     return;
