@@ -3331,11 +3331,24 @@ async function loadProjectCanvas(projectId: string) {
       queueCanvasSync({ immediate: true });
       requestViewportCenter(0, 0);
     } else if (currentVersion === loadVersion) {
-      const restored = restoreCameraFromViewport(canvasData.viewport);
-      if (!restored) {
-        const firstNode = nodes.value[0];
-        if (firstNode) {
-          requestViewportCenter(firstNode.x, firstNode.y);
+      // If navigated here with ?focusEntity=<entityId>, center on that node
+      const focusEntityId =
+        typeof route.query.focusEntity === 'string' ? route.query.focusEntity : null;
+      const focusNode = focusEntityId
+        ? nodes.value.find((n) => n.entityId === focusEntityId) ?? null
+        : null;
+
+      if (focusNode) {
+        requestViewportCenter(focusNode.x, focusNode.y);
+        selectNodesByIds([focusNode.id], { additive: false });
+        router.replace({ query: {} });
+      } else {
+        const restored = restoreCameraFromViewport(canvasData.viewport);
+        if (!restored) {
+          const firstNode = nodes.value[0];
+          if (firstNode) {
+            requestViewportCenter(firstNode.x, firstNode.y);
+          }
         }
       }
     }
@@ -4562,7 +4575,7 @@ const canvasTooltipStyle = computed<Partial<Record<string, string>>>(() => {
     ) || 0;
   const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
   // On touch: reserve controls bar (50px) + bottom gap (14px) + vvOffset + extra for safe-area (~34px max)
-  const bottomReserve = isTouchDevice ? vvOffset + 100 : vvOffset + GAP;
+  const bottomReserve = isTouchDevice ? vvOffset + 120 : vvOffset + GAP;
   const effectiveVH = vh - bottomReserve;
 
   // On touch devices the tooltip is wider (288px per CSS), on desktop 264px

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import ruEmojiData from 'emojibase-data/ru/data.json';
 import AppIcon from '../ui/AppIcon.vue';
 import ProfileProgressRing from '../ui/ProfileProgressRing.vue';
@@ -256,6 +257,7 @@ const ALL_METADATA_FIELD_KEYS = Array.from(
 
 const entitiesStore = useEntitiesStore();
 const authStore = useAuthStore();
+const router = useRouter();
 
 const draft = ref<{
   entityId: string;
@@ -1982,6 +1984,38 @@ const availableProjectOptions = computed(() => {
     );
 });
 
+// Projects that already contain this entity on their canvas
+const entityProjects = computed(() => {
+  const entityId = props.entityId;
+  return entitiesStore
+    .byType('project')
+    .filter((project) => {
+      const canvasData = normalizeProjectCanvasData(project.canvas_data);
+      return canvasData.nodes.some((node) => node.entityId === entityId);
+    })
+    .sort((a, b) => (a.name || 'Без названия').localeCompare(b.name || 'Без названия', 'ru'));
+});
+
+const isProjectNavDropdownOpen = ref(false);
+
+function navigateToProject(projectId: string) {
+  isProjectNavDropdownOpen.value = false;
+  emit('close');
+  router.push({
+    name: 'project-canvas',
+    params: { id: projectId },
+    query: { focusEntity: props.entityId },
+  });
+}
+
+function onGoToProjectClick() {
+  if (entityProjects.value.length === 1) {
+    navigateToProject(entityProjects.value[0]!._id);
+  } else {
+    isProjectNavDropdownOpen.value = !isProjectNavDropdownOpen.value;
+  }
+}
+
 const modalIcon = computed(() => {
   if (!currentEntity.value) return null;
 
@@ -2877,6 +2911,44 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="entity-info-title-actions entity-info-chat-tools-actions">
+            <!-- Navigate to project button (shown when entity is on at least one canvas) -->
+            <div v-if="entityProjects.length > 0" class="entity-nav-projects-wrap">
+              <button
+                type="button"
+                class="entity-info-title-action-btn"
+                :title="entityProjects.length === 1
+                  ? `Открыть в проекте «${entityProjects[0]?.name || 'Без названия'}»`
+                  : 'Открыть в проекте'"
+                :aria-label="entityProjects.length === 1
+                  ? `Открыть в проекте «${entityProjects[0]?.name || 'Без названия'}»`
+                  : 'Открыть в проекте'"
+                @click="onGoToProjectClick"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                  <polyline points="15 3 21 3 21 9" />
+                  <line x1="10" y1="14" x2="21" y2="3" />
+                </svg>
+              </button>
+
+              <!-- Multi-project dropdown -->
+              <template v-if="entityProjects.length > 1 && isProjectNavDropdownOpen">
+                <div class="entity-nav-backdrop" @click="isProjectNavDropdownOpen = false" />
+                <div class="entity-nav-dropdown">
+                  <p class="entity-nav-dropdown-label">Выберите проект</p>
+                  <button
+                    v-for="project in entityProjects"
+                    :key="project._id"
+                    type="button"
+                    class="entity-nav-dropdown-item"
+                    @click="navigateToProject(project._id)"
+                  >
+                    {{ project.name || 'Без названия' }}
+                  </button>
+                </div>
+              </template>
+            </div>
+
             <button
               type="button"
               class="entity-info-title-action-btn"
@@ -3477,6 +3549,68 @@ onBeforeUnmount(() => {
 .entity-info-title-action-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* ── Navigate-to-project dropdown ───────────────────────────────────────────── */
+.entity-nav-projects-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.entity-nav-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+}
+
+.entity-nav-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 1101;
+  min-width: 180px;
+  max-width: 260px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(112, 144, 176, 0.18);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.entity-nav-dropdown-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 4px 8px 6px;
+  margin: 0;
+}
+
+.entity-nav-dropdown-item {
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: #1e293b;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.13s ease, color 0.13s ease;
+}
+
+.entity-nav-dropdown-item:hover {
+  background: #eef4ff;
+  color: #1058ff;
 }
 
 .entity-info-progress-meta {

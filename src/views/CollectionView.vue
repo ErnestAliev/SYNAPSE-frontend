@@ -1997,6 +1997,8 @@ async function confirmProjectDelete() {
 }
 
 function onCardClick(entity: Entity) {
+  activeTooltip.value = null;
+
   if (entity.type === 'project') {
     router.push({ name: 'project-canvas', params: { id: entity._id } });
     return;
@@ -2043,7 +2045,16 @@ interface EntityTooltipState {
 
 const activeTooltip = ref<EntityTooltipState | null>(null);
 
+function canShowEntityCardTooltip() {
+  if (typeof window === 'undefined') return false;
+  const isMobileLayout = window.matchMedia('(max-width: 900px)').matches;
+  const supportsHoverPointer = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+  return supportsHoverPointer && !isMobileLayout;
+}
+
 function onEntityCardMouseEnter(entity: Entity, e: MouseEvent) {
+  if (!canShowEntityCardTooltip()) return;
+  if (entityInfoEntityId.value) return;
   const card = e.currentTarget as HTMLElement;
   activeTooltip.value = { entity, cardRect: card.getBoundingClientRect() };
 }
@@ -2106,7 +2117,11 @@ function closeEntityInfoModal() {
 // When the modal closes, flush any pending full-refresh that was
 // deferred while the modal was open.
 watch(entityInfoEntityId, (id) => {
-  if (id !== null) return; // modal is still open
+  if (id !== null) {
+    activeTooltip.value = null;
+    return;
+  }
+
   if (!pendingEntitiesRefetch.value) return;
   pendingEntitiesRefetch.value = false;
   void entitiesStore.fetchEntities({ silent: true });
