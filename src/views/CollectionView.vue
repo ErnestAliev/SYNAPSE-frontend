@@ -2075,7 +2075,7 @@ function getTooltipFields(entity: Entity): Array<{ label: string; values: string
   return result.slice(0, 5);
 }
 
-const tooltipStyle = computed<Record<string, string>>(() => {
+const tooltipStyle = computed<Partial<Record<string, string>>>(() => {
   const state = activeTooltip.value;
   if (!state) return {};
   const rect = state.cardRect;
