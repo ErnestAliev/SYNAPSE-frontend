@@ -295,11 +295,14 @@ const pendingComposerHeightReset = ref(false);
 const isVoiceListening = ref(false);
 const isVoiceSubmitting = ref(false);
 const localAiRequestInFlight = ref(false);
+const awaitingAiCompletionEntityId = ref('');
+const awaitingAiCompletionStartedAtMs = ref(0);
 const isAiRequestInFlight = computed(() => {
   const entityId = draft.value?.entityId || currentEntity.value?._id;
   if (!entityId) return localAiRequestInFlight.value;
+  const awaitingSameEntity = awaitingAiCompletionEntityId.value === entityId;
   const entityPending = Boolean(toProfile(currentEntity.value?.ai_metadata).analysis_pending);
-  return localAiRequestInFlight.value || entitiesStore.isEntityAiPending(entityId) || entityPending;
+  return localAiRequestInFlight.value || awaitingSameEntity || entitiesStore.isEntityAiPending(entityId) || entityPending;
 });
 
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
@@ -611,6 +614,14 @@ function getIsoNow() {
   return new Date().toISOString();
 }
 
+function clearAwaitingAiCompletion(entityId = '') {
+  if (entityId && awaitingAiCompletionEntityId.value && awaitingAiCompletionEntityId.value !== entityId) {
+    return;
+  }
+  awaitingAiCompletionEntityId.value = '';
+  awaitingAiCompletionStartedAtMs.value = 0;
+}
+
 const emojiItems = (ruEmojiData as EmojiRecord[])
   .filter((record) => typeof record.emoji === 'string' && record.emoji.trim().length > 0)
   .map<EmojiItem>((record) => ({
@@ -836,6 +847,13 @@ function persistDraft(entityId: string) {
     nextMetadata.importance_source =
       currentDraft.importanceSource === 'manual' && normalizedImportance.length ? 'manual' : 'auto';
   }
+
+  // Server controls analysis lifecycle flags; do not send client snapshots for these
+  // fields to avoid overwriting SSE-driven state with stale autosave payloads.
+  delete nextMetadata.analysis_pending;
+  delete nextMetadata.analysis_started_at;
+  delete nextMetadata.analysis_completed_at;
+  delete nextMetadata.analysis_error;
 
   entitiesStore.queueEntityUpdate(
     entityId,
@@ -1648,105 +1666,111 @@ async function onSendInput() {
 
   try {
     const message = normalizeChatText(draft.value.textInput);
-  const attachments = [...draft.value.pendingUploads];
-  if (!message && !attachments.length) return;
+    const attachments = [...draft.value.pendingUploads];
+    if (!message && !attachments.length) return;
 
-  pushChatMessage('user', message, attachments);
-  draft.value.pendingUploads = [];
-  draft.value.documents = Array.from(
-    new Map([...draft.value.documents, ...attachments].map((attachment) => [attachment.id, attachment])).values(),
-  );
-  draft.value.textInput = '';
-  draft.value.voiceInput = '';
+    pushChatMessage('user', message, attachments);
+    draft.value.pendingUploads = [];
+    draft.value.documents = Array.from(
+      new Map([...draft.value.documents, ...attachments].map((attachment) => [attachment.id, attachment])).values(),
+    );
+    draft.value.textInput = '';
+    draft.value.voiceInput = '';
 
-  resetChatInputSize();
-  void nextTick(() => {
-    scrollEntityChatToBottom('auto');
-  });
-  scheduleSave();
-
-  const activeDraft = draft.value;
-  if (!activeDraft) return;
-
-  localAiRequestInFlight.value = true;
-  entitiesStore.setEntityAiPending(activeDraft.entityId, true);
-  const requestPayload = {
-    entityId: activeDraft.entityId,
-    message,
-    voiceInput: activeDraft.voiceInput,
-    history: activeDraft.chatHistory
-      .slice(-12)
-      .map((item) => ({
-        role: item.role,
-        text: item.text,
-      })),
-    attachments: attachments.map(toAiAttachmentPayload),
-    documents: activeDraft.documents.slice(-8).map(toAiAttachmentPayload),
-    debug: true,
-  };
-  console.log('[Modal] submitChatMessage → calling AI', {
-    entityId: activeDraft.entityId,
-    message: message.slice(0, 120),
-  });
-  try {
-    const response = await analyzeEntityWithAi(requestPayload);
-    console.log('[Modal] submitChatMessage → AI returned', {
-      isProcessing: isEntityAiProcessingResponse(response),
-      hasReply: 'reply' in response,
+    resetChatInputSize();
+    void nextTick(() => {
+      scrollEntityChatToBottom('auto');
     });
+    scheduleSave();
 
-    if (isEntityAiProcessingResponse(response)) {
-      console.log('[Modal] submitChatMessage → background job, waiting for SSE entity.updated');
+    const activeDraft = draft.value;
+    if (!activeDraft) return;
+
+    localAiRequestInFlight.value = true;
+    awaitingAiCompletionEntityId.value = activeDraft.entityId;
+    awaitingAiCompletionStartedAtMs.value = Date.now();
+    entitiesStore.setEntityAiPending(activeDraft.entityId, true);
+    const requestPayload = {
+      entityId: activeDraft.entityId,
+      message,
+      voiceInput: activeDraft.voiceInput,
+      history: activeDraft.chatHistory
+        .slice(-12)
+        .map((item) => ({
+          role: item.role,
+          text: item.text,
+        })),
+      attachments: attachments.map(toAiAttachmentPayload),
+      documents: activeDraft.documents.slice(-8).map(toAiAttachmentPayload),
+      debug: true,
+    };
+    console.log('[Modal] submitChatMessage → calling AI', {
+      entityId: activeDraft.entityId,
+      message: message.slice(0, 120),
+    });
+    try {
+      const response = await analyzeEntityWithAi(requestPayload);
+      console.log('[Modal] submitChatMessage → AI returned', {
+        isProcessing: isEntityAiProcessingResponse(response),
+        hasReply: 'reply' in response,
+      });
+
+      if (isEntityAiProcessingResponse(response)) {
+        console.log('[Modal] submitChatMessage → background job, waiting for SSE entity.updated');
+        localAiRequestInFlight.value = false;
+        return;
+      }
+
+      const debugAttachments = response.debug ? [buildDebugAttachment(response.debug)] : [];
+      const assistantText = response.reply || 'Готово.';
+      if (!draft.value || draft.value.entityId !== activeDraft.entityId) {
+        clearAwaitingAiCompletion(activeDraft.entityId);
+        entitiesStore.setEntityAiPending(activeDraft.entityId, false);
+        return;
+      }
+
+      if (response.suggestion?.status === 'ready') {
+        if (response.suggestion.description) {
+          draft.value.description = response.suggestion.description;
+        }
+
+        const fields = response.suggestion.fields || {};
+        for (const field of getEntityContextFields(draft.value.type)) {
+          const rawValues = fields[field.key];
+          const nextValues = Array.isArray(rawValues)
+            ? rawValues.filter((value): value is string => typeof value === 'string')
+            : [];
+          draft.value.metadataValues[field.key] = normalizeMetadataValues(
+            field.key,
+            nextValues.map((value) => value.trim()).filter((value) => value.length > 0),
+          ).slice(0, 16);
+        }
+      }
+
+      pushChatMessage('assistant', assistantText, debugAttachments);
+      clearAwaitingAiCompletion(activeDraft.entityId);
+      entitiesStore.setEntityAiPending(activeDraft.entityId, false);
+      scheduleSave();
+      await nextTick();
+      scrollEntityChatToBottom('auto');
+    } catch (error: unknown) {
+      const debugAttachments = [buildDebugAttachment(buildLlmErrorDebugPayload(error, requestPayload))];
+      const assistantText = `Не удалось получить ответ от LLM. ${parseRequestError(error)}`;
+      if (!draft.value || draft.value.entityId !== activeDraft.entityId) {
+        clearAwaitingAiCompletion(activeDraft.entityId);
+        entitiesStore.setEntityAiPending(activeDraft.entityId, false);
+        return;
+      }
+
+      pushChatMessage('assistant', assistantText, debugAttachments);
+      clearAwaitingAiCompletion(activeDraft.entityId);
+      entitiesStore.setEntityAiPending(activeDraft.entityId, false);
+      await nextTick();
+      scrollEntityChatToBottom('auto');
+      scheduleSave();
+    } finally {
       localAiRequestInFlight.value = false;
-      return;
     }
-
-    const debugAttachments = response.debug ? [buildDebugAttachment(response.debug)] : [];
-    const assistantText = response.reply || 'Готово.';
-    if (!draft.value || draft.value.entityId !== activeDraft.entityId) {
-      entitiesStore.setEntityAiPending(activeDraft.entityId, false);
-      return;
-    }
-
-    if (response.suggestion?.status === 'ready') {
-      if (response.suggestion.description) {
-        draft.value.description = response.suggestion.description;
-      }
-
-      const fields = response.suggestion.fields || {};
-      for (const field of getEntityContextFields(draft.value.type)) {
-        const rawValues = fields[field.key];
-        const nextValues = Array.isArray(rawValues)
-          ? rawValues.filter((value): value is string => typeof value === 'string')
-          : [];
-        draft.value.metadataValues[field.key] = normalizeMetadataValues(
-          field.key,
-          nextValues.map((value) => value.trim()).filter((value) => value.length > 0),
-        ).slice(0, 16);
-      }
-    }
-
-    pushChatMessage('assistant', assistantText, debugAttachments);
-    entitiesStore.setEntityAiPending(activeDraft.entityId, false);
-    scheduleSave();
-    await nextTick();
-    scrollEntityChatToBottom('auto');
-  } catch (error: unknown) {
-    const debugAttachments = [buildDebugAttachment(buildLlmErrorDebugPayload(error, requestPayload))];
-    const assistantText = `Не удалось получить ответ от LLM. ${parseRequestError(error)}`;
-    if (!draft.value || draft.value.entityId !== activeDraft.entityId) {
-      entitiesStore.setEntityAiPending(activeDraft.entityId, false);
-      return;
-    }
-
-    pushChatMessage('assistant', assistantText, debugAttachments);
-    entitiesStore.setEntityAiPending(activeDraft.entityId, false);
-    await nextTick();
-    scrollEntityChatToBottom('auto');
-    scheduleSave();
-  } finally {
-    localAiRequestInFlight.value = false;
-  }
   } finally {
     if (voiceSubmitStarted) {
       isVoiceSubmitting.value = false;
@@ -2715,7 +2739,20 @@ watch(
     ) {
       const remoteMeta = toProfile(entity.ai_metadata);
       const remoteHistory = normalizeChatHistory(remoteMeta.chat_history);
-      
+      const remoteAnalysisPending = Boolean(remoteMeta.analysis_pending);
+      const remoteCompletedAtRaw =
+        typeof remoteMeta.analysis_completed_at === 'string' ? remoteMeta.analysis_completed_at : '';
+      const remoteCompletedAtMs = Date.parse(remoteCompletedAtRaw);
+      if (
+        awaitingAiCompletionEntityId.value === entity._id &&
+        !remoteAnalysisPending &&
+        Number.isFinite(remoteCompletedAtMs) &&
+        remoteCompletedAtMs >= awaitingAiCompletionStartedAtMs.value
+      ) {
+        clearAwaitingAiCompletion(entity._id);
+        entitiesStore.setEntityAiPending(entity._id, false);
+      }
+
       if (!isAiRequestInFlight.value) {
         const remoteDescription = typeof remoteMeta.description === 'string' ? remoteMeta.description : '';
         const isDescriptionFocused =
