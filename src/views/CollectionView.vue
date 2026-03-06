@@ -2035,6 +2035,70 @@ function entityProgress(entity: Entity) {
   return calculateEntityProfileProgress(entity);
 }
 
+// ─── Entity card tooltip ──────────────────────────────────────────────────────
+interface EntityTooltipState {
+  entity: Entity;
+  cardRect: DOMRect;
+}
+
+const activeTooltip = ref<EntityTooltipState | null>(null);
+
+function onEntityCardMouseEnter(entity: Entity, e: MouseEvent) {
+  const card = e.currentTarget as HTMLElement;
+  activeTooltip.value = { entity, cardRect: card.getBoundingClientRect() };
+}
+
+function onEntityCardMouseLeave() {
+  activeTooltip.value = null;
+}
+
+function getTooltipDescription(entity: Entity): string {
+  const meta = entity.ai_metadata as Record<string, unknown> | null | undefined;
+  if (!meta) return '';
+  const desc = typeof meta.description === 'string' ? meta.description.trim() : '';
+  return desc.length > 240 ? `${desc.slice(0, 240)}…` : desc;
+}
+
+function getTooltipFields(entity: Entity): Array<{ label: string; values: string[] }> {
+  const meta = entity.ai_metadata as Record<string, unknown> | null | undefined;
+  if (!meta) return [];
+  const fieldConfigs = ENTITY_FILTER_FIELDS[entity.type as EntityType] ?? [];
+  const result: Array<{ label: string; values: string[] }> = [];
+  for (const { key, label } of fieldConfigs) {
+    if (key === 'phones' || key === 'links') continue;
+    const raw = meta[key];
+    const values = Array.isArray(raw)
+      ? (raw as unknown[]).filter((v): v is string => typeof v === 'string' && v.trim().length > 0).slice(0, 6)
+      : [];
+    if (values.length) result.push({ label, values });
+  }
+  return result.slice(0, 5);
+}
+
+const tooltipStyle = computed<Record<string, string>>(() => {
+  const state = activeTooltip.value;
+  if (!state) return {};
+  const rect = state.cardRect;
+  const W = 264;
+  const GAP = 8;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  // Prefer right of card, fall back to left if not enough space
+  let left = rect.right + GAP;
+  if (left + W > vw - GAP) {
+    left = rect.left - W - GAP;
+    if (left < GAP) left = GAP;
+  }
+
+  // Align tooltip top to card top, prevent bottom/top overflow
+  let top = rect.top;
+  if (top + 320 > vh - GAP) top = Math.max(GAP, vh - 320 - GAP);
+  if (top < GAP) top = GAP;
+
+  return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px`, width: `${W}px` };
+});
+
 function closeEntityInfoModal() {
   entityInfoEntityId.value = null;
 }
@@ -2477,6 +2541,8 @@ watch(entityInfoEntityId, (id) => {
             v-else-if="activeType === 'connection'"
             class="entity-card connection-card"
             @click="onCardClick(entity)"
+            @mouseenter="onEntityCardMouseEnter(entity, $event)"
+            @mouseleave="onEntityCardMouseLeave"
           >
             <div class="card-cycle-wrap">
               <ProfileProgressRing class="card-progress-ring" :value="entityProgress(entity)" :size="84" :stroke-width="4" />
@@ -2514,6 +2580,8 @@ watch(entityInfoEntityId, (id) => {
             v-else
             class="entity-card"
             @click="onCardClick(entity)"
+            @mouseenter="onEntityCardMouseEnter(entity, $event)"
+            @mouseleave="onEntityCardMouseLeave"
           >
             <div class="card-cycle-wrap">
               <ProfileProgressRing class="card-progress-ring" :value="entityProgress(entity)" :size="84" :stroke-width="4" />
@@ -2531,6 +2599,34 @@ watch(entityInfoEntityId, (id) => {
         </template>
       </div>
     </section>
+
+    <!-- Entity card tooltip -->
+    <Teleport to="body">
+      <div
+        v-if="activeTooltip"
+        class="entity-card-tooltip"
+        :style="tooltipStyle"
+      >
+        <div class="entity-card-tooltip-name">{{ activeTooltip.entity.name || 'Без названия' }}</div>
+        <p v-if="getTooltipDescription(activeTooltip.entity)" class="entity-card-tooltip-desc">
+          {{ getTooltipDescription(activeTooltip.entity) }}
+        </p>
+        <template v-if="getTooltipFields(activeTooltip.entity).length">
+          <div class="entity-card-tooltip-fields">
+            <div
+              v-for="group in getTooltipFields(activeTooltip.entity)"
+              :key="group.label"
+              class="entity-card-tooltip-field-group"
+            >
+              <span class="entity-card-tooltip-field-label">{{ group.label }}</span>
+              <div class="entity-card-tooltip-tags">
+                <span v-for="val in group.values" :key="val" class="entity-card-tooltip-tag">{{ val }}</span>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </Teleport>
 
     <EntityInfoModal
       v-if="entityInfoEntityId"
@@ -3571,6 +3667,72 @@ watch(entityInfoEntityId, (id) => {
 
 .state-error {
   color: #dc2626;
+}
+
+/* ─── Entity card tooltip ──────────────────────────────────────────────────── */
+.entity-card-tooltip {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(112, 144, 176, 0.18);
+  padding: 12px;
+  max-width: 264px;
+  word-break: break-word;
+}
+
+.entity-card-tooltip-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.3;
+  margin-bottom: 6px;
+}
+
+.entity-card-tooltip-desc {
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.45;
+  margin: 0 0 8px;
+}
+
+.entity-card-tooltip-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.entity-card-tooltip-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.entity-card-tooltip-field-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.entity-card-tooltip-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.entity-card-tooltip-tag {
+  font-size: 11px;
+  font-weight: 600;
+  color: #334155;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  padding: 2px 6px;
+  white-space: nowrap;
 }
 
 @media (max-width: 900px) {
