@@ -121,8 +121,8 @@ interface MetadataFieldConfig {
 
 const DEFAULT_METADATA_FIELD_MAX_LENGTH = 32;
 const LINKS_METADATA_FIELD_MAX_LENGTH = 2048;
-const PHONE_DISPLAY_MAX_LENGTH = 17;
-const PHONE_DIGITS_MAX_LENGTH = 11;
+const PHONE_DISPLAY_MAX_LENGTH = 20; // + 7 926 123 45 67 = 17; +380501234567 = 13; headroom for intl
+const PHONE_DIGITS_MAX_LENGTH = 15;  // ITU-T E.164 max is 15 digits
 const LINK_CHIP_FALLBACK_LABEL = 'Website';
 const IMPORTANCE_LEVELS = ['Низкая', 'Средняя', 'Высокая'] as const;
 const IMPORTANCE_LEVEL_MAP: Record<string, (typeof IMPORTANCE_LEVELS)[number]> = {
