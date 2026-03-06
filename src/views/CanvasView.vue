@@ -3577,6 +3577,12 @@ function onViewportClick(event: MouseEvent) {
     return;
   }
 
+  // In play mode, tapping empty canvas closes the active node tooltip
+  if (isPlayMode.value && canvasTooltip.value) {
+    canvasTooltip.value = null;
+    return;
+  }
+
   const hit = findEdgeAtClientPosition(event.clientX, event.clientY);
   if (!hit) {
     closeEdgeMenu();

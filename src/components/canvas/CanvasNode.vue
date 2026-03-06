@@ -75,6 +75,7 @@ const emit = defineEmits<{
 const entitiesStore = useEntitiesStore();
 const nameInputRef = ref<HTMLInputElement | null>(null);
 const nameDraft = ref('');
+const playModePointerDown = ref<{ x: number; y: number; id: number } | null>(null);
 const EMPTY_NAME_PLACEHOLDER = 'Без названия';
 const BASE_NODE_RING_SIZE = 82;
 
@@ -221,8 +222,11 @@ function onNodePointerDown(event: PointerEvent) {
   if (event.button !== 0) return;
   if (isLocked.value) return;
 
-  // In play mode don't initiate drag — let the click event handle the tap
-  if (props.playMode) return;
+  if (props.playMode) {
+    // Record start position — tap is detected on pointerup (more reliable on mobile)
+    playModePointerDown.value = { x: event.clientX, y: event.clientY, id: event.pointerId };
+    return;
+  }
 
   const target = event.target as HTMLElement | null;
   if (target?.closest('.node-name-input')) {
@@ -232,12 +236,33 @@ function onNodePointerDown(event: PointerEvent) {
   emit('start-drag', { nodeId: props.node.id, pointerEvent: event });
 }
 
+function onNodePointerUp(event: PointerEvent) {
+  if (!props.playMode) return;
+  const start = playModePointerDown.value;
+  if (!start || start.id !== event.pointerId) return;
+  playModePointerDown.value = null;
+
+  // Ignore if finger/pointer moved too much (pan gesture, not a tap)
+  const dx = event.clientX - start.x;
+  const dy = event.clientY - start.y;
+  if (Math.hypot(dx, dy) > 10) return;
+
+  const el = event.currentTarget as HTMLElement;
+  emit('node-play-tap', { nodeId: props.node.id, rect: el.getBoundingClientRect() });
+}
+
 function onNodeClick(event: MouseEvent) {
   event.stopPropagation();
 
   if (props.playMode) {
+    // Touch taps are fully handled by onNodePointerUp.
+    // For mouse, playModePointerDown is cleared in pointerup — skip to avoid double-emit.
+    if (playModePointerDown.value === null) return;
+    // Fallback: pointerup didn't fire (rare edge-case), handle here.
     const el = (event.currentTarget as HTMLElement).closest('.canvas-node') as HTMLElement | null;
-    const rect = el ? el.getBoundingClientRect() : (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const rect = el
+      ? el.getBoundingClientRect()
+      : (event.currentTarget as HTMLElement).getBoundingClientRect();
     emit('node-play-tap', { nodeId: props.node.id, rect });
     return;
   }
@@ -310,6 +335,7 @@ function onNameInputClick(event: MouseEvent) {
     :class="{ active, selected, dragging, 'play-mode': playMode }"
     :style="nodeStyle"
     @pointerdown.stop="onNodePointerDown"
+    @pointerup="onNodePointerUp"
     @dblclick.stop="onNodeDoubleClick"
     @mouseenter="onNodeMouseEnter"
     @mouseleave="onNodeMouseLeave"
