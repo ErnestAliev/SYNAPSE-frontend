@@ -418,15 +418,16 @@ function normalizePhoneDigits(value: string) {
   let digits = value.replace(/\D/g, '');
   if (!digits) return '';
 
-  if (digits.length === 10) {
+  // Convenience: bare 10-digit Russian local number → prepend country code 7
+  if (digits.length === 10 && !digits.startsWith('7')) {
     digits = `7${digits}`;
   }
-  if (digits.startsWith('8')) {
+  // Russian/CIS convention: leading 8 is an alias for country code 7
+  if (digits.startsWith('8') && digits.length === 11) {
     digits = `7${digits.slice(1)}`;
   }
-  if (!digits.startsWith('7')) {
-    digits = `7${digits.slice(1)}`;
-  }
+  // NOTE: no catch-all "replace first digit with 7" — that was incorrectly
+  // corrupting international numbers (e.g. +380…) by dropping the first digit.
   if (digits.length > PHONE_DIGITS_MAX_LENGTH) {
     digits = digits.slice(0, PHONE_DIGITS_MAX_LENGTH);
   }
@@ -437,10 +438,16 @@ function formatPhoneValue(value: string) {
   const digits = normalizePhoneDigits(value);
   if (!digits) return '';
 
-  const countryCode = digits.slice(0, 1);
-  const local = digits.slice(1);
-  const parts = [local.slice(0, 3), local.slice(3, 6), local.slice(6, 8), local.slice(8, 10)].filter(Boolean);
-  return parts.length ? `+ ${countryCode} ${parts.join(' ')}` : `+ ${countryCode}`;
+  // Russian/Kazakhstan (country code 7): format as + 7 XXX XXX XX XX
+  if (digits.startsWith('7')) {
+    const countryCode = digits.slice(0, 1);
+    const local = digits.slice(1);
+    const parts = [local.slice(0, 3), local.slice(3, 6), local.slice(6, 8), local.slice(8, 10)].filter(Boolean);
+    return parts.length ? `+ ${countryCode} ${parts.join(' ')}` : `+ ${countryCode}`;
+  }
+
+  // International numbers: store as +<digits> without reformatting
+  return `+${digits}`;
 }
 
 function normalizeMetadataValue(fieldKey: string, value: string) {
@@ -4558,5 +4565,33 @@ onBeforeUnmount(() => {
 .entity-delete-confirm-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/*
+ * iOS Safari applies `font-size: 16px !important` to all input/textarea/select
+ * elements globally (main.css) to prevent viewport auto-zoom on focus.
+ * That global rule overwrites the explicit 11px/12px/13px set on these inputs,
+ * making them appear visually larger than the .entity-info-profile-toggle (button).
+ *
+ * Since this component's scoped selector (.class[data-v-HASH]) has higher
+ * specificity than the global `input` element selector, adding !important here
+ * wins and restores the intended design sizes.
+ * Trade-off: iOS may auto-zoom on focus for these specific inputs. Acceptable
+ * because values are short (tags / phone numbers) and zoom resets on blur.
+ */
+@supports (-webkit-touch-callout: none) {
+  @media (max-width: 1024px) {
+    .entity-info-tag-input {
+      font-size: 11px !important;
+    }
+
+    .entity-info-textarea {
+      font-size: 13px !important;
+    }
+
+    .entity-info-chat-input {
+      font-size: 13px !important;
+    }
+  }
 }
 </style>
