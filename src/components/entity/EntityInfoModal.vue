@@ -428,8 +428,14 @@ function normalizePhoneDigits(value: string) {
   }
   // NOTE: no catch-all "replace first digit with 7" — that was incorrectly
   // corrupting international numbers (e.g. +380…) by dropping the first digit.
-  if (digits.length > PHONE_DIGITS_MAX_LENGTH) {
-    digits = digits.slice(0, PHONE_DIGITS_MAX_LENGTH);
+
+  // Russian/Kazakh (7-prefix): strictly 11 digits. The formatter only renders
+  // 1 country code + 10 local digits, so capping here prevents silent truncation
+  // where extra digits appear in the input but disappear from the formatted value.
+  // International numbers: allow up to ITU-T E.164 max of 15 digits.
+  const maxLen = digits.startsWith('7') ? 11 : PHONE_DIGITS_MAX_LENGTH;
+  if (digits.length > maxLen) {
+    digits = digits.slice(0, maxLen);
   }
   return digits;
 }
@@ -4567,31 +4573,4 @@ onBeforeUnmount(() => {
   cursor: not-allowed;
 }
 
-/*
- * iOS Safari applies `font-size: 16px !important` to all input/textarea/select
- * elements globally (main.css) to prevent viewport auto-zoom on focus.
- * That global rule overwrites the explicit 11px/12px/13px set on these inputs,
- * making them appear visually larger than the .entity-info-profile-toggle (button).
- *
- * Since this component's scoped selector (.class[data-v-HASH]) has higher
- * specificity than the global `input` element selector, adding !important here
- * wins and restores the intended design sizes.
- * Trade-off: iOS may auto-zoom on focus for these specific inputs. Acceptable
- * because values are short (tags / phone numbers) and zoom resets on blur.
- */
-@supports (-webkit-touch-callout: none) {
-  @media (max-width: 1024px) {
-    .entity-info-tag-input {
-      font-size: 11px !important;
-    }
-
-    .entity-info-textarea {
-      font-size: 13px !important;
-    }
-
-    .entity-info-chat-input {
-      font-size: 13px !important;
-    }
-  }
-}
 </style>
