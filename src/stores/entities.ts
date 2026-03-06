@@ -520,6 +520,13 @@ export const useEntitiesStore = defineStore('entities', {
       if (eventType === 'entity.updated') {
         const entity = payload.entity as Entity | undefined;
         if (!entity?._id) return;
+        const aiMeta = (entity as Record<string, unknown>).ai_metadata as Record<string, unknown> | undefined;
+        console.log('[SSE] entity.updated received', {
+          id: entity._id,
+          analysis_pending: aiMeta?.analysis_pending,
+          chat_history_len: Array.isArray(aiMeta?.chat_history) ? (aiMeta!.chat_history as unknown[]).length : 0,
+          description: typeof aiMeta?.description === 'string' ? aiMeta.description.slice(0, 60) : null,
+        });
         this.upsertEntityFromRealtime(entity);
         return;
       }

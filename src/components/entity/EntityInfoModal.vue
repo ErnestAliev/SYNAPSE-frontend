@@ -301,6 +301,17 @@ const isAiRequestInFlight = computed(() => {
   const entityPending = Boolean(toProfile(currentEntity.value?.ai_metadata).analysis_pending);
   return localAiRequestInFlight.value || entitiesStore.isEntityAiPending(entityId) || entityPending;
 });
+watch(isAiRequestInFlight, (val, prev) => {
+  const entityId = draft.value?.entityId || currentEntity.value?._id;
+  console.log('[Modal] isAiRequestInFlight changed', {
+    prev,
+    val,
+    entityId,
+    localAiRequestInFlight: localAiRequestInFlight.value,
+    storeAiPending: entityId ? entitiesStore.isEntityAiPending(entityId) : null,
+    entityPending: Boolean(toProfile(currentEntity.value?.ai_metadata).analysis_pending),
+  });
+});
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
 const voiceRestartTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const voiceShouldRestart = ref(false);
@@ -1693,10 +1704,19 @@ async function onSendInput() {
     documents: activeDraft.documents.slice(-8).map(toAiAttachmentPayload),
     debug: true,
   };
+  console.log('[Modal] submitChatMessage → calling AI', {
+    entityId: activeDraft.entityId,
+    message: message.slice(0, 120),
+  });
   try {
     const response = await analyzeEntityWithAi(requestPayload);
+    console.log('[Modal] submitChatMessage → AI returned', {
+      isProcessing: isEntityAiProcessingResponse(response),
+      hasReply: 'reply' in response,
+    });
 
     if (isEntityAiProcessingResponse(response)) {
+      console.log('[Modal] submitChatMessage → background job, waiting for SSE entity.updated');
       localAiRequestInFlight.value = false;
       entitiesStore.setEntityAiPending(activeDraft.entityId, false);
       return;
@@ -2697,6 +2717,18 @@ watch(
     // SSE live-update: when the entity store receives entity.updated from the
     // server, merge the remote chatHistory into the local draft so other devices
     // see new chat messages without a page reload.
+    const entityId = entity?._id;
+    const draftId = draft.value?.entityId;
+    const inFlight = isAiRequestInFlight.value;
+    console.log('[Modal] watch(currentEntity) fired', {
+      entityId,
+      draftId,
+      sameEntity: entityId === draftId,
+      isAiRequestInFlight: inFlight,
+      analysis_pending: entity ? Boolean((toProfile(entity.ai_metadata) as Record<string, unknown>).analysis_pending) : null,
+      remote_chat_history_len: entity ? (Array.isArray((toProfile(entity.ai_metadata) as Record<string, unknown>).chat_history) ? ((toProfile(entity.ai_metadata) as Record<string, unknown>).chat_history as unknown[]).length : 0) : null,
+      local_chat_history_len: draft.value?.chatHistory.length ?? null,
+    });
     if (
       entity &&
       draft.value &&

@@ -67,8 +67,24 @@ export function isEntityAiProcessingResponse(
 }
 
 export async function analyzeEntityWithAi(payload: EntityAiAnalyzePayload) {
-  const { data } = await apiClient.post<EntityAiAnalyzeResult>('/ai/entity-analyze', payload, {
-    timeout: 150_000,
+  console.log('[AI] analyzeEntityWithAi → request', {
+    entityId: payload.entityId,
+    message: payload.message?.slice(0, 120),
+    historyLen: payload.history?.length ?? 0,
   });
-  return data;
+  try {
+    const { data } = await apiClient.post<EntityAiAnalyzeResult>('/ai/entity-analyze', payload, {
+      timeout: 150_000,
+    });
+    console.log('[AI] analyzeEntityWithAi → response', {
+      status: (data as EntityAiAnalyzeProcessingResponse).status ?? 'full',
+      hasReply: 'reply' in data,
+      reply: 'reply' in data ? (data as EntityAiAnalyzeResponse).reply?.slice(0, 120) : null,
+      suggestion: 'suggestion' in data ? (data as EntityAiAnalyzeResponse).suggestion : null,
+    });
+    return data;
+  } catch (err) {
+    console.error('[AI] analyzeEntityWithAi → ERROR', err);
+    throw err;
+  }
 }
