@@ -301,17 +301,7 @@ const isAiRequestInFlight = computed(() => {
   const entityPending = Boolean(toProfile(currentEntity.value?.ai_metadata).analysis_pending);
   return localAiRequestInFlight.value || entitiesStore.isEntityAiPending(entityId) || entityPending;
 });
-watch(isAiRequestInFlight, (val, prev) => {
-  const entityId = draft.value?.entityId || currentEntity.value?._id;
-  console.log('[Modal] isAiRequestInFlight changed', {
-    prev,
-    val,
-    entityId,
-    localAiRequestInFlight: localAiRequestInFlight.value,
-    storeAiPending: entityId ? entitiesStore.isEntityAiPending(entityId) : null,
-    entityPending: Boolean(toProfile(currentEntity.value?.ai_metadata).analysis_pending),
-  });
-});
+
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
 const voiceRestartTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const voiceShouldRestart = ref(false);
