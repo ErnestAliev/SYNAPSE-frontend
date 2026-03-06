@@ -837,16 +837,6 @@ function persistDraft(entityId: string) {
       currentDraft.importanceSource === 'manual' && normalizedImportance.length ? 'manual' : 'auto';
   }
 
-  // Keep pending analysis flag while background LLM is running.
-  if (entitiesStore.isEntityAiPending(entityId)) {
-    nextMetadata.analysis_pending = true;
-    if (typeof aiMetadata.analysis_started_at === 'string' && aiMetadata.analysis_started_at.trim()) {
-      nextMetadata.analysis_started_at = aiMetadata.analysis_started_at;
-    } else {
-      nextMetadata.analysis_started_at = new Date().toISOString();
-    }
-  }
-
   entitiesStore.queueEntityUpdate(
     entityId,
     {
@@ -2722,46 +2712,47 @@ watch(
     if (
       entity &&
       draft.value &&
-      entity._id === draft.value.entityId &&
-      !isAiRequestInFlight.value
+      entity._id === draft.value.entityId
     ) {
       const remoteMeta = toProfile(entity.ai_metadata);
       const remoteHistory = normalizeChatHistory(remoteMeta.chat_history);
       
-      const remoteDescription = typeof remoteMeta.description === 'string' ? remoteMeta.description : '';
-      const isDescriptionFocused =
-        typeof document !== 'undefined' && descriptionTextareaRef.value
-          ? document.activeElement === descriptionTextareaRef.value
-          : false;
+      if (!isAiRequestInFlight.value) {
+        const remoteDescription = typeof remoteMeta.description === 'string' ? remoteMeta.description : '';
+        const isDescriptionFocused =
+          typeof document !== 'undefined' && descriptionTextareaRef.value
+            ? document.activeElement === descriptionTextareaRef.value
+            : false;
 
-      if (!isDescriptionFocused && !isDescriptionResizing.value) {
-        const next = remoteDescription.trim();
-        if (next && next !== draft.value.description.trim()) {
-          draft.value.description = remoteDescription;
-        }
-      }
-
-      for (const field of getEntityContextFields(draft.value.type)) {
-        if (editingFieldValue.value?.fieldKey === field.key) continue;
-
-        const rawRemote = remoteMeta[field.key];
-        const remoteValues = Array.isArray(rawRemote)
-          ? normalizeMetadataValues(
-              field.key,
-              rawRemote.filter((v): v is string => typeof v === 'string').map((v) => v.trim()).filter(Boolean),
-            )
-          : [];
-
-        const localValues = (Array.isArray(draft.value.metadataValues[field.key])
-          ? draft.value.metadataValues[field.key]
-          : []) as string[];
-
-        if (remoteValues.length >= localValues.length) {
-          draft.value.metadataValues[field.key] = remoteValues.slice(0, 24);
+        if (!isDescriptionFocused && !isDescriptionResizing.value) {
+          const next = remoteDescription.trim();
+          if (next && next !== draft.value.description.trim()) {
+            draft.value.description = remoteDescription;
+          }
         }
 
-        if (field.key === 'importance' && remoteValues.length) {
-          draft.value.importanceSource = 'manual';
+        for (const field of getEntityContextFields(draft.value.type)) {
+          if (editingFieldValue.value?.fieldKey === field.key) continue;
+
+          const rawRemote = remoteMeta[field.key];
+          const remoteValues = Array.isArray(rawRemote)
+            ? normalizeMetadataValues(
+                field.key,
+                rawRemote.filter((v): v is string => typeof v === 'string').map((v) => v.trim()).filter(Boolean),
+              )
+            : [];
+
+          const localValues = (Array.isArray(draft.value.metadataValues[field.key])
+            ? draft.value.metadataValues[field.key]
+            : []) as string[];
+
+          if (remoteValues.length >= localValues.length) {
+            draft.value.metadataValues[field.key] = remoteValues.slice(0, 24);
+          }
+
+          if (field.key === 'importance' && remoteValues.length) {
+            draft.value.importanceSource = 'manual';
+          }
         }
       }
 
