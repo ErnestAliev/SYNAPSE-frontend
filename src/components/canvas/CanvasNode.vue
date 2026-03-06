@@ -13,6 +13,7 @@ const props = defineProps<{
   dragging?: boolean;
   isNameEditing?: boolean;
   previewType?: EntityType | null;
+  playMode?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -47,6 +48,26 @@ const emit = defineEmits<{
     event: 'name-edit-finished',
     payload: {
       nodeId: string;
+    },
+  ): void;
+  (
+    event: 'node-play-enter',
+    payload: {
+      nodeId: string;
+      rect: DOMRect;
+    },
+  ): void;
+  (
+    event: 'node-play-leave',
+    payload: {
+      nodeId: string;
+    },
+  ): void;
+  (
+    event: 'node-play-tap',
+    payload: {
+      nodeId: string;
+      rect: DOMRect;
     },
   ): void;
 }>();
@@ -210,7 +231,26 @@ function onNodePointerDown(event: PointerEvent) {
 
 function onNodeClick(event: MouseEvent) {
   event.stopPropagation();
+
+  if (props.playMode) {
+    const el = (event.currentTarget as HTMLElement).closest('.canvas-node') as HTMLElement | null;
+    const rect = el ? el.getBoundingClientRect() : (event.currentTarget as HTMLElement).getBoundingClientRect();
+    emit('node-play-tap', { nodeId: props.node.id, rect });
+    return;
+  }
+
   emit('open-menu', { nodeId: props.node.id, shiftKey: event.shiftKey });
+}
+
+function onNodeMouseEnter(event: MouseEvent) {
+  if (!props.playMode) return;
+  const el = event.currentTarget as HTMLElement;
+  emit('node-play-enter', { nodeId: props.node.id, rect: el.getBoundingClientRect() });
+}
+
+function onNodeMouseLeave() {
+  if (!props.playMode) return;
+  emit('node-play-leave', { nodeId: props.node.id });
 }
 
 function onNodeDoubleClick(event: MouseEvent) {
@@ -264,10 +304,12 @@ function onNameInputClick(event: MouseEvent) {
 <template>
   <div
     class="canvas-node"
-    :class="{ active, selected, dragging }"
+    :class="{ active, selected, dragging, 'play-mode': playMode }"
     :style="nodeStyle"
     @pointerdown.stop="onNodePointerDown"
     @dblclick.stop="onNodeDoubleClick"
+    @mouseenter="onNodeMouseEnter"
+    @mouseleave="onNodeMouseLeave"
   >
     <div class="node-circle-wrap" :style="nodeCircleWrapStyle">
       <span v-if="selected" class="node-selection-frame" />

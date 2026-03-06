@@ -4488,6 +4488,100 @@ onBeforeUnmount(() => {
   window.visualViewport?.removeEventListener('scroll', syncDeviceLayoutMetrics);
   window.removeEventListener('blur', resetTransientStates);
 });
+
+// ─── Play mode ────────────────────────────────────────────────────────────────
+const isPlayMode = ref(false);
+
+interface CanvasNodeTooltipState {
+  entity: Entity;
+  rect: DOMRect;
+}
+const canvasTooltip = ref<CanvasNodeTooltipState | null>(null);
+
+const CANVAS_NODE_TOOLTIP_FIELDS: Partial<Record<EntityType, Array<{ key: string; label: string }>>> = {
+  goal:       [{ key: 'priority', label: 'Приоритет' }, { key: 'metrics', label: 'Метрики' }, { key: 'owners', label: 'Ответственные' }, { key: 'status', label: 'Статус' }, { key: 'tags', label: 'Теги' }, { key: 'markers', label: 'Маркеры' }],
+  event:      [{ key: 'date', label: 'Дата' }, { key: 'location', label: 'Место' }, { key: 'participants', label: 'Участники' }, { key: 'outcomes', label: 'Итоги' }, { key: 'tags', label: 'Теги' }],
+  result:     [{ key: 'outcomes', label: 'Результаты' }, { key: 'metrics', label: 'Метрики' }, { key: 'owners', label: 'Ответственные' }, { key: 'tags', label: 'Теги' }],
+  task:       [{ key: 'priority', label: 'Приоритет' }, { key: 'status', label: 'Статус' }, { key: 'owners', label: 'Ответственные' }, { key: 'date', label: 'Дата' }, { key: 'tags', label: 'Теги' }],
+  person:     [{ key: 'roles', label: 'Роли' }, { key: 'skills', label: 'Навыки' }, { key: 'tags', label: 'Теги' }, { key: 'markers', label: 'Маркеры' }],
+  company:    [{ key: 'industry', label: 'Отрасль' }, { key: 'stage', label: 'Стадия' }, { key: 'tags', label: 'Теги' }, { key: 'markers', label: 'Маркеры' }],
+  resource:   [{ key: 'resources', label: 'Тип' }, { key: 'status', label: 'Статус' }, { key: 'owners', label: 'Владельцы' }, { key: 'tags', label: 'Теги' }],
+  connection: [{ key: 'roles', label: 'Роли' }, { key: 'status', label: 'Статус' }, { key: 'tags', label: 'Теги' }],
+  project:    [{ key: 'priority', label: 'Приоритет' }, { key: 'stage', label: 'Стадия' }, { key: 'tags', label: 'Теги' }, { key: 'markers', label: 'Маркеры' }],
+  shape:      [{ key: 'status', label: 'Статус' }, { key: 'tags', label: 'Теги' }],
+};
+
+function togglePlayMode() {
+  isPlayMode.value = !isPlayMode.value;
+  if (!isPlayMode.value) canvasTooltip.value = null;
+}
+
+function getCanvasTooltipDescription(entity: Entity): string {
+  const meta = entity.ai_metadata as Record<string, unknown> | null | undefined;
+  if (!meta) return '';
+  const desc = typeof meta.description === 'string' ? meta.description.trim() : '';
+  return desc.length > 240 ? `${desc.slice(0, 240)}…` : desc;
+}
+
+function getCanvasTooltipFields(entity: Entity): Array<{ label: string; values: string[] }> {
+  const meta = entity.ai_metadata as Record<string, unknown> | null | undefined;
+  if (!meta) return [];
+  const fieldConfigs = CANVAS_NODE_TOOLTIP_FIELDS[entity.type as EntityType] ?? [];
+  const result: Array<{ label: string; values: string[] }> = [];
+  for (const { key, label } of fieldConfigs) {
+    const raw = meta[key];
+    const values = Array.isArray(raw)
+      ? (raw as unknown[]).filter((v): v is string => typeof v === 'string' && v.trim().length > 0).slice(0, 6)
+      : [];
+    if (values.length) result.push({ label, values });
+  }
+  return result.slice(0, 5);
+}
+
+const canvasTooltipStyle = computed<Partial<Record<string, string>>>(() => {
+  const state = canvasTooltip.value;
+  if (!state) return {};
+  const rect = state.rect;
+  const W = 264;
+  const GAP = 10;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  let left = rect.right + GAP;
+  if (left + W > vw - GAP) {
+    left = rect.left - W - GAP;
+    if (left < GAP) left = GAP;
+  }
+
+  let top = rect.top;
+  if (top + 320 > vh - GAP) top = Math.max(GAP, vh - 320 - GAP);
+  if (top < GAP) top = GAP;
+
+  return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px`, width: `${W}px` };
+});
+
+function onNodePlayEnter(payload: { nodeId: string; rect: DOMRect }) {
+  const node = nodes.value.find((n) => n.id === payload.nodeId);
+  const entity = node ? entitiesStore.byId(node.entityId) : null;
+  if (!entity) return;
+  canvasTooltip.value = { entity, rect: payload.rect };
+}
+
+function onNodePlayLeave() {
+  canvasTooltip.value = null;
+}
+
+function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
+  const node = nodes.value.find((n) => n.id === payload.nodeId);
+  const entity = node ? entitiesStore.byId(node.entityId) : null;
+  if (!entity) return;
+  // Toggle: tap same node again closes tooltip
+  if (canvasTooltip.value?.entity._id === entity._id) {
+    canvasTooltip.value = null;
+  } else {
+    canvasTooltip.value = { entity, rect: payload.rect };
+  }
+}
 </script>
 
 <template>
@@ -4646,11 +4740,15 @@ onBeforeUnmount(() => {
           "
           :is-name-editing="nameEditingNodeId === node.id"
           :preview-type="contextMenu?.nodeId === node.id ? contextMenuHoverType : null"
+          :play-mode="isPlayMode"
           @start-drag="onNodeDragStart"
           @open-menu="onNodeOpenMenu"
           @open-portal="onNodeOpenPortal"
           @name-commit="onNodeNameCommit"
           @name-edit-finished="onNodeNameEditFinished"
+          @node-play-enter="onNodePlayEnter"
+          @node-play-leave="onNodePlayLeave"
+          @node-play-tap="onNodePlayTap"
         />
       </div>
 
@@ -4970,6 +5068,54 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </div>
+
+    <!-- Play mode button (direct child of canvas-page so it sits below AppHeader) -->
+    <button
+      v-if="!isLoading && !loadError"
+      type="button"
+      class="canvas-play-btn"
+      :class="{ active: isPlayMode }"
+      :aria-label="isPlayMode ? 'Выключить просмотр' : 'Режим просмотра'"
+      :title="isPlayMode ? 'Выключить просмотр' : 'Режим просмотра'"
+      @pointerdown.stop
+      @click.stop="togglePlayMode"
+    >
+      <svg v-if="!isPlayMode" class="canvas-play-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <polygon points="5,3 19,12 5,21" />
+      </svg>
+      <svg v-else class="canvas-play-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="6" y="4" width="4" height="16" rx="1" />
+        <rect x="14" y="4" width="4" height="16" rx="1" />
+      </svg>
+    </button>
+
+    <!-- Canvas node tooltip (play mode) -->
+    <Teleport to="body">
+      <div
+        v-if="canvasTooltip && isPlayMode"
+        class="entity-card-tooltip"
+        :style="canvasTooltipStyle"
+      >
+        <div class="entity-card-tooltip-name">{{ canvasTooltip.entity.name || 'Без названия' }}</div>
+        <p v-if="getCanvasTooltipDescription(canvasTooltip.entity)" class="entity-card-tooltip-desc">
+          {{ getCanvasTooltipDescription(canvasTooltip.entity) }}
+        </p>
+        <template v-if="getCanvasTooltipFields(canvasTooltip.entity).length">
+          <div class="entity-card-tooltip-fields">
+            <div
+              v-for="group in getCanvasTooltipFields(canvasTooltip.entity)"
+              :key="group.label"
+              class="entity-card-tooltip-field-group"
+            >
+              <span class="entity-card-tooltip-field-label">{{ group.label }}</span>
+              <div class="entity-card-tooltip-tags">
+                <span v-for="val in group.values" :key="val" class="entity-card-tooltip-tag">{{ val }}</span>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </Teleport>
 
     <div
       v-if="isResetCanvasConfirmOpen"
@@ -6621,6 +6767,51 @@ onBeforeUnmount(() => {
   height: 0;
   opacity: 0;
   pointer-events: none;
+}
+
+/* ─── Play mode button ─────────────────────────────────────────────────────── */
+.canvas-play-btn {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 50;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #475569;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 14px rgba(112, 144, 176, 0.18);
+  transition:
+    background 0.16s ease,
+    color 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.canvas-play-btn:hover:not(.active) {
+  background: #eef4ff;
+  color: #1058ff;
+  border-color: #bfd5ff;
+}
+
+.canvas-play-btn.active {
+  background: #1058ff;
+  color: #ffffff;
+  border-color: #1058ff;
+  box-shadow: 0 4px 16px rgba(16, 88, 255, 0.38);
+}
+
+.canvas-play-icon {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+  stroke: none;
+  display: block;
 }
 
 @media (max-width: 1024px) {

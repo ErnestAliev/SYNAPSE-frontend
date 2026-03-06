@@ -44,6 +44,72 @@ a {
   text-decoration: none;
 }
 
+/* ─── Entity card tooltip (teleported to body, cannot use scoped styles) ─── */
+.entity-card-tooltip {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(112, 144, 176, 0.18);
+  padding: 12px;
+  max-width: 264px;
+  word-break: break-word;
+}
+
+.entity-card-tooltip-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.3;
+  margin-bottom: 6px;
+}
+
+.entity-card-tooltip-desc {
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.45;
+  margin: 0 0 8px;
+}
+
+.entity-card-tooltip-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.entity-card-tooltip-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.entity-card-tooltip-field-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.entity-card-tooltip-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.entity-card-tooltip-tag {
+  font-size: 11px;
+  font-weight: 600;
+  color: #334155;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
 #app {
   height: 100dvh;
   min-height: 100vh;
