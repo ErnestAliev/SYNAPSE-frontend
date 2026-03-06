@@ -4501,6 +4501,7 @@ const isPlayMode = ref(false);
 interface CanvasNodeTooltipState {
   entity: Entity;
   rect: DOMRect;
+  fromTap?: boolean; // true = opened by touch tap; mouseleave must not close it
 }
 const canvasTooltip = ref<CanvasNodeTooltipState | null>(null);
 
@@ -4548,10 +4549,26 @@ const canvasTooltipStyle = computed<Partial<Record<string, string>>>(() => {
   const state = canvasTooltip.value;
   if (!state) return {};
   const rect = state.rect;
-  const W = 264;
   const GAP = 10;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
+
+  // On mobile, reserve space for the canvas-controls bar at the bottom.
+  // canvas-controls: height ~50px, bottom-offset: 14px + safeArea + vvOffset.
+  // Read the JS-maintained CSS variable for the visual-viewport bottom offset.
+  const vvOffset =
+    parseFloat(
+      document.documentElement.style.getPropertyValue('--synapse-vv-bottom-offset'),
+    ) || 0;
+  const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
+  // On touch: reserve controls bar (50px) + bottom gap (14px) + vvOffset + extra for safe-area (~34px max)
+  const bottomReserve = isTouchDevice ? vvOffset + 100 : vvOffset + GAP;
+  const effectiveVH = vh - bottomReserve;
+
+  // On touch devices the tooltip is wider (288px per CSS), on desktop 264px
+  const W = isTouchDevice ? 288 : 264;
+  // Max tooltip height matches CSS max-height: 50vh
+  const maxH = Math.round(vh * 0.5);
 
   let left = rect.right + GAP;
   if (left + W > vw - GAP) {
@@ -4560,7 +4577,7 @@ const canvasTooltipStyle = computed<Partial<Record<string, string>>>(() => {
   }
 
   let top = rect.top;
-  if (top + 320 > vh - GAP) top = Math.max(GAP, vh - 320 - GAP);
+  if (top + maxH > effectiveVH - GAP) top = Math.max(GAP, effectiveVH - maxH - GAP);
   if (top < GAP) top = GAP;
 
   return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px`, width: `${W}px` };
@@ -4574,6 +4591,10 @@ function onNodePlayEnter(payload: { nodeId: string; rect: DOMRect }) {
 }
 
 function onNodePlayLeave() {
+  // Don't close a tooltip that was opened by a touch tap —
+  // mobile browsers fire synthetic mouseleave after pointerup and would
+  // close the tooltip immediately on the first tap.
+  if (canvasTooltip.value?.fromTap) return;
   canvasTooltip.value = null;
 }
 
@@ -4585,7 +4606,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   if (canvasTooltip.value?.entity._id === entity._id) {
     canvasTooltip.value = null;
   } else {
-    canvasTooltip.value = { entity, rect: payload.rect };
+    canvasTooltip.value = { entity, rect: payload.rect, fromTap: true };
   }
 }
 </script>
