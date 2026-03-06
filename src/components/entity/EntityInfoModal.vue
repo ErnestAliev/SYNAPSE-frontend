@@ -61,6 +61,18 @@ const ENTITY_MINE_TOGGLE_LABELS: Partial<Record<EntityType, string>> = {
   result: 'Мой результат',
   shape: 'Моё',
 };
+const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
+  project: 'Проект',
+  connection: 'Подключение',
+  person: 'Персона',
+  company: 'Компания',
+  event: 'Событие',
+  resource: 'Ресурс',
+  goal: 'Цель',
+  result: 'Результат',
+  task: 'Задача',
+  shape: 'Элемент',
+};
 
 type EntityChatRole = 'user' | 'assistant';
 
@@ -1961,6 +1973,127 @@ function toDisplayTime(iso: string) {
   }).format(date);
 }
 
+function sanitizeFileNamePart(value: string) {
+  return value.replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function buildEntityStructuredText() {
+  const currentDraft = draft.value;
+  if (!currentDraft) return '';
+
+  const entityName = currentDraft.name.trim() || 'Без названия';
+  const lines: string[] = [`Сущность - "${entityName}"`, '', 'Описание', currentDraft.description.trim() || '—', '', 'Поля'];
+
+  let hasFields = false;
+  for (const field of activeFields.value) {
+    const values = normalizeMetadataValues(field.key, currentDraft.metadataValues[field.key] || []);
+    if (!values.length) continue;
+    hasFields = true;
+
+    const displayValues = values.map((value) =>
+      field.key === 'links' ? value : formatMetadataValueForDisplay(field.key, value),
+    );
+    lines.push(`${field.label}: ${displayValues.join(', ')}`);
+  }
+  if (!hasFields) {
+    lines.push('—');
+  }
+
+  lines.push('', 'Чат');
+  if (!currentDraft.chatHistory.length) {
+    lines.push('—');
+    return lines.join('\n');
+  }
+
+  for (const message of currentDraft.chatHistory) {
+    const roleLabel = message.role === 'assistant' ? 'Ассистент' : 'Пользователь';
+    const text = normalizeChatText(message.text) || (message.attachments.length ? 'Вложение' : '—');
+    const timeLabel = toDisplayTime(message.createdAt);
+    const prefix = timeLabel ? `[${timeLabel}] ` : '';
+    lines.push(`${prefix}${roleLabel}: ${text}`);
+
+    if (message.attachments.length) {
+      const attachmentNames = message.attachments
+        .map((attachment) => attachment.name.trim() || 'Файл')
+        .join(', ');
+      lines.push(`Файлы: ${attachmentNames}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function buildEntityExportFileName() {
+  const currentDraft = draft.value;
+  if (!currentDraft) return 'Сущность - Без названия.txt';
+
+  const typeLabel = ENTITY_TYPE_LABELS[currentDraft.type] || 'Сущность';
+  const name = currentDraft.name.trim() || 'Без названия';
+  const safeType = sanitizeFileNamePart(typeLabel) || 'Сущность';
+  const safeName = sanitizeFileNamePart(name) || 'Без названия';
+  return `${safeType} - ${safeName}.txt`;
+}
+
+async function writeTextToClipboard(text: string) {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  if (typeof window === 'undefined') {
+    throw new Error('Clipboard unavailable');
+  }
+
+  const textarea = window.document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  textarea.style.pointerEvents = 'none';
+  window.document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  const copied = window.document.execCommand('copy');
+  window.document.body.removeChild(textarea);
+
+  if (!copied) {
+    throw new Error('Copy failed');
+  }
+}
+
+async function copyEntityAsStructuredText() {
+  const text = buildEntityStructuredText();
+  if (!text) return;
+
+  try {
+    await writeTextToClipboard(text);
+    projectActionMessage.value = 'Структурный текст скопирован.';
+  } catch {
+    projectActionMessage.value = 'Не удалось скопировать текст.';
+  }
+}
+
+function exportEntityAsTextFile() {
+  if (typeof window === 'undefined') return;
+
+  const text = buildEntityStructuredText();
+  if (!text) return;
+
+  const fileName = buildEntityExportFileName();
+  const blob = new Blob([`\uFEFF${text}`], { type: 'text/plain;charset=utf-8' });
+  const objectUrl = window.URL.createObjectURL(blob);
+  const anchor = window.document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = fileName;
+  anchor.rel = 'noopener';
+  window.document.body.appendChild(anchor);
+  anchor.click();
+  window.document.body.removeChild(anchor);
+  window.URL.revokeObjectURL(objectUrl);
+
+  projectActionMessage.value = `Файл "${fileName}" экспортирован.`;
+}
+
 const currentEntity = computed(() => entitiesStore.byId(props.entityId) || null);
 const mineToggleLabel = computed(() => {
   const entityType = currentEntity.value?.type || draft.value?.type || 'shape';
@@ -2948,6 +3081,34 @@ onBeforeUnmount(() => {
                 </div>
               </template>
             </div>
+
+            <button
+              type="button"
+              class="entity-info-title-action-btn"
+              title="Копировать структуру"
+              aria-label="Копировать структуру"
+              @click="copyEntityAsStructuredText"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="9" y="9" width="11" height="11" rx="2" />
+                <path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" />
+              </svg>
+            </button>
+
+            <button
+              type="button"
+              class="entity-info-title-action-btn"
+              title="Экспорт в TXT"
+              aria-label="Экспорт в TXT"
+              @click="exportEntityAsTextFile"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z" />
+                <path d="M14 3v5h5" />
+                <path d="M12 11v7" />
+                <path d="m9 15 3 3 3-3" />
+              </svg>
+            </button>
 
             <button
               type="button"
