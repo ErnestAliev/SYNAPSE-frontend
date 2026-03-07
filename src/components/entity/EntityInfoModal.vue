@@ -486,10 +486,24 @@ function normalizeMetadataValue(fieldKey: string, value: string) {
 function normalizeLinkMetadataValue(rawValue: string) {
   const raw = rawValue.trim();
   if (!raw) return '';
+  const hasExplicitScheme = /^https?:\/\//i.test(raw);
+  const hasWwwPrefix = /^www\./i.test(raw);
+  const hasDotHint = raw.includes('.');
+  if (!hasExplicitScheme && !hasWwwPrefix && !hasDotHint) {
+    return '';
+  }
   const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
   try {
     const url = new URL(withProtocol);
     if (!url.hostname || !url.protocol.startsWith('http')) return '';
+    const host = url.hostname.toLowerCase();
+    const hasDotHost = host.includes('.');
+    const isLocalhost = host === 'localhost';
+    const isIpv4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
+    const isIpv6 = host.includes(':');
+    if (!hasDotHost && !isLocalhost && !isIpv4 && !isIpv6) {
+      return '';
+    }
     return url.toString().slice(0, LINKS_METADATA_FIELD_MAX_LENGTH);
   } catch {
     return '';
