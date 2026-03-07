@@ -361,13 +361,24 @@ onBeforeUnmount(() => {
       <p v-if="voiceError" class="quick-voice-error">{{ voiceError }}</p>
 
       <footer class="quick-voice-actions">
+        <span class="quick-voice-actions-spacer" aria-hidden="true" />
         <button
           type="button"
-          class="quick-voice-btn"
+          class="quick-voice-btn mic"
           :class="{ active: isVoiceListening }"
+          :title="isVoiceListening ? 'Остановить запись' : 'Включить микрофон'"
+          :aria-label="isVoiceListening ? 'Остановить запись' : 'Включить микрофон'"
           @click="isVoiceListening ? stopVoiceCapture() : startVoiceCapture()"
         >
-          {{ isVoiceListening ? 'Стоп' : 'Микрофон' }}
+          <svg v-if="!isVoiceListening" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 4a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3Z" />
+            <path d="M19 11a7 7 0 0 1-14 0" />
+            <path d="M12 18v3" />
+            <path d="M8 21h8" />
+          </svg>
+          <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="7" y="7" width="10" height="10" rx="2" />
+          </svg>
         </button>
         <button
           type="button"
@@ -526,46 +537,101 @@ onBeforeUnmount(() => {
 }
 
 .quick-voice-actions {
-  display: flex;
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
   gap: 8px;
 }
 
+.quick-voice-actions-spacer {
+  justify-self: start;
+}
+
 .quick-voice-btn {
-  border: 1px solid #d0d7e5;
+  border: 1px solid #dbe4f3;
   background: #ffffff;
-  color: #0f172a;
-  border-radius: 10px;
-  padding: 8px 12px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.quick-voice-btn.active {
-  border-color: #1058ff;
-  color: #1058ff;
-}
-
-.quick-voice-btn.send {
-  background: #1058ff;
-  border-color: #1058ff;
-  color: #ffffff;
-  width: 40px;
+  color: #6b7a91;
+  border-radius: 9px;
+  width: 34px;
+  height: 34px;
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    transform 0.16s ease;
+}
+
+.quick-voice-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.quick-voice-btn.mic {
+  justify-self: center;
+  position: relative;
+  color: #ffffff;
+  background: #1058ff;
+  border-color: #1058ff;
+}
+
+.quick-voice-btn.mic.active {
+  background: #d92d20;
+  border-color: #d92d20;
+}
+
+.quick-voice-btn.mic.active::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 12px;
+  border: 2px solid rgba(217, 45, 32, 0.45);
+  animation: quick-voice-record-pulse 1.2s ease-out infinite;
+}
+
+.quick-voice-btn:hover {
+  transform: translateY(-1px);
+}
+
+.quick-voice-btn.send {
+  justify-self: end;
+  background: #1058ff;
+  border-color: #1058ff;
+  color: #ffffff;
 }
 
 .quick-voice-btn.send svg {
-  width: 16px;
-  height: 16px;
   fill: currentColor;
+  stroke: none;
 }
 
 .quick-voice-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+  transform: none;
+}
+
+@keyframes quick-voice-record-pulse {
+  0% {
+    opacity: 0.8;
+    transform: scale(0.94);
+  }
+  70% {
+    opacity: 0;
+    transform: scale(1.15);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.15);
+  }
 }
 </style>
