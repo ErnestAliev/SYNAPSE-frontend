@@ -641,8 +641,18 @@ function normalizeChatHistory(value: unknown) {
       const record = toProfile(item);
       const id = typeof record.id === 'string' ? record.id : createLocalChatMessageId();
       const role = record.role === 'assistant' ? 'assistant' : 'user';
-      const text = typeof record.text === 'string' ? record.text : '';
-      const createdAt = typeof record.createdAt === 'string' ? record.createdAt : getIsoNow();
+      const text =
+        typeof record.text === 'string'
+          ? record.text
+          : typeof record.content === 'string'
+            ? record.content
+            : '';
+      const createdAt =
+        typeof record.createdAt === 'string'
+          ? record.createdAt
+          : typeof record.created_at === 'string'
+            ? record.created_at
+            : getIsoNow();
       const rawAttachments = Array.isArray(record.attachments) ? record.attachments : [];
 
       const attachments = rawAttachments
@@ -2738,17 +2748,26 @@ watch(
       entity._id === draft.value.entityId
     ) {
       const remoteMeta = toProfile(entity.ai_metadata);
+      const remoteRawHistoryLen = Array.isArray(remoteMeta.chat_history) ? remoteMeta.chat_history.length : 0;
+      const localHistoryLen = draft.value.chatHistory.length;
       const remoteHistory = normalizeChatHistory(remoteMeta.chat_history);
       const remoteAnalysisPending = Boolean(remoteMeta.analysis_pending);
+      const remoteHasNewMessages =
+        remoteHistory.length > localHistoryLen || remoteRawHistoryLen > localHistoryLen;
+      const canHydrateHistoryFromRemote = remoteHistory.length >= localHistoryLen;
       const remoteCompletedAtRaw =
         typeof remoteMeta.analysis_completed_at === 'string' ? remoteMeta.analysis_completed_at : '';
       const remoteCompletedAtMs = Date.parse(remoteCompletedAtRaw);
       if (
         awaitingAiCompletionEntityId.value === entity._id &&
         !remoteAnalysisPending &&
-        Number.isFinite(remoteCompletedAtMs) &&
-        remoteCompletedAtMs >= awaitingAiCompletionStartedAtMs.value
+        (
+          (Number.isFinite(remoteCompletedAtMs) &&
+            remoteCompletedAtMs >= awaitingAiCompletionStartedAtMs.value) ||
+          remoteHasNewMessages
+        )
       ) {
+        localAiRequestInFlight.value = false;
         clearAwaitingAiCompletion(entity._id);
         entitiesStore.setEntityAiPending(entity._id, false);
       }
@@ -2792,9 +2811,9 @@ watch(
         }
       }
 
-      // Only apply remote history if it is strictly longer than local — prevents
-      // overwriting optimistic local state (answered flag, pending messages).
-      if (remoteHistory.length > draft.value.chatHistory.length) {
+      // Hydrate from SSE whenever remote history advanced (raw or normalized) so
+      // background replies appear even if local in-flight flags are still set.
+      if (remoteHasNewMessages && canHydrateHistoryFromRemote) {
         draft.value.chatHistory = remoteHistory;
         void nextTick(() => scrollEntityChatToBottom('auto'));
       }
