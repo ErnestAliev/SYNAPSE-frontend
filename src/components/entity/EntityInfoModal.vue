@@ -480,6 +480,9 @@ function normalizeMetadataValue(fieldKey: string, value: string) {
   if (fieldKey === 'phones') {
     return formatPhoneValue(trimmed);
   }
+  if (fieldKey === 'links') {
+    return normalizeLinkMetadataValue(trimmed);
+  }
   return trimmed;
 }
 
@@ -498,12 +501,16 @@ function normalizeLinkMetadataValue(rawValue: string) {
     if (!url.hostname || !url.protocol.startsWith('http')) return '';
     const host = url.hostname.toLowerCase();
     const hasDotHost = host.includes('.');
-    const isLocalhost = host === 'localhost';
-    const isIpv4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
-    const isIpv6 = host.includes(':');
-    if (!hasDotHost && !isLocalhost && !isIpv4 && !isIpv6) {
-      return '';
-    }
+    if (!hasDotHost) return '';
+    if (host === 'localhost') return '';
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) return '';
+    if (host.includes(':')) return '';
+
+    const hostParts = host.split('.').filter(Boolean);
+    const tld = hostParts[hostParts.length - 1] || '';
+    const hasLetterTld = /[a-z]/i.test(tld) && tld.length >= 2;
+    if (!hasExplicitScheme && !hasWwwPrefix && !hasLetterTld) return '';
+
     return url.toString().slice(0, LINKS_METADATA_FIELD_MAX_LENGTH);
   } catch {
     return '';
