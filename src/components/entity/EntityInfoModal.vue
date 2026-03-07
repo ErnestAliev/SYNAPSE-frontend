@@ -2951,12 +2951,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="entity-info-overlay" @pointerdown.self="closeModal">
+  <div class="entity-info-overlay" @pointerdown.stop @click.stop @click.self.prevent="closeModal">
     <div
       v-if="draft"
       class="entity-info-modal"
       :class="{ 'mobile-footer-open': profileFooterOpen }"
       @pointerdown.stop="onModalPointerDown"
+      @click.stop
     >
       <header class="entity-info-header">
         <div v-if="modalIcon" class="entity-info-progress-avatar">

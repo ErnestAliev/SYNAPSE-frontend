@@ -85,11 +85,12 @@ const nameDraft = ref('');
 const playModePointerDown = ref<{ x: number; y: number; id: number } | null>(null);
 const EMPTY_NAME_PLACEHOLDER = 'Без названия';
 const BASE_NODE_RING_SIZE = 82;
-const LONG_PRESS_DELAY_MS = 3000;
+const LONG_PRESS_DELAY_MS = 1000;
 const LONG_PRESS_MOVE_CANCEL_PX = 10;
 const LONG_PRESS_CLICK_SUPPRESS_MS = 900;
 const holdState = ref<{
   pointerId: number;
+  pointerType: string;
   startX: number;
   startY: number;
   timer: ReturnType<typeof setTimeout>;
@@ -252,6 +253,13 @@ function onNodePointerDown(event: PointerEvent) {
 
   startHoldTracking(event);
 
+  if (event.pointerType === 'touch') {
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+    return;
+  }
+
   emit('start-drag', { nodeId: props.node.id, pointerEvent: event });
 }
 
@@ -367,7 +375,11 @@ function onWindowPointerMove(event: PointerEvent) {
   const dx = event.clientX - active.startX;
   const dy = event.clientY - active.startY;
   if (Math.hypot(dx, dy) >= LONG_PRESS_MOVE_CANCEL_PX) {
+    const shouldStartDrag = active.pointerType === 'touch' && !props.playMode && !isLocked.value;
     clearHoldTracking(event.pointerId);
+    if (shouldStartDrag) {
+      emit('start-drag', { nodeId: props.node.id, pointerEvent: event });
+    }
   }
 }
 
@@ -387,6 +399,7 @@ function startHoldTracking(event: PointerEvent) {
   }, LONG_PRESS_DELAY_MS);
   holdState.value = {
     pointerId: event.pointerId,
+    pointerType: event.pointerType,
     startX: event.clientX,
     startY: event.clientY,
     timer,
@@ -408,6 +421,7 @@ onBeforeUnmount(() => {
     @pointermove="onWindowPointerMove"
     @pointercancel="onWindowPointerEnd"
     @pointerleave="onWindowPointerEnd"
+    @contextmenu.prevent
     @dblclick.stop="onNodeDoubleClick"
     @mouseenter="onNodeMouseEnter"
     @mouseleave="onNodeMouseLeave"
@@ -477,6 +491,9 @@ onBeforeUnmount(() => {
   justify-content: center;
   pointer-events: auto;
   z-index: 1;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .node-circle-wrap {

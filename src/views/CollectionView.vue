@@ -205,7 +205,7 @@ const quickEntityFilters = ref<QuickEntityFilters>(createDefaultQuickFilters());
 const isHydratingFilterPrefs = ref(false);
 const entityInfoEntityId = ref<string | null>(null);
 const quickVoiceEntityId = ref<string | null>(null);
-const CARD_HOLD_OPEN_DELAY_MS = 3000;
+const CARD_HOLD_OPEN_DELAY_MS = 1000;
 const CARD_HOLD_MOVE_CANCEL_PX = 10;
 const CARD_HOLD_CLICK_SUPPRESS_MS = 900;
 const cardHoldState = ref<{
@@ -2464,6 +2464,7 @@ watch(entityInfoEntityId, (id) => {
             v-else-if="activeType === 'connection'"
             class="entity-card connection-card"
             @click="onCardClick(firstEntity)"
+            @contextmenu.prevent
             @pointerdown="onEntityCardPointerDown(firstEntity, $event)"
             @pointermove="onEntityCardPointerMove"
             @pointerup="onEntityCardPointerEnd"
@@ -2508,6 +2509,7 @@ watch(entityInfoEntityId, (id) => {
             v-else
             class="entity-card"
             @click="onCardClick(firstEntity)"
+            @contextmenu.prevent
             @pointerdown="onEntityCardPointerDown(firstEntity, $event)"
             @pointermove="onEntityCardPointerMove"
             @pointerup="onEntityCardPointerEnd"
@@ -2642,6 +2644,7 @@ watch(entityInfoEntityId, (id) => {
             v-else-if="activeType === 'connection'"
             class="entity-card connection-card"
             @click="onCardClick(entity)"
+            @contextmenu.prevent
             @pointerdown="onEntityCardPointerDown(entity, $event)"
             @pointermove="onEntityCardPointerMove"
             @pointerup="onEntityCardPointerEnd"
@@ -2686,6 +2689,7 @@ watch(entityInfoEntityId, (id) => {
             v-else
             class="entity-card"
             @click="onCardClick(entity)"
+            @contextmenu.prevent
             @pointerdown="onEntityCardPointerDown(entity, $event)"
             @pointermove="onEntityCardPointerMove"
             @pointerup="onEntityCardPointerEnd"
@@ -3230,6 +3234,9 @@ watch(entityInfoEntityId, (id) => {
   min-height: 180px;
   position: relative;
   box-shadow: var(--shadow-base);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .entity-card.connection-card {
