@@ -102,6 +102,7 @@ const isVoiceListening = ref(false);
 const isSending = ref(false);
 const isResizingPanel = ref(false);
 const isClearHistoryConfirmOpen = ref(false);
+const isChatToolsMenuOpen = ref(false);
 const isProjectProfileExpanded = ref(false);
 const projectFieldDrafts = ref<Record<ProjectProfileFieldKey, string>>(buildProjectFieldDrafts());
 const projectFieldInputRefs = ref<Partial<Record<ProjectProfileFieldKey, HTMLInputElement | null>>>({});
@@ -1356,6 +1357,7 @@ function toggleChat() {
   isOpen.value = !isOpen.value;
   if (isOpen.value) {
     isClearHistoryConfirmOpen.value = false;
+    isChatToolsMenuOpen.value = false;
     panelSize.value = resolvedPanelSize.value;
     startHistoryPolling();
     void syncScopeHistoryFromServer(scopeKey.value);
@@ -1367,6 +1369,7 @@ function toggleChat() {
     });
   } else {
     isClearHistoryConfirmOpen.value = false;
+    isChatToolsMenuOpen.value = false;
     stopHistoryPolling();
     stopVoiceCapture();
     pendingUploads.value = [];
@@ -1376,7 +1379,28 @@ function toggleChat() {
   }
 }
 
+type AgentChatToolsActionKey = 'import-documents' | 'clear-history';
+
+function closeChatToolsMenu() {
+  isChatToolsMenuOpen.value = false;
+}
+
+function toggleChatToolsMenu() {
+  if (isSending.value) return;
+  isChatToolsMenuOpen.value = !isChatToolsMenuOpen.value;
+}
+
+function onChatToolsAction(actionKey: AgentChatToolsActionKey) {
+  closeChatToolsMenu();
+  if (actionKey === 'import-documents') {
+    docInputRef.value?.click();
+    return;
+  }
+  openClearHistoryConfirm();
+}
+
 function openClearHistoryConfirm() {
+  closeChatToolsMenu();
   isClearHistoryConfirmOpen.value = true;
 }
 
@@ -1490,6 +1514,7 @@ async function confirmClearAllChatHistory() {
 
 async function sendMessage() {
   if (isSending.value) return;
+  closeChatToolsMenu();
   if (isVoiceListening.value) {
     stopVoiceCapture();
   }
@@ -1773,6 +1798,7 @@ function toDisplayTime(iso: string) {
 watch(
   scopeKey,
   (nextScopeKey) => {
+    isChatToolsMenuOpen.value = false;
     messageDraft.value = '';
     pendingUploads.value = [];
     isProjectProfileExpanded.value = false;
@@ -2028,15 +2054,15 @@ onBeforeUnmount(() => {
           <div class="agent-chat-tools-left">
             <button
               type="button"
-              class="agent-chat-tool-btn"
-              title="Загрузка документа"
+              class="agent-chat-menu-btn"
+              :class="{ open: isChatToolsMenuOpen }"
+              title="Меню действий"
               :disabled="isSending"
-              @click="docInputRef?.click()"
+              @click="toggleChatToolsMenu"
             >
+              <span>Меню</span>
               <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M21 11.5V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h8.5" />
-                <path d="M15 3h6v6" />
-                <path d="M10 14 21 3" />
+                <path d="m7 10 5 5 5-5" />
               </svg>
             </button>
             <input
@@ -2047,34 +2073,41 @@ onBeforeUnmount(() => {
               @change="onDocumentsChange"
             />
 
-            <button
-              type="button"
-              class="agent-chat-tool-btn"
-              :class="{ active: isVoiceListening }"
-              title="Голосовой ввод"
-              :disabled="isSending"
-              @click="onVoiceToggle"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <rect x="9" y="3" width="6" height="11" rx="3" />
-                <path d="M5 11a7 7 0 0 0 14 0" />
-                <path d="M12 18v3" />
-                <path d="M8 21h8" />
-              </svg>
-            </button>
+            <template v-if="isChatToolsMenuOpen">
+              <div class="agent-chat-menu-backdrop" @click="closeChatToolsMenu" />
+              <div class="agent-chat-menu-dropdown" @pointerdown.stop @click.stop>
+                <p class="agent-chat-menu-label">Действия</p>
+                <button
+                  type="button"
+                  class="agent-chat-menu-item"
+                  :disabled="isSending"
+                  @click="onChatToolsAction('import-documents')"
+                >
+                  Импорт документов
+                </button>
+                <button type="button" class="agent-chat-menu-item" @click="onChatToolsAction('clear-history')">
+                  Очистить историю
+                </button>
+              </div>
+            </template>
           </div>
 
           <button
             type="button"
-            class="agent-chat-clear agent-chat-clear-tool"
-            title="Очистить историю"
-            aria-label="Очистить историю"
+            class="agent-chat-tool-btn mic"
+            :class="{ active: isVoiceListening }"
+            title="Голосовой ввод"
             :disabled="isSending"
-            @click="openClearHistoryConfirm"
+            @click="onVoiceToggle"
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M3 12a9 9 0 1 0 3-6.7" />
-              <path d="M3 4v4h4" />
+            <svg v-if="!isVoiceListening" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 4a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3Z" />
+              <path d="M19 11a7 7 0 0 1-14 0" />
+              <path d="M12 18v3" />
+              <path d="M8 21h8" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="7" y="7" width="10" height="10" rx="2" />
             </svg>
           </button>
 
@@ -2082,13 +2115,14 @@ onBeforeUnmount(() => {
             type="button"
             class="agent-chat-tool-btn send agent-chat-tools-send"
             title="Отправить"
-            :disabled="isSending"
+            :disabled="isSending || (!messageDraft.trim() && !pendingUploads.length)"
             @click="void sendMessage()"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M3 11.5 21 3l-7.5 18-2.6-7.1L3 11.5Z" />
             </svg>
           </button>
+
         </div>
       </section>
 
@@ -2647,10 +2681,121 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   justify-self: start;
+  position: relative;
 }
 
-.agent-chat-clear-tool {
-  justify-self: center;
+.agent-chat-menu-btn {
+  min-width: 88px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #334155;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.agent-chat-menu-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.16s ease;
+}
+
+.agent-chat-menu-btn:hover,
+.agent-chat-menu-btn.open {
+  color: #1058ff;
+  border-color: #bfd5ff;
+  background: #eef4ff;
+}
+
+.agent-chat-menu-btn.open svg {
+  transform: rotate(180deg);
+}
+
+.agent-chat-menu-btn:disabled,
+.agent-chat-menu-btn:disabled:hover {
+  opacity: 0.58;
+  color: #9aa9c2;
+  border-color: #dbe4f3;
+  background: #f5f8ff;
+  cursor: wait;
+}
+
+.agent-chat-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+.agent-chat-menu-dropdown {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  z-index: 41;
+  min-width: 220px;
+  max-width: min(280px, calc(100vw - 24px));
+  border: 1px solid #dbe4f3;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 16px 32px rgba(15, 23, 42, 0.18);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-chat-menu-label {
+  margin: 0;
+  padding: 5px 8px 6px;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.agent-chat-menu-item {
+  width: 100%;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #1e293b;
+  text-align: left;
+  padding: 8px 9px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: background 0.13s ease, color 0.13s ease;
+}
+
+.agent-chat-menu-item:hover:not(:disabled) {
+  background: #eef4ff;
+  color: #1058ff;
+}
+
+.agent-chat-menu-item:disabled,
+.agent-chat-menu-item:disabled:hover {
+  cursor: wait;
+  opacity: 0.55;
+  background: transparent;
+  color: #94a3b8;
 }
 
 .agent-chat-tools-send {
@@ -2658,9 +2803,9 @@ onBeforeUnmount(() => {
 }
 
 .agent-chat-tool-btn {
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
   border: 1px solid #dbe4f3;
   background: #ffffff;
   color: #6b7a91;
@@ -2671,12 +2816,13 @@ onBeforeUnmount(() => {
   transition:
     color 0.16s ease,
     border-color 0.16s ease,
-    background-color 0.16s ease;
+    background-color 0.16s ease,
+    transform 0.16s ease;
 }
 
 .agent-chat-tool-btn svg {
-  width: 15px;
-  height: 15px;
+  width: 18px;
+  height: 18px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
@@ -2685,27 +2831,52 @@ onBeforeUnmount(() => {
 }
 
 .agent-chat-tool-btn:hover {
-  color: #1058ff;
-  border-color: #bfd5ff;
-  background: #eef4ff;
+  transform: translateY(-1px);
 }
 
-.agent-chat-tool-btn.active,
+.agent-chat-tool-btn.mic {
+  position: relative;
+  justify-self: center;
+  color: #ffffff;
+  border-color: #1058ff;
+  background: #1058ff;
+}
+
+.agent-chat-tool-btn.mic.active {
+  border-color: #d92d20;
+  background: #d92d20;
+}
+
+.agent-chat-tool-btn.mic.active::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 999px;
+  border: 2px solid rgba(217, 45, 32, 0.45);
+  animation: agent-voice-record-pulse 1.2s ease-out infinite;
+}
+
 .agent-chat-tool-btn.send {
   color: #ffffff;
   background: #1058ff;
   border-color: #1058ff;
 }
 
+.agent-chat-tool-btn.send svg {
+  fill: currentColor;
+  stroke: none;
+}
+
 .agent-chat-tool-btn:disabled {
   opacity: 0.58;
-  cursor: not-allowed;
+  cursor: wait;
+  transform: none;
 }
 
 .agent-chat-tool-btn:disabled:hover {
-  color: #6b7a91;
+  color: #9aa9c2;
   border-color: #dbe4f3;
-  background: #ffffff;
+  background: #f5f8ff;
 }
 
 .agent-chat-tool-btn.send:disabled,
@@ -2714,6 +2885,21 @@ onBeforeUnmount(() => {
   border-color: #1058ff;
   background: #1058ff;
   opacity: 0.65;
+}
+
+@keyframes agent-voice-record-pulse {
+  0% {
+    opacity: 0.8;
+    transform: scale(0.94);
+  }
+  70% {
+    opacity: 0;
+    transform: scale(1.15);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.15);
+  }
 }
 
 .agent-chat-hidden-input {

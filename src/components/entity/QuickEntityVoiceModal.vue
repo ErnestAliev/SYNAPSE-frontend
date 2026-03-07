@@ -5,6 +5,14 @@ import { useEntitiesStore } from '../../stores/entities';
 
 type ChatRole = 'user' | 'assistant';
 
+interface ChatAttachment {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  data: string;
+}
+
 interface ChatMessage {
   id: string;
   role: ChatRole;
@@ -22,11 +30,14 @@ const emit = defineEmits<{
 
 const entitiesStore = useEntitiesStore();
 const messageInputRef = ref<HTMLTextAreaElement | null>(null);
+const docInputRef = ref<HTMLInputElement | null>(null);
 const feedRef = ref<HTMLElement | null>(null);
 const messageDraft = ref('');
+const pendingUploads = ref<ChatAttachment[]>([]);
 const chatHistory = ref<ChatMessage[]>([]);
 const isSubmitting = ref(false);
 const isVoiceListening = ref(false);
+const isToolsMenuOpen = ref(false);
 const voiceError = ref('');
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
 const voiceRestartTimer = ref<ReturnType<typeof setTimeout> | null>(null);
@@ -50,6 +61,10 @@ function toRecord(value: unknown) {
 
 function createLocalMessageId() {
   return `qv-${Date.now()}-${Math.floor(Math.random() * 100_000)}`;
+}
+
+function createLocalAttachmentId() {
+  return `qv-doc-${Date.now()}-${Math.floor(Math.random() * 100_000)}`;
 }
 
 function getIsoNow() {
@@ -227,22 +242,79 @@ function scrollToBottom() {
   feed.scrollTo({ top: feed.scrollHeight, behavior: 'smooth' });
 }
 
+function closeToolsMenu() {
+  isToolsMenuOpen.value = false;
+}
+
+function toggleToolsMenu() {
+  if (isAiRequestInFlight.value) return;
+  isToolsMenuOpen.value = !isToolsMenuOpen.value;
+}
+
+function onMenuImportDocuments() {
+  closeToolsMenu();
+  docInputRef.value?.click();
+}
+
+async function fileToDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(reader.error || new Error('File read error'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function onDocumentsChange(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const files = input?.files;
+  if (!files?.length) return;
+
+  const attachments = await Promise.all(
+    Array.from(files).map(async (file) => ({
+      id: createLocalAttachmentId(),
+      name: file.name,
+      mime: file.type,
+      size: file.size,
+      data: await fileToDataUrl(file),
+    })),
+  );
+
+  pendingUploads.value = [...pendingUploads.value, ...attachments];
+  if (!messageDraft.value.trim()) {
+    messageDraft.value = attachments.map((item) => `[Файл] ${item.name}`).join('\n');
+  }
+
+  if (input) {
+    input.value = '';
+  }
+}
+
+function removePendingUpload(attachmentId: string) {
+  pendingUploads.value = pendingUploads.value.filter((item) => item.id !== attachmentId);
+}
+
 async function onSubmit() {
   const currentEntity = entity.value;
   if (!currentEntity) return;
   if (isAiRequestInFlight.value) return;
 
   const message = normalizeChatText(messageDraft.value);
-  if (!message) return;
+  const attachments = [...pendingUploads.value];
+  if (!message && !attachments.length) return;
+  closeToolsMenu();
 
   const entityId = currentEntity._id;
+  const historyText = message || attachments.map((item) => `[Файл] ${item.name}`).join('\n');
+  const messageForAi = message || historyText;
   const historyPayload = chatHistory.value
     .slice(-11)
     .map((item) => ({ role: item.role, text: item.text }));
-  historyPayload.push({ role: 'user', text: message });
+  historyPayload.push({ role: 'user', text: historyText });
 
   stopVoiceCapture();
   messageDraft.value = '';
+  pendingUploads.value = [];
   isSubmitting.value = true;
   entitiesStore.setEntityAiPending(entityId, true);
   emit('close');
@@ -251,8 +323,20 @@ async function onSubmit() {
     try {
       const response = await analyzeEntityWithAi({
         entityId,
-        message,
+        message: messageForAi,
         history: historyPayload.slice(-12),
+        attachments: attachments.map((item) => ({
+          name: item.name,
+          mime: item.mime,
+          size: item.size,
+          data: item.data,
+        })),
+        documents: attachments.map((item) => ({
+          name: item.name,
+          mime: item.mime,
+          size: item.size,
+          data: item.data,
+        })),
         debug: true,
       });
 
@@ -276,7 +360,9 @@ function onComposerKeydown(event: KeyboardEvent) {
 }
 
 function closeModal() {
+  closeToolsMenu();
   stopVoiceCapture();
+  pendingUploads.value = [];
   isSubmitting.value = false;
   emit('close');
 }
@@ -303,6 +389,8 @@ watch(
 watch(
   () => props.entityId,
   async () => {
+    closeToolsMenu();
+    pendingUploads.value = [];
     messageDraft.value = '';
     voiceError.value = '';
     await nextTick();
@@ -371,10 +459,54 @@ onBeforeUnmount(() => {
         />
       </div>
 
+      <div v-if="pendingUploads.length" class="quick-voice-pending-uploads">
+        <span v-for="attachment in pendingUploads" :key="attachment.id" class="quick-voice-upload-chip">
+          {{ attachment.name }}
+          <button type="button" class="quick-voice-upload-chip-remove" @click="removePendingUpload(attachment.id)">
+            ×
+          </button>
+        </span>
+      </div>
+
       <p v-if="voiceError" class="quick-voice-error">{{ voiceError }}</p>
 
       <footer class="quick-voice-actions">
-        <span class="quick-voice-actions-spacer" aria-hidden="true" />
+        <div class="quick-voice-actions-left">
+          <button
+            type="button"
+            class="quick-voice-menu-btn"
+            :class="{ open: isToolsMenuOpen }"
+            :disabled="isAiRequestInFlight"
+            @click="toggleToolsMenu"
+          >
+            <span>Меню</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m7 10 5 5 5-5" />
+            </svg>
+          </button>
+          <input
+            ref="docInputRef"
+            type="file"
+            class="quick-voice-hidden-input"
+            multiple
+            @change="onDocumentsChange"
+          />
+
+          <template v-if="isToolsMenuOpen">
+            <div class="quick-voice-menu-backdrop" @click="closeToolsMenu" />
+            <div class="quick-voice-menu-dropdown" @pointerdown.stop @click.stop>
+              <p class="quick-voice-menu-label">Действия</p>
+              <button
+                type="button"
+                class="quick-voice-menu-item"
+                :disabled="isAiRequestInFlight"
+                @click="onMenuImportDocuments"
+              >
+                Импорт документов
+              </button>
+            </div>
+          </template>
+        </div>
         <button
           type="button"
           class="quick-voice-btn mic"
@@ -398,7 +530,7 @@ onBeforeUnmount(() => {
           class="quick-voice-btn send"
           title="Отправить"
           aria-label="Отправить"
-          :disabled="isAiRequestInFlight || !messageDraft.trim()"
+          :disabled="isAiRequestInFlight || (!messageDraft.trim() && !pendingUploads.length)"
           @click="onSubmit"
         >
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -549,24 +681,178 @@ onBeforeUnmount(() => {
   color: #b42318;
 }
 
+.quick-voice-pending-uploads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.quick-voice-upload-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  border: 1px solid #dbe4f3;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+}
+
+.quick-voice-upload-chip-remove {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  line-height: 1;
+}
+
 .quick-voice-actions {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 8px;
+  position: relative;
 }
 
-.quick-voice-actions-spacer {
+.quick-voice-actions-left {
+  position: relative;
   justify-self: start;
+}
+
+.quick-voice-menu-btn {
+  min-width: 88px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #334155;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.quick-voice-menu-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.16s ease;
+}
+
+.quick-voice-menu-btn:hover,
+.quick-voice-menu-btn.open {
+  color: #1058ff;
+  border-color: #bfd5ff;
+  background: #eef4ff;
+}
+
+.quick-voice-menu-btn.open svg {
+  transform: rotate(180deg);
+}
+
+.quick-voice-menu-btn:disabled,
+.quick-voice-menu-btn:disabled:hover {
+  opacity: 0.6;
+  cursor: wait;
+  color: #9aa9c2;
+  border-color: #dbe4f3;
+  background: #f5f8ff;
+}
+
+.quick-voice-hidden-input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.quick-voice-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1099;
+}
+
+.quick-voice-menu-dropdown {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  z-index: 1101;
+  min-width: 220px;
+  max-width: min(280px, calc(100vw - 24px));
+  border: 1px solid #dbe4f3;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 16px 32px rgba(15, 23, 42, 0.18);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.quick-voice-menu-label {
+  margin: 0;
+  padding: 5px 8px 6px;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.quick-voice-menu-item {
+  width: 100%;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #1e293b;
+  text-align: left;
+  padding: 8px 9px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: background 0.13s ease, color 0.13s ease;
+}
+
+.quick-voice-menu-item:hover:not(:disabled) {
+  background: #eef4ff;
+  color: #1058ff;
+}
+
+.quick-voice-menu-item:disabled,
+.quick-voice-menu-item:disabled:hover {
+  cursor: wait;
+  opacity: 0.55;
+  background: transparent;
+  color: #94a3b8;
 }
 
 .quick-voice-btn {
   border: 1px solid #dbe4f3;
   background: #ffffff;
   color: #6b7a91;
-  border-radius: 9px;
-  width: 34px;
-  height: 34px;
+  border-radius: 999px;
+  width: 40px;
+  height: 40px;
   padding: 0;
   display: inline-flex;
   align-items: center;
@@ -580,8 +866,8 @@ onBeforeUnmount(() => {
 }
 
 .quick-voice-btn svg {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
@@ -606,7 +892,7 @@ onBeforeUnmount(() => {
   content: '';
   position: absolute;
   inset: -5px;
-  border-radius: 12px;
+  border-radius: 999px;
   border: 2px solid rgba(217, 45, 32, 0.45);
   animation: quick-voice-record-pulse 1.2s ease-out infinite;
 }
@@ -629,7 +915,7 @@ onBeforeUnmount(() => {
 
 .quick-voice-btn:disabled {
   opacity: 0.5;
-  cursor: not-allowed;
+  cursor: wait;
   transform: none;
 }
 

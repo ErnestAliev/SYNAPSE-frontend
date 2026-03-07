@@ -957,6 +957,7 @@ function closeModal() {
   isDeleteConfirmOpen.value = false;
   isChatClearConfirmOpen.value = false;
   isMineToggleBusy.value = false;
+  closeChatToolsMenus();
   closeProfileFooter();
   emit('close');
 }
@@ -1718,6 +1719,7 @@ function openChatAttachment(attachment: EntityAttachment) {
 async function onSendInput() {
   if (!draft.value) return;
   if (isAiRequestInFlight.value || isVoiceSubmitting.value) return;
+  closeChatToolsMenus();
 
   const voiceSubmitStarted = isVoiceListening.value;
   if (voiceSubmitStarted) {
@@ -2228,9 +2230,68 @@ const entityProjects = computed(() => {
 });
 
 const isProjectNavDropdownOpen = ref(false);
+const isChatToolsMenuOpen = ref(false);
+
+type ChatToolsActionKey =
+  | 'import-documents'
+  | 'open-project'
+  | 'copy-structure'
+  | 'export-txt'
+  | 'add-to-project'
+  | 'clear-data'
+  | 'delete';
+
+function closeChatToolsMenus() {
+  isChatToolsMenuOpen.value = false;
+  isProjectNavDropdownOpen.value = false;
+}
+
+function toggleChatToolsMenu() {
+  isProjectNavDropdownOpen.value = false;
+  isChatToolsMenuOpen.value = !isChatToolsMenuOpen.value;
+}
+
+function onChatToolsAction(actionKey: ChatToolsActionKey) {
+  isChatToolsMenuOpen.value = false;
+
+  if (actionKey === 'import-documents') {
+    docInputRef.value?.click();
+    return;
+  }
+
+  if (actionKey === 'open-project') {
+    onGoToProjectClick({ forceOpenDropdown: true });
+    return;
+  }
+
+  if (actionKey === 'copy-structure') {
+    void copyEntityAsStructuredText();
+    return;
+  }
+
+  if (actionKey === 'export-txt') {
+    exportEntityAsTextFile();
+    return;
+  }
+
+  if (actionKey === 'add-to-project') {
+    openProjectAddConfirm();
+    return;
+  }
+
+  if (actionKey === 'clear-data') {
+    openClearChatConfirm();
+    return;
+  }
+
+  if (actionKey === 'delete') {
+    openDeleteConfirm();
+  }
+}
 
 function navigateToProject(projectId: string) {
   isProjectNavDropdownOpen.value = false;
+  isChatToolsMenuOpen.value = false;
   emit('close');
   router.push({
     name: 'project-canvas',
@@ -2239,11 +2300,13 @@ function navigateToProject(projectId: string) {
   });
 }
 
-function onGoToProjectClick() {
+function onGoToProjectClick(options?: { forceOpenDropdown?: boolean }) {
   if (entityProjects.value.length === 1) {
     navigateToProject(entityProjects.value[0]!._id);
   } else {
-    isProjectNavDropdownOpen.value = !isProjectNavDropdownOpen.value;
+    isProjectNavDropdownOpen.value = options?.forceOpenDropdown
+      ? true
+      : !isProjectNavDropdownOpen.value;
   }
 }
 
@@ -3190,15 +3253,15 @@ onBeforeUnmount(() => {
           <div class="entity-info-chat-tools-left">
             <button
               type="button"
-              class="entity-info-chat-icon-btn"
-              title="Загрузка документа"
+              class="entity-info-chat-menu-btn"
+              :class="{ open: isChatToolsMenuOpen }"
+              title="Меню действий"
               :disabled="isAiRequestInFlight || isVoiceSubmitting"
-              @click="docInputRef?.click()"
+              @click="toggleChatToolsMenu"
             >
+              <span>Меню</span>
               <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M21 11.5V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h8.5" />
-                <path d="M15 3h6v6" />
-                <path d="M10 14 21 3" />
+                <path d="m7 10 5 5 5-5" />
               </svg>
             </button>
             <input
@@ -3209,140 +3272,94 @@ onBeforeUnmount(() => {
               @change="onDocumentsChange"
             />
 
-            <button
-              type="button"
-              class="entity-info-chat-icon-btn"
-              :class="{ active: isVoiceListening }"
-              title="Голосовой ввод"
-              :disabled="isAiRequestInFlight || isVoiceSubmitting"
-              @click="onVoiceToggle"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <rect x="9" y="3" width="6" height="11" rx="3" />
-                <path d="M5 11a7 7 0 0 0 14 0" />
-                <path d="M12 18v3" />
-                <path d="M8 21h8" />
-              </svg>
-            </button>
+            <template v-if="isChatToolsMenuOpen">
+              <div class="entity-chat-menu-backdrop" @click="closeChatToolsMenus" />
+              <div class="entity-chat-menu-dropdown" @pointerdown.stop @click.stop>
+                <p class="entity-chat-menu-label">Действия</p>
+                <button
+                  type="button"
+                  class="entity-chat-menu-item"
+                  :disabled="isAiRequestInFlight || isVoiceSubmitting"
+                  @click="onChatToolsAction('import-documents')"
+                >
+                  Импорт документов
+                </button>
+                <button
+                  v-if="entityProjects.length > 0"
+                  type="button"
+                  class="entity-chat-menu-item"
+                  @click="onChatToolsAction('open-project')"
+                >
+                  Открыть в проекте
+                </button>
+                <button type="button" class="entity-chat-menu-item" @click="onChatToolsAction('copy-structure')">
+                  Копировать структуру
+                </button>
+                <button type="button" class="entity-chat-menu-item" @click="onChatToolsAction('export-txt')">
+                  Экспорт в TXT
+                </button>
+                <button type="button" class="entity-chat-menu-item" @click="onChatToolsAction('add-to-project')">
+                  Добавить в проект
+                </button>
+                <button type="button" class="entity-chat-menu-item" @click="onChatToolsAction('clear-data')">
+                  Сбросить данные
+                </button>
+                <button
+                  type="button"
+                  class="entity-chat-menu-item danger"
+                  :disabled="isProjectActionBusy"
+                  @click="onChatToolsAction('delete')"
+                >
+                  Удалить
+                </button>
+              </div>
+            </template>
 
+            <template v-if="entityProjects.length > 1 && isProjectNavDropdownOpen">
+              <div class="entity-nav-backdrop" @click="isProjectNavDropdownOpen = false" />
+              <div class="entity-nav-dropdown entity-nav-dropdown-chat">
+                <p class="entity-nav-dropdown-label">Выберите проект</p>
+                <button
+                  v-for="project in entityProjects"
+                  :key="project._id"
+                  type="button"
+                  class="entity-nav-dropdown-item"
+                  @click="navigateToProject(project._id)"
+                >
+                  {{ project.name || 'Без названия' }}
+                </button>
+              </div>
+            </template>
           </div>
 
-          <div class="entity-info-title-actions entity-info-chat-tools-actions">
-            <!-- Navigate to project button (shown when entity is on at least one canvas) -->
-            <div v-if="entityProjects.length > 0" class="entity-nav-projects-wrap">
-              <button
-                type="button"
-                class="entity-info-title-action-btn"
-                :title="entityProjects.length === 1
-                  ? `Открыть в проекте «${entityProjects[0]?.name || 'Без названия'}»`
-                  : 'Открыть в проекте'"
-                :aria-label="entityProjects.length === 1
-                  ? `Открыть в проекте «${entityProjects[0]?.name || 'Без названия'}»`
-                  : 'Открыть в проекте'"
-                @click="onGoToProjectClick"
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                  <polyline points="15 3 21 3 21 9" />
-                  <line x1="10" y1="14" x2="21" y2="3" />
-                </svg>
-              </button>
-
-              <!-- Multi-project dropdown -->
-              <template v-if="entityProjects.length > 1 && isProjectNavDropdownOpen">
-                <div class="entity-nav-backdrop" @click="isProjectNavDropdownOpen = false" />
-                <div class="entity-nav-dropdown">
-                  <p class="entity-nav-dropdown-label">Выберите проект</p>
-                  <button
-                    v-for="project in entityProjects"
-                    :key="project._id"
-                    type="button"
-                    class="entity-nav-dropdown-item"
-                    @click="navigateToProject(project._id)"
-                  >
-                    {{ project.name || 'Без названия' }}
-                  </button>
-                </div>
-              </template>
-            </div>
-
-            <button
-              type="button"
-              class="entity-info-title-action-btn"
-              title="Копировать структуру"
-              aria-label="Копировать структуру"
-              @click="copyEntityAsStructuredText"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <rect x="9" y="9" width="11" height="11" rx="2" />
-                <path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" />
-              </svg>
-            </button>
-
-            <button
-              type="button"
-              class="entity-info-title-action-btn"
-              title="Экспорт в TXT"
-              aria-label="Экспорт в TXT"
-              @click="exportEntityAsTextFile"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z" />
-                <path d="M14 3v5h5" />
-                <path d="M12 11v7" />
-                <path d="m9 15 3 3 3-3" />
-              </svg>
-            </button>
-
-            <button
-              type="button"
-              class="entity-info-title-action-btn"
-              :disabled="isProjectActionBusy"
-              title="Добавить в проект"
-              aria-label="Добавить в проект"
-              @click="openProjectAddConfirm"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 5v14" />
-                <path d="M5 12h14" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              class="entity-info-title-action-btn action-reset"
-              :disabled="isProjectActionBusy"
-              title="Сбросить данные"
-              aria-label="Сбросить данные"
-              @click="openClearChatConfirm"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M3 12a9 9 0 1 0 3-6.7" />
-                <path d="M3 4v4h4" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              class="entity-info-title-action-btn danger"
-              :disabled="isProjectActionBusy"
-              title="Удалить"
-              aria-label="Удалить"
-              @click="openDeleteConfirm"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 7h16" />
-                <path d="M9 7V5h6v2" />
-                <path d="M10 11v6" />
-                <path d="M14 11v6" />
-                <path d="M6 7l1 12h10l1-12" />
-              </svg>
-            </button>
-          </div>
+          <button
+            type="button"
+            class="entity-info-chat-icon-btn mic"
+            :class="{ active: isVoiceListening }"
+            title="Голосовой ввод"
+            :disabled="isAiRequestInFlight || isVoiceSubmitting"
+            @click="onVoiceToggle"
+          >
+            <svg v-if="!isVoiceListening" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 4a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3Z" />
+              <path d="M19 11a7 7 0 0 1-14 0" />
+              <path d="M12 18v3" />
+              <path d="M8 21h8" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="7" y="7" width="10" height="10" rx="2" />
+            </svg>
+          </button>
 
           <button
             type="button"
             class="entity-info-chat-icon-btn send entity-info-chat-tools-send"
             title="Отправить"
-            :disabled="isAiRequestInFlight || isVoiceSubmitting"
+            :disabled="
+              isAiRequestInFlight ||
+              isVoiceSubmitting ||
+              (!draft.textInput.trim() && !draft.pendingUploads.length)
+            "
             @click="onSendInput"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -3955,6 +3972,11 @@ onBeforeUnmount(() => {
   gap: 2px;
 }
 
+.entity-nav-dropdown.entity-nav-dropdown-chat {
+  left: 0;
+  right: auto;
+}
+
 .entity-nav-dropdown-label {
   font-size: 10px;
   font-weight: 700;
@@ -4498,20 +4520,136 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   justify-self: start;
+  position: relative;
 }
 
-.entity-info-chat-tools-actions {
-  justify-self: center;
+.entity-info-chat-menu-btn {
+  min-width: 88px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #334155;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background-color 0.16s ease;
 }
 
-.entity-info-chat-tools-send {
-  justify-self: end;
+.entity-info-chat-menu-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.16s ease;
+}
+
+.entity-info-chat-menu-btn:hover,
+.entity-info-chat-menu-btn.open {
+  color: #1058ff;
+  border-color: #bfd5ff;
+  background: #eef4ff;
+}
+
+.entity-info-chat-menu-btn.open svg {
+  transform: rotate(180deg);
+}
+
+.entity-info-chat-menu-btn:disabled,
+.entity-info-chat-menu-btn:disabled:hover {
+  cursor: wait;
+  opacity: 0.6;
+  color: #9aa9c2;
+  border-color: #dbe4f3;
+  background: #f5f8ff;
+}
+
+.entity-chat-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1099;
+}
+
+.entity-chat-menu-dropdown {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  z-index: 1101;
+  min-width: 220px;
+  max-width: min(280px, calc(100vw - 24px));
+  border: 1px solid #dbe4f3;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 16px 32px rgba(15, 23, 42, 0.18);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.entity-chat-menu-label {
+  margin: 0;
+  padding: 5px 8px 6px;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.entity-chat-menu-item {
+  width: 100%;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #1e293b;
+  text-align: left;
+  padding: 8px 9px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: background 0.13s ease, color 0.13s ease;
+}
+
+.entity-chat-menu-item:hover:not(:disabled) {
+  background: #eef4ff;
+  color: #1058ff;
+}
+
+.entity-chat-menu-item.danger {
+  color: #b91c1c;
+}
+
+.entity-chat-menu-item.danger:hover:not(:disabled) {
+  color: #b91c1c;
+  background: #ffe4e6;
+}
+
+.entity-chat-menu-item:disabled,
+.entity-chat-menu-item:disabled:hover {
+  cursor: wait;
+  opacity: 0.55;
+  background: transparent;
+  color: #94a3b8;
 }
 
 .entity-info-chat-icon-btn {
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
   border: 1px solid #dbe4f3;
   background: #ffffff;
   color: #6b7a91;
@@ -4522,12 +4660,13 @@ onBeforeUnmount(() => {
   transition:
     color 0.16s ease,
     border-color 0.16s ease,
-    background-color 0.16s ease;
+    background-color 0.16s ease,
+    transform 0.16s ease;
 }
 
 .entity-info-chat-icon-btn svg {
-  width: 15px;
-  height: 15px;
+  width: 18px;
+  height: 18px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
@@ -4536,16 +4675,44 @@ onBeforeUnmount(() => {
 }
 
 .entity-info-chat-icon-btn:hover {
-  color: #1058ff;
-  border-color: #bfd5ff;
-  background: #eef4ff;
+  transform: translateY(-1px);
 }
 
-.entity-info-chat-icon-btn.active,
+.entity-info-chat-icon-btn.mic {
+  position: relative;
+  justify-self: center;
+  color: #ffffff;
+  background: #1058ff;
+  border-color: #1058ff;
+}
+
+.entity-info-chat-icon-btn.mic.active {
+  background: #d92d20;
+  border-color: #d92d20;
+}
+
+.entity-info-chat-icon-btn.mic.active::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 999px;
+  border: 2px solid rgba(217, 45, 32, 0.45);
+  animation: entity-voice-record-pulse 1.2s ease-out infinite;
+}
+
 .entity-info-chat-icon-btn.send {
   color: #ffffff;
   background: #1058ff;
   border-color: #1058ff;
+}
+
+.entity-info-chat-tools-send {
+  justify-self: end;
+}
+
+.entity-info-chat-icon-btn.send svg {
+  fill: currentColor;
+  stroke: none;
 }
 
 .entity-info-chat-icon-btn:disabled,
@@ -4555,6 +4722,30 @@ onBeforeUnmount(() => {
   color: #9aa9c2;
   border-color: #dbe4f3;
   background: #f5f8ff;
+  transform: none;
+}
+
+.entity-info-chat-icon-btn.send:disabled,
+.entity-info-chat-icon-btn.send:disabled:hover {
+  color: #ffffff;
+  background: #1058ff;
+  border-color: #1058ff;
+  opacity: 0.58;
+}
+
+@keyframes entity-voice-record-pulse {
+  0% {
+    opacity: 0.8;
+    transform: scale(0.94);
+  }
+  70% {
+    opacity: 0;
+    transform: scale(1.15);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.15);
+  }
 }
 
 @media (max-width: 900px) {
