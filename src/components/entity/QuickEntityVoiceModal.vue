@@ -25,9 +25,7 @@ const messageInputRef = ref<HTMLTextAreaElement | null>(null);
 const feedRef = ref<HTMLElement | null>(null);
 const messageDraft = ref('');
 const chatHistory = ref<ChatMessage[]>([]);
-const localAiRequestInFlight = ref(false);
-const awaitingEntityId = ref('');
-const awaitingStartedAtMs = ref(0);
+const isSubmitting = ref(false);
 const isVoiceListening = ref(false);
 const voiceError = ref('');
 const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
@@ -42,7 +40,7 @@ const entityName = computed(() => entity.value?.name?.trim() || 'Без назв
 const isAiRequestInFlight = computed(() => {
   const current = entity.value;
   const pending = Boolean((toRecord(current?.ai_metadata) as Record<string, unknown>).analysis_pending);
-  return localAiRequestInFlight.value || entitiesStore.isEntityAiPending(props.entityId) || pending;
+  return isSubmitting.value || entitiesStore.isEntityAiPending(props.entityId) || pending;
 });
 
 function toRecord(value: unknown) {
@@ -89,25 +87,6 @@ function normalizeChatHistory(value: unknown) {
       } satisfies ChatMessage;
     })
     .filter((row): row is ChatMessage => Boolean(row));
-}
-
-function pushLocalChatMessage(role: ChatRole, text: string) {
-  const normalized = normalizeChatText(text);
-  if (!normalized) return;
-  chatHistory.value = [
-    ...chatHistory.value,
-    {
-      id: createLocalMessageId(),
-      role,
-      text: normalized,
-      createdAt: getIsoNow(),
-    },
-  ];
-}
-
-function clearAwaiting() {
-  awaitingEntityId.value = '';
-  awaitingStartedAtMs.value = 0;
 }
 
 function stopVoiceRestartTimer() {
@@ -256,42 +235,37 @@ async function onSubmit() {
   const message = normalizeChatText(messageDraft.value);
   if (!message) return;
 
-  pushLocalChatMessage('user', message);
+  const entityId = currentEntity._id;
+  const historyPayload = chatHistory.value
+    .slice(-11)
+    .map((item) => ({ role: item.role, text: item.text }));
+  historyPayload.push({ role: 'user', text: message });
+
+  stopVoiceCapture();
   messageDraft.value = '';
-  await nextTick();
-  scrollToBottom();
+  isSubmitting.value = true;
+  entitiesStore.setEntityAiPending(entityId, true);
+  emit('close');
 
-  localAiRequestInFlight.value = true;
-  awaitingEntityId.value = currentEntity._id;
-  awaitingStartedAtMs.value = Date.now();
-  entitiesStore.setEntityAiPending(currentEntity._id, true);
+  void (async () => {
+    try {
+      const response = await analyzeEntityWithAi({
+        entityId,
+        message,
+        history: historyPayload.slice(-12),
+        debug: true,
+      });
 
-  try {
-    const response = await analyzeEntityWithAi({
-      entityId: currentEntity._id,
-      message,
-      history: chatHistory.value.slice(-12).map((item) => ({ role: item.role, text: item.text })),
-      debug: true,
-    });
-
-    if (isEntityAiProcessingResponse(response)) {
-      localAiRequestInFlight.value = false;
-      return;
+      if (!isEntityAiProcessingResponse(response)) {
+        entitiesStore.setEntityAiPending(entityId, false);
+      }
+    } catch (error) {
+      console.error('[QuickVoice] analyzeEntityWithAi failed', error);
+      entitiesStore.setEntityAiPending(entityId, false);
+    } finally {
+      isSubmitting.value = false;
     }
-
-    pushLocalChatMessage('assistant', response.reply || 'Готово.');
-    entitiesStore.setEntityAiPending(currentEntity._id, false);
-    clearAwaiting();
-  } catch (error) {
-    const messageText = error instanceof Error ? error.message : 'Не удалось получить ответ.';
-    pushLocalChatMessage('assistant', `Ошибка: ${messageText}`);
-    entitiesStore.setEntityAiPending(currentEntity._id, false);
-    clearAwaiting();
-  } finally {
-    localAiRequestInFlight.value = false;
-    await nextTick();
-    scrollToBottom();
-  }
+  })();
 }
 
 function onComposerKeydown(event: KeyboardEvent) {
@@ -303,8 +277,7 @@ function onComposerKeydown(event: KeyboardEvent) {
 
 function closeModal() {
   stopVoiceCapture();
-  clearAwaiting();
-  localAiRequestInFlight.value = false;
+  isSubmitting.value = false;
   emit('close');
 }
 
@@ -316,25 +289,12 @@ watch(
       return;
     }
     const meta = toRecord(nextEntity.ai_metadata);
-    const remotePending = Boolean(meta.analysis_pending);
-    const remoteRawHistoryLen = Array.isArray(meta.chat_history) ? meta.chat_history.length : 0;
     const localLen = chatHistory.value.length;
     const remoteHistory = normalizeChatHistory(meta.chat_history);
 
     if (remoteHistory.length > localLen) {
       chatHistory.value = remoteHistory;
       void nextTick(() => scrollToBottom());
-    }
-
-    const completedAtRaw = typeof meta.analysis_completed_at === 'string' ? meta.analysis_completed_at : '';
-    const completedAtMs = Date.parse(completedAtRaw);
-    const hasTrustedCompletion =
-      Number.isFinite(completedAtMs) && completedAtMs >= awaitingStartedAtMs.value;
-    const hasCompletionSignals = !remotePending && (remoteRawHistoryLen > localLen || hasTrustedCompletion);
-    if (awaitingEntityId.value === nextEntity._id && hasCompletionSignals) {
-      localAiRequestInFlight.value = false;
-      entitiesStore.setEntityAiPending(nextEntity._id, false);
-      clearAwaiting();
     }
   },
   { immediate: true },
@@ -361,13 +321,12 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   stopVoiceCapture();
-  clearAwaiting();
 });
 </script>
 
 <template>
   <div class="quick-voice-overlay" @pointerdown.self="closeModal">
-    <section class="quick-voice-modal" @pointerdown.stop>
+    <section class="quick-voice-modal" :class="{ dictating: isVoiceListening }" @pointerdown.stop>
       <header class="quick-voice-header">
         <h3 class="quick-voice-title">{{ entityName }}</h3>
         <button type="button" class="quick-voice-close" @click="closeModal">×</button>
@@ -392,7 +351,7 @@ onBeforeUnmount(() => {
           ref="messageInputRef"
           v-model="messageDraft"
           class="entity-info-chat-input quick-voice-input"
-          rows="1"
+          rows="10"
           placeholder="Скажите или напишите сообщение"
           :disabled="isAiRequestInFlight"
           @keydown="onComposerKeydown"
@@ -413,10 +372,14 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="quick-voice-btn send"
+          title="Отправить"
+          aria-label="Отправить"
           :disabled="isAiRequestInFlight || !messageDraft.trim()"
           @click="onSubmit"
         >
-          Отправить
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m3 11 17-8-4 18-5-6-8-4Z" />
+          </svg>
         </button>
       </footer>
     </section>
@@ -443,7 +406,7 @@ onBeforeUnmount(() => {
   border-radius: 18px;
   box-shadow: 0 24px 48px rgba(15, 23, 42, 0.24);
   display: grid;
-  grid-template-rows: auto minmax(140px, 1fr) auto auto auto;
+  grid-template-rows: auto minmax(190px, 1fr) auto auto auto;
   gap: 10px;
   padding: 14px;
 }
@@ -480,6 +443,13 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 8px;
   background: #f8fafc;
+  min-height: 190px;
+  max-height: 42vh;
+}
+
+.quick-voice-modal.dictating .quick-voice-feed {
+  min-height: 86px;
+  max-height: 132px;
 }
 
 .quick-voice-message {
@@ -532,9 +502,13 @@ onBeforeUnmount(() => {
   line-height: 1.35;
   padding: 6px 6px;
   resize: none;
-  min-height: 44px;
-  max-height: 176px;
+  min-height: min(36vh, 320px);
+  max-height: 56vh;
   overflow-y: auto;
+}
+
+.quick-voice-modal.dictating .quick-voice-input {
+  min-height: min(48vh, 420px);
 }
 
 .quick-voice-input::placeholder {
@@ -577,6 +551,17 @@ onBeforeUnmount(() => {
   background: #1058ff;
   border-color: #1058ff;
   color: #ffffff;
+  width: 40px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.quick-voice-btn.send svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
 }
 
 .quick-voice-btn:disabled {
