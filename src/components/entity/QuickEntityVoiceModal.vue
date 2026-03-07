@@ -513,12 +513,36 @@ onBeforeUnmount(() => {
 }
 
 .quick-voice-composer {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid #dbe4f3;
   border-radius: 12px;
+  background: #ffffff;
+  padding: 4px 8px;
 }
 
 .quick-voice-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.35;
+  padding: 6px 6px;
+  resize: none;
   min-height: 44px;
-  max-height: 120px;
+  max-height: 176px;
+  overflow-y: auto;
+}
+
+.quick-voice-input::placeholder {
+  color: #94a3b8;
+}
+
+.quick-voice-input:disabled {
+  cursor: wait;
 }
 
 .quick-voice-error {
