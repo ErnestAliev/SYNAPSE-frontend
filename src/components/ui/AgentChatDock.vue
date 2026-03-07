@@ -216,6 +216,21 @@ function normalizeProjectLinkValue(rawValue: unknown) {
   }
 }
 
+function extractStandaloneChatLinks(message: string) {
+  const normalizedMessage = message.trim();
+  if (!normalizedMessage) return [] as string[];
+
+  // Skip LLM only when the whole message is exactly one link token.
+  if (/\s/.test(normalizedMessage)) return [] as string[];
+
+  const token = normalizedMessage.replace(/^[('"[\{<]+/, '').replace(/[)\]}'">,.;!?]+$/, '');
+  if (!token) return [] as string[];
+  const normalizedLink = normalizeProjectLinkValue(token);
+  if (!normalizedLink) return [] as string[];
+
+  return [normalizedLink];
+}
+
 function normalizeProjectProfileFieldValues(fieldKey: ProjectProfileFieldKey, rawValue: unknown) {
   const source = Array.isArray(rawValue) ? rawValue : [rawValue];
   const dedup = new Set<string>();
@@ -1379,7 +1394,7 @@ function toggleChat() {
   }
 }
 
-type AgentChatToolsActionKey = 'import-documents' | 'clear-history';
+type AgentChatToolsActionKey = 'import-documents' | 'copy-structure' | 'export-txt' | 'clear-history';
 
 function closeChatToolsMenu() {
   isChatToolsMenuOpen.value = false;
@@ -1394,6 +1409,16 @@ function onChatToolsAction(actionKey: AgentChatToolsActionKey) {
   closeChatToolsMenu();
   if (actionKey === 'import-documents') {
     docInputRef.value?.click();
+    return;
+  }
+  if (actionKey === 'copy-structure') {
+    void copyScopeAsStructuredText().catch(() => {
+      // Clipboard access can be blocked by browser policy.
+    });
+    return;
+  }
+  if (actionKey === 'export-txt') {
+    exportScopeAsTextFile();
     return;
   }
   openClearHistoryConfirm();
@@ -1522,6 +1547,7 @@ async function sendMessage() {
   const value = messageDraft.value.trim();
   const attachments = [...pendingUploads.value];
   if (!value && !attachments.length) return;
+  const linkOnlyMessageLinks = attachments.length === 0 ? extractStandaloneChatLinks(value) : [];
   const activeScope = buildRequestScope();
   if (!activeScope) {
     pushMessage('assistant', 'Не удалось определить контекст анализа.');
@@ -1534,6 +1560,17 @@ async function sendMessage() {
   pushMessage('user', value, attachments, activeScopeKey);
   messageDraft.value = '';
   pendingUploads.value = [];
+
+  if (routeScopeType.value === 'project-canvas' && linkOnlyMessageLinks.length) {
+    const existingLinks = getProjectFieldValues('links');
+    applyProjectFieldValues('links', mergeProjectProfileValues('links', existingLinks, linkOnlyMessageLinks));
+    void nextTick(() => {
+      autoResizeComposer();
+      shouldAutoScrollToBottom.value = true;
+      maybeScrollToBottom('auto', true);
+    });
+    return;
+  }
 
   isSending.value = true;
 
@@ -1793,6 +1830,115 @@ function toDisplayTime(iso: string) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(date);
+}
+
+function sanitizeFileNamePart(value: string) {
+  return value.replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function buildScopeStructuredText() {
+  const lines: string[] = [];
+
+  if (routeScopeType.value === 'project-canvas') {
+    const projectName = activeProjectEntity.value?.name?.trim() || 'Без названия';
+    lines.push(`Проект - "${projectName}"`);
+    lines.push('');
+    lines.push('Описание');
+    lines.push(projectProfileDescription.value || '—');
+    lines.push('');
+    lines.push('Поля');
+
+    let hasFields = false;
+    for (const field of projectProfileFields.value) {
+      if (!field.values.length) continue;
+      hasFields = true;
+      lines.push(`${field.label}: ${field.values.join(', ')}`);
+    }
+    if (!hasFields) {
+      lines.push('—');
+    }
+  } else {
+    lines.push(scopeTitle.value);
+    lines.push(scopeSummary.value);
+  }
+
+  lines.push('');
+  lines.push('Чат');
+  if (!scopedMessages.value.length) {
+    lines.push('—');
+    return lines.join('\n');
+  }
+
+  for (const message of scopedMessages.value) {
+    const roleLabel = message.role === 'assistant' ? 'Ассистент' : 'Пользователь';
+    const text = message.text.trim() || (message.attachments.length ? 'Вложение' : '—');
+    const timeLabel = toDisplayTime(message.createdAt);
+    const prefix = timeLabel ? `[${timeLabel}] ` : '';
+    lines.push(`${prefix}${roleLabel}: ${text}`);
+
+    if (message.attachments.length) {
+      const files = message.attachments
+        .map((attachment) => attachment.name.trim() || 'Файл')
+        .join(', ');
+      lines.push(`Файлы: ${files}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function buildScopeExportFileName() {
+  if (routeScopeType.value === 'project-canvas') {
+    const projectName = activeProjectEntity.value?.name?.trim() || 'Без названия';
+    return `Проект - ${sanitizeFileNamePart(projectName) || 'Без названия'}.txt`;
+  }
+
+  const label = ENTITY_TYPE_LABELS[collectionType.value] || 'Коллекция';
+  return `${sanitizeFileNamePart(label) || 'Коллекция'} - LLM чат.txt`;
+}
+
+async function writeTextToClipboard(text: string) {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  if (typeof window === 'undefined') {
+    throw new Error('Clipboard unavailable');
+  }
+
+  const textarea = window.document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  window.document.body.appendChild(textarea);
+  textarea.select();
+  const copied = window.document.execCommand('copy');
+  window.document.body.removeChild(textarea);
+  if (!copied) {
+    throw new Error('Clipboard unavailable');
+  }
+}
+
+async function copyScopeAsStructuredText() {
+  const text = buildScopeStructuredText();
+  if (!text.trim()) return;
+  await writeTextToClipboard(text);
+}
+
+function exportScopeAsTextFile() {
+  if (typeof window === 'undefined') return;
+  const text = buildScopeStructuredText();
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const objectUrl = window.URL.createObjectURL(blob);
+  const anchor = window.document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = buildScopeExportFileName();
+  window.document.body.appendChild(anchor);
+  anchor.click();
+  window.document.body.removeChild(anchor);
+  window.URL.revokeObjectURL(objectUrl);
 }
 
 watch(
@@ -2085,8 +2231,14 @@ onBeforeUnmount(() => {
                 >
                   Импорт документов
                 </button>
+                <button type="button" class="agent-chat-menu-item" @click="onChatToolsAction('copy-structure')">
+                  Копировать структуру
+                </button>
+                <button type="button" class="agent-chat-menu-item" @click="onChatToolsAction('export-txt')">
+                  Экспорт в TXT
+                </button>
                 <button type="button" class="agent-chat-menu-item" @click="onChatToolsAction('clear-history')">
-                  Очистить историю
+                  {{ routeScopeType === 'project-canvas' ? 'Сбросить данные и чат' : 'Очистить историю' }}
                 </button>
               </div>
             </template>
@@ -2745,7 +2897,7 @@ onBeforeUnmount(() => {
 .agent-chat-menu-dropdown {
   position: absolute;
   left: 0;
-  top: calc(100% + 8px);
+  bottom: calc(100% + 8px);
   z-index: 41;
   min-width: 220px;
   max-width: min(280px, calc(100vw - 24px));

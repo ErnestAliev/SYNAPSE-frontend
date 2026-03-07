@@ -3975,6 +3975,8 @@ onBeforeUnmount(() => {
 .entity-nav-dropdown.entity-nav-dropdown-chat {
   left: 0;
   right: auto;
+  top: auto;
+  bottom: calc(100% + 8px);
 }
 
 .entity-nav-dropdown-label {
@@ -4584,7 +4586,7 @@ onBeforeUnmount(() => {
 .entity-chat-menu-dropdown {
   position: absolute;
   left: 0;
-  top: calc(100% + 8px);
+  bottom: calc(100% + 8px);
   z-index: 1101;
   min-width: 220px;
   max-width: min(280px, calc(100vw - 24px));

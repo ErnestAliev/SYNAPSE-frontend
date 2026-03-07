@@ -793,7 +793,7 @@ onBeforeUnmount(() => {
 .quick-voice-menu-dropdown {
   position: absolute;
   left: 0;
-  top: calc(100% + 8px);
+  bottom: calc(100% + 8px);
   z-index: 1101;
   min-width: 220px;
   max-width: min(280px, calc(100vw - 24px));
