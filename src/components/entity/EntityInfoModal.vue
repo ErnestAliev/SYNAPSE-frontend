@@ -511,18 +511,20 @@ function normalizeLinkMetadataValue(rawValue: string) {
 }
 
 function extractStandaloneChatLinks(message: string) {
-  const tokens = message
-    .split(/\s+/)
-    .map((token) => token.trim().replace(/^[('"[\{<]+/, '').replace(/[)\]}'">,.;!?]+$/, ''))
-    .filter(Boolean);
-  if (!tokens.length) return [] as string[];
+  const normalizedMessage = message.trim();
+  if (!normalizedMessage) return [] as string[];
 
-  const normalizedLinks = tokens.map((token) => normalizeLinkMetadataValue(token)).filter(Boolean);
-  if (normalizedLinks.length !== tokens.length) {
-    return [] as string[];
-  }
+  // Safety-first: bypass LLM only when the whole message is exactly one link.
+  // Any additional text should always go through normal AI flow.
+  const hasWhitespace = /\s/.test(normalizedMessage);
+  if (hasWhitespace) return [] as string[];
 
-  return normalizeMetadataValues('links', normalizedLinks).slice(0, 24);
+  const token = normalizedMessage.replace(/^[('"[\{<]+/, '').replace(/[)\]}'">,.;!?]+$/, '');
+  if (!token) return [] as string[];
+  const normalizedLink = normalizeLinkMetadataValue(token);
+  if (!normalizedLink) return [] as string[];
+
+  return [normalizedLink];
 }
 
 function metadataValueDedupeKey(fieldKey: string, value: string) {
@@ -2811,11 +2813,7 @@ watch(
       const remoteHasNewMessages =
         remoteHistory.length > localHistoryLen || remoteRawHistoryLen > localHistoryLen;
       const canHydrateHistoryFromRemote = remoteHistory.length >= localHistoryLen;
-      const shouldFinalizeInFlightFromRemote =
-        !remoteAnalysisPending && remoteRawHistoryLen >= localHistoryLen;
-      const shouldHydrateFromRemote =
-        (remoteHasNewMessages && canHydrateHistoryFromRemote) ||
-        (shouldFinalizeInFlightFromRemote && canHydrateHistoryFromRemote);
+      const shouldHydrateFromRemote = remoteHasNewMessages && canHydrateHistoryFromRemote;
       console.log('[Modal][Sync] before', {
         entityId: entity._id,
         local_chat_history_len: localHistoryLen,
@@ -2830,12 +2828,16 @@ watch(
       const remoteCompletedAtRaw =
         typeof remoteMeta.analysis_completed_at === 'string' ? remoteMeta.analysis_completed_at : '';
       const remoteCompletedAtMs = Date.parse(remoteCompletedAtRaw);
-      if (!remoteAnalysisPending) {
-        entitiesStore.setEntityAiPending(entity._id, false);
-      }
+      const hasTrustedCompletionTimestamp =
+        Number.isFinite(remoteCompletedAtMs) && remoteCompletedAtMs >= awaitingAiCompletionStartedAtMs.value;
+      const shouldFinalizeInFlightFromRemote =
+        awaitingAiCompletionEntityId.value === entity._id
+        && !remoteAnalysisPending
+        && (hasTrustedCompletionTimestamp || remoteHasNewMessages);
       if (shouldFinalizeInFlightFromRemote) {
         localAiRequestInFlight.value = false;
         clearAwaitingAiCompletion(entity._id);
+        entitiesStore.setEntityAiPending(entity._id, false);
       }
       if (
         awaitingAiCompletionEntityId.value === entity._id &&
@@ -2897,12 +2899,12 @@ watch(
         void nextTick(() => scrollEntityChatToBottom('auto'));
         console.log('[Modal][Sync] decision', {
           action: 'hydrate',
-          reason: shouldFinalizeInFlightFromRemote ? 'finalized_pending_false_remote_gte_local' : 'remote_has_new_messages',
+          reason: shouldFinalizeInFlightFromRemote ? 'finalized_by_completion_signal' : 'remote_has_new_messages',
         });
       } else {
         const skipReasons: string[] = [];
         if (!remoteHasNewMessages) skipReasons.push('remote_not_newer');
-        if (!shouldFinalizeInFlightFromRemote) skipReasons.push('not_finalized_or_remote_lt_local');
+        if (!shouldFinalizeInFlightFromRemote) skipReasons.push('not_finalized_by_completion_signal');
         if (!canHydrateHistoryFromRemote) skipReasons.push('normalized_remote_shorter_than_local');
         console.log('[Modal][Sync] decision', {
           action: 'skip_hydrate',
