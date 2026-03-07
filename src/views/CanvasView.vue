@@ -51,6 +51,8 @@ const NODE_MENU_HINT_FIRST_PROJECT_STORAGE_KEY = 'synapse12.hints.nodeMenu.first
 const LIBRARY_DRAG_MIME = 'application/x-synapse12-entity-id';
 const MOBILE_NODE_ADD_PADDING_PX = 24;
 const MOBILE_NODE_ADD_EXTRA_GAP_PX = 18;
+const TOUCH_DOUBLE_TAP_DELAY_MS = 320;
+const TOUCH_DOUBLE_TAP_DISTANCE_PX = 28;
 const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   project: 'Проект',
   connection: 'Подключение',
@@ -563,6 +565,12 @@ const touchGesture = ref<{
   startWorldY: number;
   startZoom: number;
 } | null>(null);
+const lastCanvasTouchTap = ref<{
+  at: number;
+  clientX: number;
+  clientY: number;
+} | null>(null);
+const suppressCanvasDoubleClickUntil = ref(0);
 
 const routeProjectId = computed(() => {
   const id = route.params.id;
@@ -3697,6 +3705,7 @@ function onWindowPointerUp(event: PointerEvent) {
     }
 
     if (hadTouchGesture) {
+      lastCanvasTouchTap.value = null;
       suppressMenuOpenUntil.value = Date.now() + 160;
       clearSelectionRect();
       if (touchPointers.value.size <= 1) {
@@ -3708,9 +3717,42 @@ function onWindowPointerUp(event: PointerEvent) {
   }
 
   if (selectionRect.value) {
+    const touchTapCandidate =
+      event.pointerType === 'touch' && !selectionRect.value.moved && !selectionRect.value.additive;
+    const tapWorldX = selectionRect.value.currentX;
+    const tapWorldY = selectionRect.value.currentY;
+    const tapClientX = event.clientX;
+    const tapClientY = event.clientY;
     const applied = finalizeSelectionRect();
     if (applied) {
+      lastCanvasTouchTap.value = null;
       suppressMenuOpenUntil.value = Date.now() + 140;
+    }
+
+    if (touchTapCandidate && !applied && !isPlayMode.value) {
+      const now = Date.now();
+      const prev = lastCanvasTouchTap.value;
+      const isFastEnough = Boolean(prev && now - prev.at <= TOUCH_DOUBLE_TAP_DELAY_MS);
+      const isCloseEnough = Boolean(
+        prev &&
+          Math.hypot(tapClientX - prev.clientX, tapClientY - prev.clientY) <= TOUCH_DOUBLE_TAP_DISTANCE_PX,
+      );
+
+      if (isFastEnough && isCloseEnough) {
+        lastCanvasTouchTap.value = null;
+        suppressCanvasDoubleClickUntil.value = now + 420;
+        suppressMenuOpenUntil.value = now + 220;
+        closeContextMenu();
+        closeEdgeMenu();
+        void addNodeAtWorldPosition(tapWorldX, tapWorldY, getNextEntityName('shape'));
+        return;
+      }
+
+      lastCanvasTouchTap.value = {
+        at: now,
+        clientX: tapClientX,
+        clientY: tapClientY,
+      };
     }
     return;
   }
@@ -3721,6 +3763,7 @@ function onWindowPointerUp(event: PointerEvent) {
 
   const groupDrag = draggingGroup.value;
   if (groupDrag) {
+    lastCanvasTouchTap.value = null;
     for (const nodeId of groupDrag.nodeIds) {
       const node = getNodeById(nodeId);
       if (!node) continue;
@@ -3742,6 +3785,7 @@ function onWindowPointerUp(event: PointerEvent) {
 
   const dragState = draggingNode.value;
   if (!dragState) return;
+  lastCanvasTouchTap.value = null;
 
   const node = nodes.value.find((item) => item.id === dragState.nodeId);
   if (node) {
@@ -3759,6 +3803,7 @@ function onWindowPointerUp(event: PointerEvent) {
 }
 
 function resetTransientStates() {
+  lastCanvasTouchTap.value = null;
   isPanning.value = false;
   draggingNode.value = null;
   draggingGroup.value = null;
@@ -3799,6 +3844,7 @@ function onWindowKeyDown(event: KeyboardEvent) {
 
 async function onCanvasDoubleClick(event: MouseEvent) {
   if (event.defaultPrevented) return;
+  if (Date.now() < suppressCanvasDoubleClickUntil.value) return;
 
   closeEdgeMenu();
   const world = clientToWorld(event.clientX, event.clientY);
