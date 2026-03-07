@@ -483,6 +483,34 @@ function normalizeMetadataValue(fieldKey: string, value: string) {
   return trimmed;
 }
 
+function normalizeLinkMetadataValue(rawValue: string) {
+  const raw = rawValue.trim();
+  if (!raw) return '';
+  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const url = new URL(withProtocol);
+    if (!url.hostname || !url.protocol.startsWith('http')) return '';
+    return url.toString().slice(0, LINKS_METADATA_FIELD_MAX_LENGTH);
+  } catch {
+    return '';
+  }
+}
+
+function extractStandaloneChatLinks(message: string) {
+  const tokens = message
+    .split(/\s+/)
+    .map((token) => token.trim().replace(/^[('"[\{<]+/, '').replace(/[)\]}'">,.;!?]+$/, ''))
+    .filter(Boolean);
+  if (!tokens.length) return [] as string[];
+
+  const normalizedLinks = tokens.map((token) => normalizeLinkMetadataValue(token)).filter(Boolean);
+  if (normalizedLinks.length !== tokens.length) {
+    return [] as string[];
+  }
+
+  return normalizeMetadataValues('links', normalizedLinks).slice(0, 24);
+}
+
 function metadataValueDedupeKey(fieldKey: string, value: string) {
   if (fieldKey === 'phones') {
     return normalizePhoneDigits(value);
@@ -1695,6 +1723,20 @@ async function onSendInput() {
 
     const activeDraft = draft.value;
     if (!activeDraft) return;
+    const linkOnlyMessageLinks = attachments.length === 0 ? extractStandaloneChatLinks(message) : [];
+    if (linkOnlyMessageLinks.length) {
+      const existingLinks = Array.isArray(activeDraft.metadataValues.links)
+        ? (activeDraft.metadataValues.links as string[])
+        : [];
+      activeDraft.metadataValues.links = normalizeMetadataValues('links', [
+        ...existingLinks,
+        ...linkOnlyMessageLinks,
+      ]).slice(0, 24);
+      scheduleSave();
+      await nextTick();
+      scrollEntityChatToBottom('auto');
+      return;
+    }
 
     localAiRequestInFlight.value = true;
     awaitingAiCompletionEntityId.value = activeDraft.entityId;
