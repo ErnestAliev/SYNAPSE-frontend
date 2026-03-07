@@ -325,8 +325,21 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="quick-voice-overlay" @pointerdown.self="closeModal">
-    <section class="quick-voice-modal" :class="{ dictating: isVoiceListening }" @pointerdown.stop>
+  <div
+    class="quick-voice-overlay"
+    @pointerdown.stop
+    @touchstart.stop.prevent
+    @touchend.stop.prevent
+    @click.stop.prevent
+    @click.self.prevent="closeModal"
+  >
+    <section
+      class="quick-voice-modal"
+      :class="{ dictating: isVoiceListening }"
+      @pointerdown.stop
+      @touchstart.stop
+      @click.stop
+    >
       <header class="quick-voice-header">
         <h3 class="quick-voice-title">{{ entityName }}</h3>
         <button type="button" class="quick-voice-close" @click="closeModal">×</button>

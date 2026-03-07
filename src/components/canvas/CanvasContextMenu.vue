@@ -1086,9 +1086,13 @@ onMounted(() => {
   <div
     v-if="isImageEditorOpen"
     class="image-editor-overlay"
-    @pointerdown.self="closeImageEditor"
+    @pointerdown.stop
+    @touchstart.stop.prevent
+    @touchend.stop.prevent
+    @click.stop.prevent
+    @click.self.prevent="closeImageEditor"
   >
-    <div class="image-editor-dialog" @pointerdown.stop>
+    <div class="image-editor-dialog" @pointerdown.stop @touchstart.stop @touchend.stop @click.stop>
       <div class="image-editor-title">Обрезка фото</div>
 
       <div class="image-editor-preview-wrap">

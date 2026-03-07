@@ -4831,9 +4831,13 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       <div
         v-if="nodeSearchOpen"
         class="canvas-node-search-overlay"
-        @pointerdown.self.stop="closeNodeSearch"
+        @pointerdown.stop
+        @touchstart.stop.prevent
+        @touchend.stop.prevent
+        @click.stop.prevent
+        @click.self.prevent="closeNodeSearch"
       >
-        <div class="canvas-node-search" @pointerdown.stop @click.stop>
+        <div class="canvas-node-search" @pointerdown.stop @touchstart.stop @touchend.stop @click.stop>
           <label class="canvas-node-search-input-wrap">
             <AppIcon name="search" />
             <input
@@ -5171,9 +5175,13 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
     <div
       v-if="isResetCanvasConfirmOpen"
       class="canvas-reset-overlay"
-      @pointerdown.self="closeResetCanvasConfirm"
+      @pointerdown.stop
+      @touchstart.stop.prevent
+      @touchend.stop.prevent
+      @click.stop.prevent
+      @click.self.prevent="closeResetCanvasConfirm"
     >
-      <div class="canvas-reset-card" @pointerdown.stop>
+      <div class="canvas-reset-card" @pointerdown.stop @touchstart.stop @touchend.stop @click.stop>
         <h3 class="canvas-reset-title">Очистить холст?</h3>
         <p class="canvas-reset-text">
           Все элементы холста будут очищены.

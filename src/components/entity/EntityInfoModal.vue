@@ -2951,12 +2951,21 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="entity-info-overlay" @pointerdown.stop @click.stop @click.self.prevent="closeModal">
+  <div
+    class="entity-info-overlay"
+    @pointerdown.stop
+    @touchstart.stop.prevent
+    @touchend.stop.prevent
+    @click.stop.prevent
+    @click.self.prevent="closeModal"
+  >
     <div
       v-if="draft"
       class="entity-info-modal"
       :class="{ 'mobile-footer-open': profileFooterOpen }"
       @pointerdown.stop="onModalPointerDown"
+      @touchstart.stop
+      @touchend.stop
       @click.stop
     >
       <header class="entity-info-header">
@@ -3561,9 +3570,19 @@ onBeforeUnmount(() => {
       <div
         v-if="isProjectAddConfirmOpen"
         class="entity-delete-confirm-overlay"
-        @pointerdown.self="closeProjectAddConfirm"
+        @pointerdown.stop
+        @touchstart.stop.prevent
+        @touchend.stop.prevent
+        @click.stop.prevent
+        @click.self.prevent="closeProjectAddConfirm"
       >
-      <div class="entity-delete-confirm-card entity-project-confirm-card" @pointerdown.stop>
+      <div
+        class="entity-delete-confirm-card entity-project-confirm-card"
+        @pointerdown.stop
+        @touchstart.stop
+        @touchend.stop
+        @click.stop
+      >
         <h3 class="entity-delete-confirm-title">Добавить в проект</h3>
         <p class="entity-delete-confirm-text">Выберите проект для добавления текущей записи.</p>
         <select v-model="selectedProjectId" class="entity-info-project-select" :disabled="isProjectActionBusy">
@@ -3596,9 +3615,19 @@ onBeforeUnmount(() => {
       <div
         v-if="isChatClearConfirmOpen"
         class="entity-delete-confirm-overlay"
-        @pointerdown.self="closeClearChatConfirm"
+        @pointerdown.stop
+        @touchstart.stop.prevent
+        @touchend.stop.prevent
+        @click.stop.prevent
+        @click.self.prevent="closeClearChatConfirm"
       >
-        <div class="entity-delete-confirm-card entity-project-confirm-card" @pointerdown.stop>
+        <div
+          class="entity-delete-confirm-card entity-project-confirm-card"
+          @pointerdown.stop
+          @touchstart.stop
+          @touchend.stop
+          @click.stop
+        >
           <h3 class="entity-delete-confirm-title">Сбросить данные?</h3>
           <p class="entity-delete-confirm-text">
             Будут удалены описание, чат, документы, метки, теги и остальные поля записи.
@@ -3628,9 +3657,19 @@ onBeforeUnmount(() => {
       <div
         v-if="isDeleteConfirmOpen"
         class="entity-delete-confirm-overlay"
-        @pointerdown.self="closeDeleteConfirm"
+        @pointerdown.stop
+        @touchstart.stop.prevent
+        @touchend.stop.prevent
+        @click.stop.prevent
+        @click.self.prevent="closeDeleteConfirm"
       >
-      <div class="entity-delete-confirm-card" @pointerdown.stop>
+      <div
+        class="entity-delete-confirm-card"
+        @pointerdown.stop
+        @touchstart.stop
+        @touchend.stop
+        @click.stop
+      >
         <h3 class="entity-delete-confirm-title">Удалить?</h3>
         <p class="entity-delete-confirm-text">
           "{{ deleteConfirmName }}" будет удалено из коллекции, базы и всех проектов.

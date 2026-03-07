@@ -2757,9 +2757,13 @@ watch(entityInfoEntityId, (id) => {
     <div
       v-if="projectDeleteTarget"
       class="project-delete-overlay"
-      @pointerdown.self="closeProjectDeleteConfirm"
+      @pointerdown.stop
+      @touchstart.stop.prevent
+      @touchend.stop.prevent
+      @click.stop.prevent
+      @click.self.prevent="closeProjectDeleteConfirm"
     >
-      <div class="project-delete-card" @pointerdown.stop>
+      <div class="project-delete-card" @pointerdown.stop @touchstart.stop @touchend.stop @click.stop>
         <h3 class="project-delete-title">Удалить проект?</h3>
         <p class="project-delete-text">
           "{{ projectDeleteTarget.name || 'Без названия' }}" будет удален из базы.
@@ -2792,9 +2796,13 @@ watch(entityInfoEntityId, (id) => {
     <div
       v-if="isConnectionImportModalOpen"
       class="connection-import-overlay"
-      @pointerdown.self="closeConnectionImportModal"
+      @pointerdown.stop
+      @touchstart.stop.prevent
+      @touchend.stop.prevent
+      @click.stop.prevent
+      @click.self.prevent="closeConnectionImportModal"
     >
-      <div class="connection-import-card" @pointerdown.stop>
+      <div class="connection-import-card" @pointerdown.stop @touchstart.stop @touchend.stop @click.stop>
         <div class="connection-import-head">
           <h3 class="connection-import-title">
             {{ connectionDialogMode === 'prompt_action' ? 'Управление контактами' : 'Подключение WhatsApp' }}

@@ -237,9 +237,13 @@ watch(
     <div
       v-if="whatsappCompletionNotice"
       class="whatsapp-complete-overlay"
-      @pointerdown.self="closeWhatsappCompletionNotice"
+      @pointerdown.stop
+      @touchstart.stop.prevent
+      @touchend.stop.prevent
+      @click.stop.prevent
+      @click.self.prevent="closeWhatsappCompletionNotice"
     >
-      <div class="whatsapp-complete-card" @pointerdown.stop>
+      <div class="whatsapp-complete-card" @pointerdown.stop @touchstart.stop @touchend.stop @click.stop>
         <h3 class="whatsapp-complete-title">{{ whatsappCompletionNotice.title }}</h3>
         <p class="whatsapp-complete-text">{{ whatsappCompletionNotice.message }}</p>
         <div class="whatsapp-complete-actions">
