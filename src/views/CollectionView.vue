@@ -9,6 +9,7 @@ import AppIcon from '../components/ui/AppIcon.vue';
 import FilterDropdown from '../components/ui/FilterDropdown.vue';
 import ProfileProgressRing from '../components/ui/ProfileProgressRing.vue';
 import EntityInfoModal from '../components/entity/EntityInfoModal.vue';
+import QuickEntityVoiceModal from '../components/entity/QuickEntityVoiceModal.vue';
 import type { Entity, EntityType } from '../types/entity';
 import { calculateEntityProfileProgress } from '../utils/profileProgress';
 
@@ -203,6 +204,18 @@ const selectedFieldFilters = ref<Record<string, string[]>>({});
 const quickEntityFilters = ref<QuickEntityFilters>(createDefaultQuickFilters());
 const isHydratingFilterPrefs = ref(false);
 const entityInfoEntityId = ref<string | null>(null);
+const quickVoiceEntityId = ref<string | null>(null);
+const CARD_HOLD_OPEN_DELAY_MS = 3000;
+const CARD_HOLD_MOVE_CANCEL_PX = 10;
+const CARD_HOLD_CLICK_SUPPRESS_MS = 900;
+const cardHoldState = ref<{
+  entityId: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  timer: ReturnType<typeof setTimeout>;
+} | null>(null);
+const suppressCardClickUntilByEntityId = ref<Record<string, number>>({});
 // Deferred full-refresh flag. Set when a fetchEntities() call was
 // requested while the EntityInfoModal was open. The fetch runs as soon as
 // the modal closes so we never miss the refresh but also never stomp
@@ -1019,6 +1032,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  clearCardHoldState();
   clearConnectionImportPoll();
 });
 
@@ -1997,6 +2011,9 @@ async function confirmProjectDelete() {
 }
 
 function onCardClick(entity: Entity) {
+  if (shouldSuppressCardClick(entity._id)) {
+    return;
+  }
   activeTooltip.value = null;
 
   if (entity.type === 'project') {
@@ -2005,6 +2022,61 @@ function onCardClick(entity: Entity) {
   }
 
   entityInfoEntityId.value = entity._id;
+}
+
+function clearCardHoldState() {
+  const active = cardHoldState.value;
+  if (active) {
+    clearTimeout(active.timer);
+  }
+  cardHoldState.value = null;
+}
+
+function shouldSuppressCardClick(entityId: string) {
+  const until = suppressCardClickUntilByEntityId.value[entityId] || 0;
+  if (until <= Date.now()) {
+    if (until) {
+      delete suppressCardClickUntilByEntityId.value[entityId];
+    }
+    return false;
+  }
+  return true;
+}
+
+function onEntityCardPointerDown(entity: Entity, event: PointerEvent) {
+  if (event.button !== 0) return;
+  clearCardHoldState();
+
+  const timer = setTimeout(() => {
+    suppressCardClickUntilByEntityId.value[entity._id] = Date.now() + CARD_HOLD_CLICK_SUPPRESS_MS;
+    activeTooltip.value = null;
+    quickVoiceEntityId.value = entity._id;
+    clearCardHoldState();
+  }, CARD_HOLD_OPEN_DELAY_MS);
+
+  cardHoldState.value = {
+    entityId: entity._id,
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    timer,
+  };
+}
+
+function onEntityCardPointerMove(event: PointerEvent) {
+  const active = cardHoldState.value;
+  if (!active || active.pointerId !== event.pointerId) return;
+  const dx = event.clientX - active.startX;
+  const dy = event.clientY - active.startY;
+  if (Math.hypot(dx, dy) >= CARD_HOLD_MOVE_CANCEL_PX) {
+    clearCardHoldState();
+  }
+}
+
+function onEntityCardPointerEnd(event: PointerEvent) {
+  const active = cardHoldState.value;
+  if (!active || active.pointerId !== event.pointerId) return;
+  clearCardHoldState();
 }
 
 function toProfile(entity: Entity | null | undefined) {
@@ -2392,6 +2464,11 @@ watch(entityInfoEntityId, (id) => {
             v-else-if="activeType === 'connection'"
             class="entity-card connection-card"
             @click="onCardClick(firstEntity)"
+            @pointerdown="onEntityCardPointerDown(firstEntity, $event)"
+            @pointermove="onEntityCardPointerMove"
+            @pointerup="onEntityCardPointerEnd"
+            @pointercancel="onEntityCardPointerEnd"
+            @pointerleave="onEntityCardPointerEnd"
             @mouseenter="onEntityCardMouseEnter(firstEntity, $event)"
             @mouseleave="onEntityCardMouseLeave"
           >
@@ -2431,6 +2508,11 @@ watch(entityInfoEntityId, (id) => {
             v-else
             class="entity-card"
             @click="onCardClick(firstEntity)"
+            @pointerdown="onEntityCardPointerDown(firstEntity, $event)"
+            @pointermove="onEntityCardPointerMove"
+            @pointerup="onEntityCardPointerEnd"
+            @pointercancel="onEntityCardPointerEnd"
+            @pointerleave="onEntityCardPointerEnd"
             @mouseenter="onEntityCardMouseEnter(firstEntity, $event)"
             @mouseleave="onEntityCardMouseLeave"
           >
@@ -2560,6 +2642,11 @@ watch(entityInfoEntityId, (id) => {
             v-else-if="activeType === 'connection'"
             class="entity-card connection-card"
             @click="onCardClick(entity)"
+            @pointerdown="onEntityCardPointerDown(entity, $event)"
+            @pointermove="onEntityCardPointerMove"
+            @pointerup="onEntityCardPointerEnd"
+            @pointercancel="onEntityCardPointerEnd"
+            @pointerleave="onEntityCardPointerEnd"
             @mouseenter="onEntityCardMouseEnter(entity, $event)"
             @mouseleave="onEntityCardMouseLeave"
           >
@@ -2599,6 +2686,11 @@ watch(entityInfoEntityId, (id) => {
             v-else
             class="entity-card"
             @click="onCardClick(entity)"
+            @pointerdown="onEntityCardPointerDown(entity, $event)"
+            @pointermove="onEntityCardPointerMove"
+            @pointerup="onEntityCardPointerEnd"
+            @pointercancel="onEntityCardPointerEnd"
+            @pointerleave="onEntityCardPointerEnd"
             @mouseenter="onEntityCardMouseEnter(entity, $event)"
             @mouseleave="onEntityCardMouseLeave"
           >
@@ -2651,6 +2743,11 @@ watch(entityInfoEntityId, (id) => {
       v-if="entityInfoEntityId"
       :entity-id="entityInfoEntityId"
       @close="closeEntityInfoModal"
+    />
+    <QuickEntityVoiceModal
+      v-if="quickVoiceEntityId"
+      :entity-id="quickVoiceEntityId"
+      @close="quickVoiceEntityId = null"
     />
 
     <div

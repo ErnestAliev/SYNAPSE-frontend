@@ -6,6 +6,7 @@ import ConnectionContextMenu from '../components/canvas/ConnectionContextMenu.vu
 import EdgeLayerCanvas from '../components/canvas/EdgeLayerCanvas.vue';
 import CanvasNode from '../components/canvas/CanvasNode.vue';
 import EntityInfoModal from '../components/entity/EntityInfoModal.vue';
+import QuickEntityVoiceModal from '../components/entity/QuickEntityVoiceModal.vue';
 import AppIcon from '../components/ui/AppIcon.vue';
 import ProfileProgressRing from '../components/ui/ProfileProgressRing.vue';
 import { useEntitiesStore } from '../stores/entities';
@@ -526,6 +527,7 @@ const entityInfoModal = ref<{
   pendingUploads: EntityAttachment[];
   chatHistory: EntityChatMessage[];
 } | null>(null);
+const quickVoiceEntityId = ref<string | null>(null);
 const entityInfoDocInputRef = ref<HTMLInputElement | null>(null);
 const entityInfoChatInputRef = ref<HTMLTextAreaElement | null>(null);
 const entityInfoChatFeedRef = ref<HTMLElement | null>(null);
@@ -4012,6 +4014,14 @@ function onNodeOpenMenu(payload: { nodeId: string; shiftKey?: boolean }) {
   completeNodeOnboardingStep('open-menu');
 }
 
+function onNodeLongPress(payload: { nodeId: string; entityId: string }) {
+  if (!payload.entityId) return;
+  quickVoiceEntityId.value = payload.entityId;
+  closeContextMenu();
+  closeEdgeMenu();
+  nameEditingNodeId.value = null;
+}
+
 function onNodeOpenPortal(payload: { projectId: string }) {
   const entity = entitiesStore.byId(payload.projectId);
   if (isEntityLocked(entity)) return;
@@ -4783,6 +4793,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           :play-mode="isPlayMode"
           @start-drag="onNodeDragStart"
           @open-menu="onNodeOpenMenu"
+          @node-long-press="onNodeLongPress"
           @open-portal="onNodeOpenPortal"
           @name-commit="onNodeNameCommit"
           @name-edit-finished="onNodeNameEditFinished"
@@ -5233,6 +5244,11 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       v-if="entityInfoModal"
       :entity-id="entityInfoModal.entityId"
       @close="closeEntityInfoModal"
+    />
+    <QuickEntityVoiceModal
+      v-if="quickVoiceEntityId"
+      :entity-id="quickVoiceEntityId"
+      @close="quickVoiceEntityId = null"
     />
   </section>
 </template>

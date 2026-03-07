@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import AppIcon from '../ui/AppIcon.vue';
 import ProfileProgressRing from '../ui/ProfileProgressRing.vue';
 import { useEntitiesStore } from '../../stores/entities';
@@ -70,6 +70,13 @@ const emit = defineEmits<{
       rect: DOMRect;
     },
   ): void;
+  (
+    event: 'node-long-press',
+    payload: {
+      nodeId: string;
+      entityId: string;
+    },
+  ): void;
 }>();
 
 const entitiesStore = useEntitiesStore();
@@ -78,6 +85,16 @@ const nameDraft = ref('');
 const playModePointerDown = ref<{ x: number; y: number; id: number } | null>(null);
 const EMPTY_NAME_PLACEHOLDER = 'Без названия';
 const BASE_NODE_RING_SIZE = 82;
+const LONG_PRESS_DELAY_MS = 3000;
+const LONG_PRESS_MOVE_CANCEL_PX = 10;
+const LONG_PRESS_CLICK_SUPPRESS_MS = 900;
+const holdState = ref<{
+  pointerId: number;
+  startX: number;
+  startY: number;
+  timer: ReturnType<typeof setTimeout>;
+} | null>(null);
+const suppressClickUntilMs = ref(0);
 
 const entity = computed(() => entitiesStore.byId(props.node.entityId));
 const displayName = computed(() => entity.value?.name?.trim() || 'Без названия');
@@ -233,10 +250,14 @@ function onNodePointerDown(event: PointerEvent) {
     return;
   }
 
+  startHoldTracking(event);
+
   emit('start-drag', { nodeId: props.node.id, pointerEvent: event });
 }
 
 function onNodePointerUp(event: PointerEvent) {
+  clearHoldTracking(event.pointerId);
+
   if (!props.playMode) return;
   const start = playModePointerDown.value;
   if (!start || start.id !== event.pointerId) return;
@@ -264,6 +285,10 @@ function onNodeClick(event: MouseEvent) {
       ? el.getBoundingClientRect()
       : (event.currentTarget as HTMLElement).getBoundingClientRect();
     emit('node-play-tap', { nodeId: props.node.id, rect });
+    return;
+  }
+
+  if (Date.now() < suppressClickUntilMs.value) {
     return;
   }
 
@@ -327,6 +352,50 @@ function onNameInputClick(event: MouseEvent) {
     input.select();
   });
 }
+
+function clearHoldTracking(pointerId?: number) {
+  const active = holdState.value;
+  if (!active) return;
+  if (typeof pointerId === 'number' && active.pointerId !== pointerId) return;
+  clearTimeout(active.timer);
+  holdState.value = null;
+}
+
+function onWindowPointerMove(event: PointerEvent) {
+  const active = holdState.value;
+  if (!active || active.pointerId !== event.pointerId) return;
+  const dx = event.clientX - active.startX;
+  const dy = event.clientY - active.startY;
+  if (Math.hypot(dx, dy) >= LONG_PRESS_MOVE_CANCEL_PX) {
+    clearHoldTracking(event.pointerId);
+  }
+}
+
+function onWindowPointerEnd(event: PointerEvent) {
+  clearHoldTracking(event.pointerId);
+}
+
+function startHoldTracking(event: PointerEvent) {
+  clearHoldTracking();
+  const timer = setTimeout(() => {
+    suppressClickUntilMs.value = Date.now() + LONG_PRESS_CLICK_SUPPRESS_MS;
+    emit('node-long-press', {
+      nodeId: props.node.id,
+      entityId: entity.value?._id || props.node.entityId,
+    });
+    clearHoldTracking();
+  }, LONG_PRESS_DELAY_MS);
+  holdState.value = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    timer,
+  };
+}
+
+onBeforeUnmount(() => {
+  clearHoldTracking();
+});
 </script>
 
 <template>
@@ -336,6 +405,9 @@ function onNameInputClick(event: MouseEvent) {
     :style="nodeStyle"
     @pointerdown.stop="onNodePointerDown"
     @pointerup="onNodePointerUp"
+    @pointermove="onWindowPointerMove"
+    @pointercancel="onWindowPointerEnd"
+    @pointerleave="onWindowPointerEnd"
     @dblclick.stop="onNodeDoubleClick"
     @mouseenter="onNodeMouseEnter"
     @mouseleave="onNodeMouseLeave"

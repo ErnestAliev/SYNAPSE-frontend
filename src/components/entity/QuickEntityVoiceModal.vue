@@ -1,0 +1,562 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../../services/entityAi';
+import { useEntitiesStore } from '../../stores/entities';
+
+type ChatRole = 'user' | 'assistant';
+
+interface ChatMessage {
+  id: string;
+  role: ChatRole;
+  text: string;
+  createdAt: string;
+}
+
+const props = defineProps<{
+  entityId: string;
+}>();
+
+const emit = defineEmits<{
+  (event: 'close'): void;
+}>();
+
+const entitiesStore = useEntitiesStore();
+const messageInputRef = ref<HTMLTextAreaElement | null>(null);
+const feedRef = ref<HTMLElement | null>(null);
+const messageDraft = ref('');
+const chatHistory = ref<ChatMessage[]>([]);
+const localAiRequestInFlight = ref(false);
+const awaitingEntityId = ref('');
+const awaitingStartedAtMs = ref(0);
+const isVoiceListening = ref(false);
+const voiceError = ref('');
+const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
+const voiceRestartTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+const voiceShouldRestart = ref(false);
+const voiceSessionBaseText = ref('');
+const voiceCommittedText = ref('');
+const VOICE_RESTART_DELAY_MS = 120;
+
+const entity = computed(() => entitiesStore.byId(props.entityId) || null);
+const entityName = computed(() => entity.value?.name?.trim() || 'Без названия');
+const isAiRequestInFlight = computed(() => {
+  const current = entity.value;
+  const pending = Boolean((toRecord(current?.ai_metadata) as Record<string, unknown>).analysis_pending);
+  return localAiRequestInFlight.value || entitiesStore.isEntityAiPending(props.entityId) || pending;
+});
+
+function toRecord(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {} as Record<string, unknown>;
+  return value as Record<string, unknown>;
+}
+
+function createLocalMessageId() {
+  return `qv-${Date.now()}-${Math.floor(Math.random() * 100_000)}`;
+}
+
+function getIsoNow() {
+  return new Date().toISOString();
+}
+
+function normalizeChatText(value: string) {
+  return value.replace(/\r\n/g, '\n').trim();
+}
+
+function normalizeChatHistory(value: unknown) {
+  if (!Array.isArray(value)) return [] as ChatMessage[];
+  return value
+    .map((row) => {
+      const record = toRecord(row);
+      const text =
+        typeof record.text === 'string'
+          ? record.text
+          : typeof record.content === 'string'
+            ? record.content
+            : '';
+      const createdAt =
+        typeof record.createdAt === 'string'
+          ? record.createdAt
+          : typeof record.created_at === 'string'
+            ? record.created_at
+            : getIsoNow();
+      const role = record.role === 'assistant' ? 'assistant' : 'user';
+      if (!text.trim()) return null;
+      return {
+        id: typeof record.id === 'string' ? record.id : createLocalMessageId(),
+        role,
+        text,
+        createdAt,
+      } satisfies ChatMessage;
+    })
+    .filter((row): row is ChatMessage => Boolean(row));
+}
+
+function pushLocalChatMessage(role: ChatRole, text: string) {
+  const normalized = normalizeChatText(text);
+  if (!normalized) return;
+  chatHistory.value = [
+    ...chatHistory.value,
+    {
+      id: createLocalMessageId(),
+      role,
+      text: normalized,
+      createdAt: getIsoNow(),
+    },
+  ];
+}
+
+function clearAwaiting() {
+  awaitingEntityId.value = '';
+  awaitingStartedAtMs.value = 0;
+}
+
+function stopVoiceRestartTimer() {
+  if (!voiceRestartTimer.value) return;
+  clearTimeout(voiceRestartTimer.value);
+  voiceRestartTimer.value = null;
+}
+
+function mergeVoiceSegments(base: string, committed: string, interim: string) {
+  const clean = (value: string) => value.trim().replace(/\s+/g, ' ');
+  const parts = [clean(base), clean(committed), clean(interim)].filter(Boolean);
+  return parts.join(' ').trim();
+}
+
+function applyVoiceDraft(interimText = '') {
+  messageDraft.value = mergeVoiceSegments(
+    voiceSessionBaseText.value,
+    voiceCommittedText.value,
+    interimText,
+  );
+}
+
+function stopVoiceCapture() {
+  voiceShouldRestart.value = false;
+  stopVoiceRestartTimer();
+  if (activeVoiceRecognition.value) {
+    activeVoiceRecognition.value.stop();
+    activeVoiceRecognition.value = null;
+  }
+  isVoiceListening.value = false;
+  voiceSessionBaseText.value = '';
+  voiceCommittedText.value = '';
+}
+
+function startVoiceCapture() {
+  if (typeof window === 'undefined') return;
+  if (isVoiceListening.value) return;
+
+  const speechWindow = window as unknown as {
+    SpeechRecognition?: new () => {
+      lang: string;
+      interimResults: boolean;
+      continuous: boolean;
+      maxAlternatives: number;
+      onresult: ((event: unknown) => void) | null;
+      onerror: ((event: unknown) => void) | null;
+      onend: (() => void) | null;
+      start: () => void;
+      stop: () => void;
+    };
+    webkitSpeechRecognition?: new () => {
+      lang: string;
+      interimResults: boolean;
+      continuous: boolean;
+      maxAlternatives: number;
+      onresult: ((event: unknown) => void) | null;
+      onerror: ((event: unknown) => void) | null;
+      onend: (() => void) | null;
+      start: () => void;
+      stop: () => void;
+    };
+  };
+
+  const RecognitionCtor = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
+  if (!RecognitionCtor) {
+    voiceError.value = 'Голосовой ввод не поддерживается в этом браузере.';
+    return;
+  }
+
+  voiceError.value = '';
+  voiceSessionBaseText.value = messageDraft.value.trim();
+  voiceCommittedText.value = '';
+  voiceShouldRestart.value = true;
+
+  const recognition = new RecognitionCtor();
+  recognition.lang = 'ru-RU';
+  recognition.interimResults = true;
+  recognition.continuous = true;
+  recognition.maxAlternatives = 1;
+
+  recognition.onresult = (event: unknown) => {
+    const payload = event as {
+      resultIndex?: number;
+      results?: ArrayLike<ArrayLike<{ transcript?: string }> & { isFinal?: boolean }>;
+    };
+    const eventResults = payload.results;
+    if (!eventResults) return;
+
+    const startIndex = Number.isFinite(Number(payload.resultIndex))
+      ? Math.max(0, Number(payload.resultIndex))
+      : 0;
+    let interim = '';
+    for (let i = startIndex; i < eventResults.length; i += 1) {
+      const result = eventResults[i];
+      const transcript = result?.[0]?.transcript?.trim() || '';
+      if (!transcript) continue;
+      if (result?.isFinal) {
+        voiceCommittedText.value = mergeVoiceSegments(voiceCommittedText.value, transcript, '');
+      } else {
+        interim = mergeVoiceSegments(interim, transcript, '');
+      }
+    }
+    applyVoiceDraft(interim);
+  };
+
+  recognition.onerror = () => {
+    voiceError.value = 'Не удалось распознать речь.';
+  };
+
+  recognition.onend = () => {
+    activeVoiceRecognition.value = null;
+    if (!voiceShouldRestart.value) {
+      isVoiceListening.value = false;
+      return;
+    }
+
+    stopVoiceRestartTimer();
+    voiceRestartTimer.value = setTimeout(() => {
+      if (!voiceShouldRestart.value) return;
+      startVoiceCapture();
+    }, VOICE_RESTART_DELAY_MS);
+  };
+
+  try {
+    recognition.start();
+    activeVoiceRecognition.value = recognition;
+    isVoiceListening.value = true;
+  } catch {
+    voiceShouldRestart.value = false;
+    isVoiceListening.value = false;
+    voiceError.value = 'Не удалось запустить голосовой ввод.';
+  }
+}
+
+function scrollToBottom() {
+  const feed = feedRef.value;
+  if (!feed) return;
+  feed.scrollTo({ top: feed.scrollHeight, behavior: 'smooth' });
+}
+
+async function onSubmit() {
+  const currentEntity = entity.value;
+  if (!currentEntity) return;
+  if (isAiRequestInFlight.value) return;
+
+  const message = normalizeChatText(messageDraft.value);
+  if (!message) return;
+
+  pushLocalChatMessage('user', message);
+  messageDraft.value = '';
+  await nextTick();
+  scrollToBottom();
+
+  localAiRequestInFlight.value = true;
+  awaitingEntityId.value = currentEntity._id;
+  awaitingStartedAtMs.value = Date.now();
+  entitiesStore.setEntityAiPending(currentEntity._id, true);
+
+  try {
+    const response = await analyzeEntityWithAi({
+      entityId: currentEntity._id,
+      message,
+      history: chatHistory.value.slice(-12).map((item) => ({ role: item.role, text: item.text })),
+      debug: true,
+    });
+
+    if (isEntityAiProcessingResponse(response)) {
+      localAiRequestInFlight.value = false;
+      return;
+    }
+
+    pushLocalChatMessage('assistant', response.reply || 'Готово.');
+    entitiesStore.setEntityAiPending(currentEntity._id, false);
+    clearAwaiting();
+  } catch (error) {
+    const messageText = error instanceof Error ? error.message : 'Не удалось получить ответ.';
+    pushLocalChatMessage('assistant', `Ошибка: ${messageText}`);
+    entitiesStore.setEntityAiPending(currentEntity._id, false);
+    clearAwaiting();
+  } finally {
+    localAiRequestInFlight.value = false;
+    await nextTick();
+    scrollToBottom();
+  }
+}
+
+function onComposerKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter') return;
+  if (event.shiftKey) return;
+  event.preventDefault();
+  void onSubmit();
+}
+
+function closeModal() {
+  stopVoiceCapture();
+  clearAwaiting();
+  localAiRequestInFlight.value = false;
+  emit('close');
+}
+
+watch(
+  entity,
+  (nextEntity) => {
+    if (!nextEntity) {
+      closeModal();
+      return;
+    }
+    const meta = toRecord(nextEntity.ai_metadata);
+    const remotePending = Boolean(meta.analysis_pending);
+    const remoteRawHistoryLen = Array.isArray(meta.chat_history) ? meta.chat_history.length : 0;
+    const localLen = chatHistory.value.length;
+    const remoteHistory = normalizeChatHistory(meta.chat_history);
+
+    if (remoteHistory.length > localLen) {
+      chatHistory.value = remoteHistory;
+      void nextTick(() => scrollToBottom());
+    }
+
+    const completedAtRaw = typeof meta.analysis_completed_at === 'string' ? meta.analysis_completed_at : '';
+    const completedAtMs = Date.parse(completedAtRaw);
+    const hasTrustedCompletion =
+      Number.isFinite(completedAtMs) && completedAtMs >= awaitingStartedAtMs.value;
+    const hasCompletionSignals = !remotePending && (remoteRawHistoryLen > localLen || hasTrustedCompletion);
+    if (awaitingEntityId.value === nextEntity._id && hasCompletionSignals) {
+      localAiRequestInFlight.value = false;
+      entitiesStore.setEntityAiPending(nextEntity._id, false);
+      clearAwaiting();
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => props.entityId,
+  async () => {
+    messageDraft.value = '';
+    voiceError.value = '';
+    await nextTick();
+    messageInputRef.value?.focus();
+    startVoiceCapture();
+  },
+  { immediate: true },
+);
+
+onMounted(() => {
+  void nextTick(() => {
+    scrollToBottom();
+    messageInputRef.value?.focus();
+  });
+});
+
+onBeforeUnmount(() => {
+  stopVoiceCapture();
+  clearAwaiting();
+});
+</script>
+
+<template>
+  <div class="quick-voice-overlay" @pointerdown.self="closeModal">
+    <section class="quick-voice-modal" @pointerdown.stop>
+      <header class="quick-voice-header">
+        <h3 class="quick-voice-title">{{ entityName }}</h3>
+        <button type="button" class="quick-voice-close" @click="closeModal">×</button>
+      </header>
+
+      <section ref="feedRef" class="quick-voice-feed">
+        <article
+          v-for="message in chatHistory"
+          :key="message.id"
+          class="quick-voice-message"
+          :class="{ user: message.role === 'user', assistant: message.role === 'assistant' }"
+        >
+          <p class="quick-voice-message-text">{{ message.text }}</p>
+        </article>
+        <article v-if="isAiRequestInFlight" class="quick-voice-message assistant">
+          <p class="quick-voice-message-text thinking">Думаю...</p>
+        </article>
+      </section>
+
+      <div class="entity-info-chat-bar quick-voice-composer">
+        <textarea
+          ref="messageInputRef"
+          v-model="messageDraft"
+          class="entity-info-chat-input quick-voice-input"
+          rows="1"
+          placeholder="Скажите или напишите сообщение"
+          :disabled="isAiRequestInFlight"
+          @keydown="onComposerKeydown"
+        />
+      </div>
+
+      <p v-if="voiceError" class="quick-voice-error">{{ voiceError }}</p>
+
+      <footer class="quick-voice-actions">
+        <button
+          type="button"
+          class="quick-voice-btn"
+          :class="{ active: isVoiceListening }"
+          @click="isVoiceListening ? stopVoiceCapture() : startVoiceCapture()"
+        >
+          {{ isVoiceListening ? 'Стоп' : 'Микрофон' }}
+        </button>
+        <button
+          type="button"
+          class="quick-voice-btn send"
+          :disabled="isAiRequestInFlight || !messageDraft.trim()"
+          @click="onSubmit"
+        >
+          Отправить
+        </button>
+      </footer>
+    </section>
+  </div>
+</template>
+
+<style scoped>
+.quick-voice-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 18, 35, 0.38);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5200;
+  padding: 16px;
+}
+
+.quick-voice-modal {
+  width: min(520px, 100%);
+  max-height: min(86vh, 740px);
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 18px;
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.24);
+  display: grid;
+  grid-template-rows: auto minmax(140px, 1fr) auto auto auto;
+  gap: 10px;
+  padding: 14px;
+}
+
+.quick-voice-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.quick-voice-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.quick-voice-close {
+  border: 0;
+  background: transparent;
+  color: #5b6475;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.quick-voice-feed {
+  overflow: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #f8fafc;
+}
+
+.quick-voice-message {
+  max-width: 84%;
+  border-radius: 12px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.quick-voice-message.user {
+  margin-left: auto;
+  background: #1058ff;
+  color: #ffffff;
+}
+
+.quick-voice-message.assistant {
+  margin-right: auto;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  color: #0f172a;
+}
+
+.quick-voice-message-text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.quick-voice-message-text.thinking {
+  opacity: 0.8;
+}
+
+.quick-voice-composer {
+  border-radius: 12px;
+}
+
+.quick-voice-input {
+  min-height: 44px;
+  max-height: 120px;
+}
+
+.quick-voice-error {
+  margin: 0;
+  font-size: 12px;
+  color: #b42318;
+}
+
+.quick-voice-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.quick-voice-btn {
+  border: 1px solid #d0d7e5;
+  background: #ffffff;
+  color: #0f172a;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.quick-voice-btn.active {
+  border-color: #1058ff;
+  color: #1058ff;
+}
+
+.quick-voice-btn.send {
+  background: #1058ff;
+  border-color: #1058ff;
+  color: #ffffff;
+}
+
+.quick-voice-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+</style>
