@@ -521,13 +521,26 @@ export const useEntitiesStore = defineStore('entities', {
         const entity = payload.entity as Entity | undefined;
         if (!entity?._id) return;
         const aiMeta = (entity as unknown as Record<string, unknown>).ai_metadata as Record<string, unknown> | undefined;
+        const pendingBefore = this.isEntityAiPending(entity._id);
         console.log('[SSE] entity.updated received', {
           id: entity._id,
           analysis_pending: aiMeta?.analysis_pending,
           chat_history_len: Array.isArray(aiMeta?.chat_history) ? (aiMeta!.chat_history as unknown[]).length : 0,
+          pending_before_upsert: pendingBefore,
           description: typeof aiMeta?.description === 'string' ? aiMeta.description.slice(0, 60) : null,
         });
         this.upsertEntityFromRealtime(entity);
+        const updatedEntity = this.byId(entity._id);
+        const updatedMeta =
+          (updatedEntity as unknown as Record<string, unknown> | undefined)?.ai_metadata as
+            | Record<string, unknown>
+            | undefined;
+        console.log('[SSE] entity.updated applied', {
+          id: entity._id,
+          analysis_pending: updatedMeta?.analysis_pending,
+          chat_history_len: Array.isArray(updatedMeta?.chat_history) ? (updatedMeta!.chat_history as unknown[]).length : 0,
+          pending_after_upsert: this.isEntityAiPending(entity._id),
+        });
         return;
       }
 

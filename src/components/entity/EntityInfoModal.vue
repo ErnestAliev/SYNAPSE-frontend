@@ -2755,9 +2755,32 @@ watch(
       const remoteHasNewMessages =
         remoteHistory.length > localHistoryLen || remoteRawHistoryLen > localHistoryLen;
       const canHydrateHistoryFromRemote = remoteHistory.length >= localHistoryLen;
+      const shouldFinalizeInFlightFromRemote =
+        !remoteAnalysisPending && remoteRawHistoryLen >= localHistoryLen;
+      const shouldHydrateFromRemote =
+        (remoteHasNewMessages && canHydrateHistoryFromRemote) ||
+        (shouldFinalizeInFlightFromRemote && canHydrateHistoryFromRemote);
+      console.log('[Modal][Sync] before', {
+        entityId: entity._id,
+        local_chat_history_len: localHistoryLen,
+        remote_chat_history_len: remoteRawHistoryLen,
+        remote_chat_history_normalized_len: remoteHistory.length,
+        isAiRequestInFlight: isAiRequestInFlight.value,
+        localAiRequestInFlight: localAiRequestInFlight.value,
+        awaitingAiCompletionEntityId: awaitingAiCompletionEntityId.value,
+        storePending: entitiesStore.isEntityAiPending(entity._id),
+        analysis_pending: remoteAnalysisPending,
+      });
       const remoteCompletedAtRaw =
         typeof remoteMeta.analysis_completed_at === 'string' ? remoteMeta.analysis_completed_at : '';
       const remoteCompletedAtMs = Date.parse(remoteCompletedAtRaw);
+      if (!remoteAnalysisPending) {
+        entitiesStore.setEntityAiPending(entity._id, false);
+      }
+      if (shouldFinalizeInFlightFromRemote) {
+        localAiRequestInFlight.value = false;
+        clearAwaitingAiCompletion(entity._id);
+      }
       if (
         awaitingAiCompletionEntityId.value === entity._id &&
         !remoteAnalysisPending &&
@@ -2813,10 +2836,28 @@ watch(
 
       // Hydrate from SSE whenever remote history advanced (raw or normalized) so
       // background replies appear even if local in-flight flags are still set.
-      if (remoteHasNewMessages && canHydrateHistoryFromRemote) {
+      if (shouldHydrateFromRemote) {
         draft.value.chatHistory = remoteHistory;
         void nextTick(() => scrollEntityChatToBottom('auto'));
+        console.log('[Modal][Sync] decision', {
+          action: 'hydrate',
+          reason: shouldFinalizeInFlightFromRemote ? 'finalized_pending_false_remote_gte_local' : 'remote_has_new_messages',
+        });
+      } else {
+        const skipReasons: string[] = [];
+        if (!remoteHasNewMessages) skipReasons.push('remote_not_newer');
+        if (!shouldFinalizeInFlightFromRemote) skipReasons.push('not_finalized_or_remote_lt_local');
+        if (!canHydrateHistoryFromRemote) skipReasons.push('normalized_remote_shorter_than_local');
+        console.log('[Modal][Sync] decision', {
+          action: 'skip_hydrate',
+          reasons: skipReasons,
+        });
       }
+      console.log('[Modal][Sync] after', {
+        entityId: entity._id,
+        local_chat_history_len: draft.value.chatHistory.length,
+        isAiRequestInFlight: isAiRequestInFlight.value,
+      });
     }
   },
 );
