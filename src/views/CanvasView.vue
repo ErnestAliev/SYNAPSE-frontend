@@ -1212,13 +1212,18 @@ const monitorMainRequestBody = computed(() => {
   return Object.keys(source).length ? source : null;
 });
 const monitorPreviewJson = computed(() => {
-  const requests = [
-    ...(monitorRouterRequestBody.value ? [{ stage: 'semantic-router', requestBody: monitorRouterRequestBody.value }] : []),
-    ...(monitorMainRequestBody.value ? [{ stage: 'main-reply', requestBody: monitorMainRequestBody.value }] : []),
-  ];
-  if (!requests.length) return '';
+  if (monitorMainRequestBody.value) {
+    try {
+      return JSON.stringify(monitorMainRequestBody.value, null, 2);
+    } catch {
+      return '';
+    }
+  }
+
+  if (!monitorRouterRequestBody.value) return '';
+
   try {
-    return JSON.stringify({ requests }, null, 2);
+    return JSON.stringify(monitorRouterRequestBody.value, null, 2);
   } catch {
     return '';
   }
