@@ -5911,11 +5911,11 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 .canvas-monitor {
   position: absolute;
   top: 14px;
-  right: 14px;
+  left: 14px;
   z-index: 60;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 8px;
   pointer-events: auto;
 }
@@ -7750,7 +7750,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 /* ─── Play mode button ─────────────────────────────────────────────────────── */
 .canvas-play-btn {
   position: absolute;
-  top: 58px;
+  top: 14px;
   right: 14px;
   z-index: 50;
   width: 36px;
@@ -7893,7 +7893,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 
   .canvas-monitor {
     top: 10px;
-    right: 10px;
+    left: 10px;
   }
 
   .canvas-monitor-toggle {
@@ -7917,7 +7917,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   }
 
   .canvas-play-btn {
-    top: 50px;
+    top: 10px;
     right: 10px;
   }
 }
