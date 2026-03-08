@@ -1317,12 +1317,51 @@ function toggleMonitorPanel() {
 }
 
 async function restartMonitorBuild() {
+  const scope = buildMonitorScopePayload();
+  if (!scope) {
+    monitorErrorMessage.value = 'Проект не определен.';
+    return;
+  }
+
+  clearMonitorRefreshTimer();
   monitorPayload.value = null;
   monitorErrorMessage.value = '';
-  setMonitorNotice('Пересборка запущена...');
+  isMonitorLoading.value = true;
+  try {
+    // 1) Force legacy scope-key migration into canonical project-canvas key.
+    setMonitorNotice('Шаг 1/3: миграция ключей истории...');
+    await apiClient.get('/ai/chat-history', {
+      params: {
+        scopeType: 'project',
+        projectId: scope.projectId,
+      },
+      timeout: 60_000,
+    });
+
+    // 2) Hard-reset project history (canonical + legacy keys on backend side).
+    setMonitorNotice('Шаг 2/3: очистка истории проекта...');
+    await apiClient.delete('/ai/chat-history', {
+      params: {
+        scopeType: 'project',
+        projectId: scope.projectId,
+      },
+      timeout: 60_000,
+    });
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error && typeof error.message === 'string'
+        ? error.message
+        : 'Не удалось перезапустить сборку мониторинга.';
+    monitorErrorMessage.value = message;
+    return;
+  } finally {
+    isMonitorLoading.value = false;
+  }
+
+  setMonitorNotice('Шаг 3/3: пересборка контекста...');
   await fetchMonitorSnapshot();
   if (!monitorErrorMessage.value) {
-    setMonitorNotice('Пересборка завершена.');
+    setMonitorNotice('Пересборка завершена: история очищена, контекст обновлен.');
   }
 }
 
