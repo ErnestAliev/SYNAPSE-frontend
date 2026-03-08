@@ -5139,7 +5139,6 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
             <path d="M8 13h5" />
             <circle cx="16.5" cy="13.5" r="0.8" />
           </svg>
-          <span>Мониторинг</span>
         </button>
 
         <section v-if="isMonitorPanelOpen" class="canvas-monitor-panel">
@@ -5951,17 +5950,16 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 
 .canvas-monitor-toggle {
   height: 36px;
-  border-radius: 11px;
+  width: 36px;
+  min-width: 36px;
+  border-radius: 999px;
   border: 1px solid #dbe4f3;
   background: rgba(255, 255, 255, 0.96);
   color: #334155;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  padding: 0 12px;
+  padding: 0;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  justify-content: center;
   cursor: pointer;
   box-shadow: 0 8px 20px rgba(112, 144, 176, 0.18);
   transition:
@@ -7927,8 +7925,9 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 
   .canvas-monitor-toggle {
     height: 34px;
-    font-size: 11px;
-    padding: 0 10px;
+    width: 34px;
+    min-width: 34px;
+    padding: 0;
   }
 
   .canvas-monitor-panel {
