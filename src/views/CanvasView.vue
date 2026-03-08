@@ -4634,10 +4634,10 @@ const canvasTooltipStyle = computed<Partial<Record<string, string>>>(() => {
   const bottomReserve = isTouchDevice ? vvOffset + 120 : vvOffset + GAP;
   const effectiveVH = vh - bottomReserve;
 
-  // On touch devices the tooltip is wider (288px per CSS), on desktop 264px
+  // On touch devices the tooltip is wider (288px per CSS), on desktop 264px.
   const W = isTouchDevice ? 288 : 264;
-  // Max tooltip height matches CSS max-height: 50vh
-  const maxH = Math.round(vh * 0.5);
+  // Match CSS max-height: 68vh (desktop), 50vh (touch).
+  const maxH = Math.round(vh * (isTouchDevice ? 0.5 : 0.68));
 
   let left = rect.right + GAP;
   if (left + W > vw - GAP) {

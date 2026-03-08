@@ -2166,6 +2166,8 @@ const tooltipStyle = computed<Partial<Record<string, string>>>(() => {
   const GAP = 8;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
+  const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
+  const maxH = Math.round(vh * (isTouchDevice ? 0.5 : 0.68));
 
   // Prefer right of card, fall back to left if not enough space
   let left = rect.right + GAP;
@@ -2176,7 +2178,7 @@ const tooltipStyle = computed<Partial<Record<string, string>>>(() => {
 
   // Align tooltip top to card top, prevent bottom/top overflow
   let top = rect.top;
-  if (top + 320 > vh - GAP) top = Math.max(GAP, vh - 320 - GAP);
+  if (top + maxH > vh - GAP) top = Math.max(GAP, vh - maxH - GAP);
   if (top < GAP) top = GAP;
 
   return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px`, width: `${W}px` };

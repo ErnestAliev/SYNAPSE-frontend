@@ -56,7 +56,7 @@ a {
   padding: 12px;
   max-width: 264px;
   word-break: break-word;
-  max-height: 50vh;
+  max-height: 68vh;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -68,6 +68,7 @@ a {
     -webkit-overflow-scrolling: touch;
     /* Slightly wider to be easier to tap */
     max-width: 288px;
+    max-height: 50vh;
   }
 }
 
@@ -127,4 +128,3 @@ a {
   height: 100dvh;
   min-height: 100vh;
 }
-
