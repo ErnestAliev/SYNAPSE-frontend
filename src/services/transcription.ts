@@ -11,8 +11,16 @@ interface TranscribeAudioBlobOptions {
 
 export async function transcribeAudioBlob(blob: Blob, options: TranscribeAudioBlobOptions = {}) {
   const language = (options.language || 'ru').trim() || 'ru';
-  const filename = (options.filename || 'voice-input.webm').trim() || 'voice-input.webm';
   const contentType = blob.type || 'audio/webm';
+  const fallbackExt = contentType.includes('ogg')
+    ? 'ogg'
+    : contentType.includes('mp4') || contentType.includes('m4a')
+      ? 'm4a'
+      : contentType.includes('wav')
+        ? 'wav'
+        : 'webm';
+  const defaultName = `voice-input.${fallbackExt}`;
+  const filename = (options.filename || defaultName).trim() || defaultName;
 
   try {
     const { data } = await apiClient.post<TranscriptionResponse>('/transcribe/file', blob, {

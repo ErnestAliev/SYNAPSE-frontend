@@ -9,6 +9,8 @@ interface UseUnifiedVoiceInputOptions {
 }
 
 const DEFAULT_WAVE = [9, 14, 10, 16, 11];
+const MIN_RECORDING_DURATION_MS = 700;
+const MIN_AUDIO_BYTES = 1400;
 
 function mergeDraftText(currentText: string, transcribedText: string) {
   return [currentText.trim(), transcribedText.trim()]
@@ -39,6 +41,7 @@ export function useUnifiedVoiceInput(options: UseUnifiedVoiceInputOptions) {
   let animationFrameId = 0;
   let analyserNode: AnalyserNode | null = null;
   let hasReadyText = false;
+  let recordingStartedAtMs = 0;
 
   function resetVisualizer() {
     waveformBars.value = [...DEFAULT_WAVE];
@@ -117,7 +120,8 @@ export function useUnifiedVoiceInput(options: UseUnifiedVoiceInputOptions) {
       analyserNode.fftSize = 256;
       source.connect(analyserNode);
 
-      mediaRecorder.start(220);
+      mediaRecorder.start();
+      recordingStartedAtMs = Date.now();
       state.value = 'recording';
       updateWaveform();
     } catch {
@@ -151,9 +155,17 @@ export function useUnifiedVoiceInput(options: UseUnifiedVoiceInputOptions) {
 
     cleanupAudioGraph();
 
+    const durationMs = recordingStartedAtMs > 0 ? Date.now() - recordingStartedAtMs : 0;
+    recordingStartedAtMs = 0;
+
     if (!blob || blob.size === 0) {
       state.value = 'idle';
       errorMessage.value = 'Не удалось записать аудио.';
+      return;
+    }
+    if (durationMs < MIN_RECORDING_DURATION_MS || blob.size < MIN_AUDIO_BYTES) {
+      state.value = 'idle';
+      errorMessage.value = 'Запись слишком короткая. Говорите немного дольше.';
       return;
     }
 
@@ -181,6 +193,7 @@ export function useUnifiedVoiceInput(options: UseUnifiedVoiceInputOptions) {
       mediaRecorder.stop();
     }
     cleanupAudioGraph();
+    recordingStartedAtMs = 0;
     errorMessage.value = '';
     state.value = hasReadyText ? 'ready_with_text' : 'idle';
   }
