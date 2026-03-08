@@ -169,9 +169,10 @@ export function useUnifiedVoiceInput(options: UseUnifiedVoiceInputOptions) {
       state.value = 'ready_with_text';
       hasReadyText = true;
       errorMessage.value = '';
-    } catch {
+    } catch (error) {
       state.value = 'idle';
-      errorMessage.value = 'Не удалось расшифровать запись.';
+      const message = error instanceof Error ? error.message.trim() : '';
+      errorMessage.value = message || 'Не удалось расшифровать запись.';
     }
   }
 
@@ -180,6 +181,7 @@ export function useUnifiedVoiceInput(options: UseUnifiedVoiceInputOptions) {
       mediaRecorder.stop();
     }
     cleanupAudioGraph();
+    errorMessage.value = '';
     state.value = hasReadyText ? 'ready_with_text' : 'idle';
   }
 

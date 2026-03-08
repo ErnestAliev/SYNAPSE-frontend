@@ -1914,7 +1914,11 @@ function removePendingUpload(attachmentId: string) {
 async function onVoiceToggle() {
   if (!draft.value) return;
   if (isAiRequestInFlight.value) return;
-  if (voiceInput.state.value === 'recording' || voiceInput.state.value === 'transcribing') return;
+  if (voiceInput.state.value === 'transcribing') return;
+  if (voiceInput.state.value === 'recording') {
+    voiceInput.cancelRecording();
+    return;
+  }
   await voiceInput.startRecording();
 }
 
@@ -3196,15 +3200,19 @@ onBeforeUnmount(() => {
             type="button"
             class="entity-info-chat-icon-btn mic"
             :class="{ active: isVoiceRecording }"
-            title="Голосовой ввод"
-            :disabled="isAiRequestInFlight || isVoiceBusy || !voiceInput.isSupported"
+            :title="isVoiceRecording ? 'Остановить запись' : 'Голосовой ввод'"
+            :disabled="isAiRequestInFlight || isVoiceTranscribing || !voiceInput.isSupported"
             @click="onVoiceToggle"
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
+            <svg v-if="!isVoiceRecording" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 4a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3Z" />
               <path d="M19 11a7 7 0 0 1-14 0" />
               <path d="M12 18v3" />
               <path d="M8 21h8" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 7l10 10" />
+              <path d="M17 7 7 17" />
             </svg>
           </button>
 
@@ -3212,9 +3220,11 @@ onBeforeUnmount(() => {
             <div v-if="isVoiceRecording" class="entity-info-voice-wave">
               <span
                 v-for="(bar, index) in voiceInput.waveformBars"
+                class="entity-info-voice-bar"
                 :key="`entity-voice-bar-${index}`"
                 :style="{ height: `${bar}px` }"
               />
+              <span class="entity-info-voice-listening">Прослушиваю</span>
             </div>
             <div v-else class="entity-info-voice-transcribing">
               <span class="entity-info-voice-spinner" />
@@ -4615,15 +4625,23 @@ onBeforeUnmount(() => {
 .entity-info-voice-wave {
   height: 24px;
   display: inline-flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 4px;
 }
 
-.entity-info-voice-wave span {
+.entity-info-voice-bar {
   width: 4px;
   border-radius: 999px;
   background: linear-gradient(180deg, #1f6aff 0%, #1058ff 100%);
   transition: height 0.12s ease;
+}
+
+.entity-info-voice-listening {
+  margin-left: 4px;
+  color: #1058ff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
 .entity-info-voice-transcribing {
