@@ -1203,31 +1203,22 @@ const monitorPreviewConnections = computed(() => {
   const source = Array.isArray(context.connections) ? context.connections : [];
   return source.map((item) => toProfile(item));
 });
-const monitorInputMessage = computed(() => {
-  return typeof monitorPreviewInput.value.message === 'string' ? monitorPreviewInput.value.message : '';
+const monitorRouterRequestBody = computed(() => {
+  const source = toProfile(monitorPreviewRouter.value.requestBody);
+  return Object.keys(source).length ? source : null;
 });
-const monitorRouterSystemPrompt = computed(() => {
-  const prompt = toProfile(monitorPreviewRouter.value.prompt);
-  return typeof prompt.system === 'string' ? prompt.system : '';
-});
-const monitorRouterUserPrompt = computed(() => {
-  const prompt = toProfile(monitorPreviewRouter.value.prompt);
-  return typeof prompt.user === 'string' ? prompt.user : '';
-});
-const monitorLlmSystemPrompt = computed(() => {
-  return typeof monitorPreviewPrompts.value.systemPrompt === 'string'
-    ? monitorPreviewPrompts.value.systemPrompt
-    : '';
-});
-const monitorLlmUserPrompt = computed(() => {
-  return typeof monitorPreviewPrompts.value.userPrompt === 'string'
-    ? monitorPreviewPrompts.value.userPrompt
-    : '';
+const monitorMainRequestBody = computed(() => {
+  const source = toProfile(monitorPreviewPrompts.value.requestBody);
+  return Object.keys(source).length ? source : null;
 });
 const monitorPreviewJson = computed(() => {
-  if (!monitorPayload.value) return '';
+  const requests = [
+    ...(monitorRouterRequestBody.value ? [{ stage: 'semantic-router', requestBody: monitorRouterRequestBody.value }] : []),
+    ...(monitorMainRequestBody.value ? [{ stage: 'main-reply', requestBody: monitorMainRequestBody.value }] : []),
+  ];
+  if (!requests.length) return '';
   try {
-    return JSON.stringify(monitorPayload.value, null, 2);
+    return JSON.stringify({ requests }, null, 2);
   } catch {
     return '';
   }
@@ -5279,27 +5270,20 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           </section>
 
           <section class="canvas-monitor-section">
-            <h4>Запрос и промты</h4>
-            <div class="canvas-monitor-prompt-block">
-              <span>Сообщение пользователя</span>
-              <pre>{{ monitorInputMessage || 'Нет сообщения' }}</pre>
+            <h4>Тело запроса к LLM (1:1)</h4>
+            <div v-if="!monitorRouterRequestBody && !monitorMainRequestBody" class="canvas-monitor-empty">
+              Request body не найден.
             </div>
-            <div class="canvas-monitor-prompt-block">
-              <span>Router Prompt (system)</span>
-              <pre>{{ monitorRouterSystemPrompt }}</pre>
-            </div>
-            <div class="canvas-monitor-prompt-block">
-              <span>Router Prompt (user)</span>
-              <pre>{{ monitorRouterUserPrompt }}</pre>
-            </div>
-            <div class="canvas-monitor-prompt-block">
-              <span>Main Prompt (system)</span>
-              <pre>{{ monitorLlmSystemPrompt }}</pre>
-            </div>
-            <div class="canvas-monitor-prompt-block">
-              <span>Main Prompt (user)</span>
-              <pre>{{ monitorLlmUserPrompt }}</pre>
-            </div>
+            <template v-else>
+              <div v-if="monitorRouterRequestBody" class="canvas-monitor-prompt-block">
+                <span>Semantic Router requestBody</span>
+                <pre>{{ stringifyMonitorValue(monitorRouterRequestBody) }}</pre>
+              </div>
+              <div v-if="monitorMainRequestBody" class="canvas-monitor-prompt-block">
+                <span>Main Reply requestBody</span>
+                <pre>{{ stringifyMonitorValue(monitorMainRequestBody) }}</pre>
+              </div>
+            </template>
           </section>
 
           <section class="canvas-monitor-section">
@@ -5313,7 +5297,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           </section>
 
           <section class="canvas-monitor-section">
-            <h4>Полный JSON глазами LLM</h4>
+            <h4>JSON, отправляемый в LLM (1:1)</h4>
             <pre class="canvas-monitor-json">{{ monitorPreviewJson || '{}' }}</pre>
           </section>
         </section>
