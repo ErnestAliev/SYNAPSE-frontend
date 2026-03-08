@@ -5272,7 +5272,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           <section class="canvas-monitor-section">
             <h4>Тело запроса к LLM (1:1)</h4>
             <div v-if="!monitorRouterRequestBody && !monitorMainRequestBody" class="canvas-monitor-empty">
-              Request body не найден.
+              Вопрос из чата отсутствует: request body не сформирован.
             </div>
             <template v-else>
               <div v-if="monitorRouterRequestBody" class="canvas-monitor-prompt-block">
@@ -5298,7 +5298,8 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 
           <section class="canvas-monitor-section">
             <h4>JSON, отправляемый в LLM (1:1)</h4>
-            <pre class="canvas-monitor-json">{{ monitorPreviewJson || '{}' }}</pre>
+            <div v-if="!monitorPreviewJson" class="canvas-monitor-empty">Пусто: нет вопроса для LLM.</div>
+            <pre v-else class="canvas-monitor-json">{{ monitorPreviewJson }}</pre>
           </section>
         </section>
       </div>
