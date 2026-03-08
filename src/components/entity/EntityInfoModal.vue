@@ -39,6 +39,7 @@ const FOOTER_CROP_VIEW_SIZE = 220;
 const FOOTER_CROP_OUTPUT_SIZE = 512;
 const AI_ATTACHMENT_MAX_INLINE_BYTES = 2_000_000;
 const AI_ATTACHMENT_MAX_INLINE_DATA_URL_LENGTH = 2_800_000;
+const CHAT_INPUT_MAX_HEIGHT_PX = 360;
 const ENTITY_TYPE_CHAT_TARGET: Record<EntityType, string> = {
   project: 'проект',
   connection: 'контакт',
@@ -353,7 +354,9 @@ const voiceInput = useUnifiedVoiceInput({
     const mergedText = voiceInput.mergeWithCurrentDraft(draft.value.textInput, transcript);
     draft.value.textInput = mergedText;
     draft.value.voiceInput = mergedText;
-    autoResizeChatInput();
+    void nextTick(() => {
+      autoResizeChatInput();
+    });
     scheduleSave();
   },
 });
@@ -1577,7 +1580,7 @@ function autoResizeChatInput() {
   }
 
   input.style.height = '0px';
-  input.style.height = `${Math.min(176, input.scrollHeight)}px`;
+  input.style.height = `${Math.min(CHAT_INPUT_MAX_HEIGHT_PX, input.scrollHeight)}px`;
 }
 
 function resetChatInputSize() {
@@ -4776,6 +4779,10 @@ onBeforeUnmount(() => {
     font-size: 12px;
   }
 
+  .entity-info-chat-input {
+    max-height: 42vh;
+  }
+
   .entity-info-field-scroll {
     padding: 4px 6px;
   }
@@ -4811,7 +4818,7 @@ onBeforeUnmount(() => {
   line-height: 1.35;
   padding: 6px 6px;
   resize: none;
-  max-height: 176px;
+  max-height: 360px;
   overflow-y: auto;
 }
 
