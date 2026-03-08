@@ -13,6 +13,7 @@ import { useUnifiedVoiceInput } from '../composables/useUnifiedVoiceInput';
 import { useEntitiesStore } from '../stores/entities';
 import { useAuthStore } from '../stores/auth';
 import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../services/entityAi';
+import { apiClient } from '../services/api';
 import { calculateEntityProfileProgress } from '../utils/profileProgress';
 import type { LogoLibraryItem } from '../data/logoLibrary';
 import type {
@@ -188,6 +189,38 @@ interface EntityChatMessage {
   text: string;
   createdAt: string;
   attachments: EntityAttachment[];
+}
+
+interface AgentChatPreviewStats {
+  totalEntitiesInProject: number;
+  entitiesInContext: number;
+  connectionsInContext: number;
+  historyMessages: number;
+  historyTextChars: number;
+  attachmentsCount: number;
+  contextChars: number;
+  contextBytes: number;
+  routerPromptChars: number;
+  routerPromptBytes: number;
+  llmPromptChars: number;
+  llmPromptBytes: number;
+  previewJsonBytes: number;
+}
+
+interface AgentChatPreviewResponse {
+  stats: AgentChatPreviewStats;
+  preview: Record<string, unknown>;
+}
+
+interface AgentChatPreviewEntitySummary {
+  id: string;
+  type: string;
+  name: string;
+  description: string;
+  descriptionLength: number;
+  fieldsItemsTotal: number;
+  fieldCounts: Record<string, number>;
+  updatedAt: string;
 }
 
 type MetadataFieldKey =
@@ -534,6 +567,14 @@ const quickVoiceEntityId = ref<string | null>(null);
 const entityInfoDocInputRef = ref<HTMLInputElement | null>(null);
 const entityInfoChatInputRef = ref<HTMLTextAreaElement | null>(null);
 const entityInfoChatFeedRef = ref<HTMLElement | null>(null);
+const isMonitorPanelOpen = ref(false);
+const isMonitorLoading = ref(false);
+const monitorErrorMessage = ref('');
+const monitorNotice = ref('');
+const monitorMessageDraft = ref('');
+const monitorPayload = ref<AgentChatPreviewResponse | null>(null);
+const monitorRefreshTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+const monitorNoticeTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const localEntityInfoAiRequestInFlight = ref(false);
 const isEntityInfoAiRequestInFlight = computed(() => {
   const entityId = entityInfoModal.value?.entityId;
@@ -1070,6 +1111,271 @@ function resolveProjectCanvasVersion(project: Entity | null | undefined) {
   return [updatedAt || createdAt || project._id, nodesCount, edgesCount, viewportKey, canvas.background || ''].join(
     '|',
   ).concat(`|${String(fingerprint >>> 0)}`);
+}
+
+const monitorCanvasTopologySignature = computed(() => {
+  const nodesKey = nodes.value
+    .map((node) => `${node.id}:${node.entityId}`)
+    .sort()
+    .join('|');
+  const edgesKey = edges.value
+    .map((edge) => `${edge.id}:${edge.source}:${edge.target}:${edge.label || ''}`)
+    .sort()
+    .join('|');
+  return `${routeProjectId.value}|${nodesKey}|${edgesKey}`;
+});
+
+const monitorEntityDataSignature = computed(() => {
+  return nodes.value
+    .map((node) => {
+      const entity = entitiesStore.byId(node.entityId);
+      if (!entity) return `${node.entityId}:missing`;
+      const metadata = toProfile(entity.ai_metadata);
+      const description = typeof metadata.description === 'string' ? metadata.description : '';
+      return `${entity._id}:${entity.updatedAt || ''}:${description.length}`;
+    })
+    .sort()
+    .join('|');
+});
+
+const monitorPreview = computed(() => toProfile(monitorPayload.value?.preview));
+const monitorStats = computed(() => {
+  const source = monitorPayload.value?.stats;
+  if (!source) return null;
+  return source;
+});
+const monitorPreviewScope = computed(() => toProfile(monitorPreview.value.scope));
+const monitorPreviewInput = computed(() => toProfile(monitorPreview.value.input));
+const monitorPreviewRouter = computed(() => toProfile(monitorPreview.value.semanticRouter));
+const monitorPreviewPrompts = computed(() => toProfile(monitorPreview.value.prompts));
+const monitorPreviewContext = computed(() => toProfile(monitorPreview.value.contextData));
+const monitorContextEntitiesCount = computed(() => {
+  const entities = monitorPreviewContext.value.entities;
+  return Array.isArray(entities) ? entities.length : 0;
+});
+const monitorPreviewEntitiesSummary = computed(() => {
+  const source = Array.isArray(monitorPreview.value.entitiesSummary) ? monitorPreview.value.entitiesSummary : [];
+  return source.map((item) => {
+    const entity = toProfile(item);
+    const rawFieldCounts = toProfile(entity.fieldCounts);
+    const fieldCounts: Record<string, number> = {};
+    for (const [key, rawCount] of Object.entries(rawFieldCounts)) {
+      const numeric = Number(rawCount);
+      if (!Number.isFinite(numeric) || numeric <= 0) continue;
+      fieldCounts[key] = Math.max(0, Math.floor(numeric));
+    }
+
+    const description = typeof entity.description === 'string' ? entity.description : '';
+
+    return {
+      id: typeof entity.id === 'string' ? entity.id : '',
+      type: typeof entity.type === 'string' ? entity.type : '',
+      name: typeof entity.name === 'string' ? entity.name : '(без названия)',
+      description,
+      descriptionLength:
+        typeof entity.descriptionLength === 'number'
+          ? Math.max(0, Math.floor(entity.descriptionLength))
+          : description.length,
+      fieldsItemsTotal:
+        typeof entity.fieldsItemsTotal === 'number'
+          ? Math.max(0, Math.floor(entity.fieldsItemsTotal))
+          : Object.values(fieldCounts).reduce((sum, count) => sum + count, 0),
+      fieldCounts,
+      updatedAt: typeof entity.updatedAt === 'string' ? entity.updatedAt : '',
+    } satisfies AgentChatPreviewEntitySummary;
+  });
+});
+const monitorPreviewHistory = computed(() => {
+  const input = monitorPreviewInput.value;
+  const source = Array.isArray(input.history) ? input.history : [];
+  return source
+    .map((item) => {
+      const message = toProfile(item);
+      return {
+        role: message.role === 'assistant' ? 'assistant' : 'user',
+        text: typeof message.text === 'string' ? message.text : '',
+      };
+    })
+    .filter((item) => item.text.trim().length > 0);
+});
+const monitorPreviewConnections = computed(() => {
+  const context = monitorPreviewContext.value;
+  const source = Array.isArray(context.connections) ? context.connections : [];
+  return source.map((item) => toProfile(item));
+});
+const monitorInputMessage = computed(() => {
+  return typeof monitorPreviewInput.value.message === 'string' ? monitorPreviewInput.value.message : '';
+});
+const monitorRouterSystemPrompt = computed(() => {
+  const prompt = toProfile(monitorPreviewRouter.value.prompt);
+  return typeof prompt.system === 'string' ? prompt.system : '';
+});
+const monitorRouterUserPrompt = computed(() => {
+  const prompt = toProfile(monitorPreviewRouter.value.prompt);
+  return typeof prompt.user === 'string' ? prompt.user : '';
+});
+const monitorLlmSystemPrompt = computed(() => {
+  return typeof monitorPreviewPrompts.value.systemPrompt === 'string'
+    ? monitorPreviewPrompts.value.systemPrompt
+    : '';
+});
+const monitorLlmUserPrompt = computed(() => {
+  return typeof monitorPreviewPrompts.value.userPrompt === 'string'
+    ? monitorPreviewPrompts.value.userPrompt
+    : '';
+});
+const monitorPreviewJson = computed(() => {
+  if (!monitorPayload.value) return '';
+  try {
+    return JSON.stringify(monitorPayload.value, null, 2);
+  } catch {
+    return '';
+  }
+});
+
+function clearMonitorRefreshTimer() {
+  if (!monitorRefreshTimer.value) return;
+  clearTimeout(monitorRefreshTimer.value);
+  monitorRefreshTimer.value = null;
+}
+
+function clearMonitorNoticeTimer() {
+  if (!monitorNoticeTimer.value) return;
+  clearTimeout(monitorNoticeTimer.value);
+  monitorNoticeTimer.value = null;
+}
+
+function setMonitorNotice(message: string) {
+  monitorNotice.value = message;
+  clearMonitorNoticeTimer();
+  monitorNoticeTimer.value = setTimeout(() => {
+    monitorNotice.value = '';
+    monitorNoticeTimer.value = null;
+  }, 2400);
+}
+
+function buildMonitorScopePayload() {
+  const projectId = routeProjectId.value;
+  if (!projectId) return null;
+  return {
+    type: 'project',
+    projectId,
+  };
+}
+
+async function fetchMonitorSnapshot() {
+  const scope = buildMonitorScopePayload();
+  if (!scope) {
+    monitorErrorMessage.value = 'Проект не определен.';
+    return;
+  }
+
+  isMonitorLoading.value = true;
+  monitorErrorMessage.value = '';
+  try {
+    const { data } = await apiClient.post<AgentChatPreviewResponse>(
+      '/ai/agent-chat-preview',
+      {
+        scope,
+        message: monitorMessageDraft.value.trim(),
+        includeStoredHistory: true,
+      },
+      {
+        timeout: 120_000,
+      },
+    );
+    monitorPayload.value = data;
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error && typeof error.message === 'string'
+        ? error.message
+        : 'Не удалось собрать мониторинг контекста.';
+    monitorErrorMessage.value = message;
+  } finally {
+    isMonitorLoading.value = false;
+  }
+}
+
+function scheduleMonitorRefresh(delayMs = 480) {
+  clearMonitorRefreshTimer();
+  monitorRefreshTimer.value = setTimeout(() => {
+    monitorRefreshTimer.value = null;
+    if (!isMonitorPanelOpen.value) return;
+    void fetchMonitorSnapshot();
+  }, delayMs);
+}
+
+function toggleMonitorPanel() {
+  isMonitorPanelOpen.value = !isMonitorPanelOpen.value;
+  if (isMonitorPanelOpen.value) {
+    void fetchMonitorSnapshot();
+  } else {
+    monitorErrorMessage.value = '';
+    monitorNotice.value = '';
+    clearMonitorRefreshTimer();
+  }
+}
+
+async function restartMonitorBuild() {
+  monitorPayload.value = null;
+  monitorErrorMessage.value = '';
+  setMonitorNotice('Пересборка запущена...');
+  await fetchMonitorSnapshot();
+  if (!monitorErrorMessage.value) {
+    setMonitorNotice('Пересборка завершена.');
+  }
+}
+
+async function copyMonitorJsonToClipboard() {
+  const payload = monitorPreviewJson.value;
+  if (!payload || typeof window === 'undefined' || !navigator?.clipboard?.writeText) {
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(payload);
+    setMonitorNotice('JSON скопирован в буфер.');
+  } catch {
+    setMonitorNotice('Не удалось скопировать JSON.');
+  }
+}
+
+function downloadMonitorJson() {
+  const payload = monitorPreviewJson.value;
+  if (!payload || typeof window === 'undefined') return;
+  const fileName = `llm-context-monitor-${Date.now()}.json`;
+  const blob = new Blob([payload], { type: 'application/json;charset=utf-8' });
+  const url = window.URL.createObjectURL(blob);
+  const anchor = window.document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  window.document.body.appendChild(anchor);
+  anchor.click();
+  window.document.body.removeChild(anchor);
+  window.URL.revokeObjectURL(url);
+  setMonitorNotice('JSON сохранен.');
+}
+
+function formatMonitorBytes(value: unknown) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(2)} MB`;
+}
+
+function stringifyMonitorValue(value: unknown) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return '';
+  }
+}
+
+function getMonitorEntityTypeLabel(type: string) {
+  const normalized = (type || '').trim() as EntityType;
+  return ENTITY_TYPE_LABELS[normalized] || type || 'Сущность';
 }
 
 function getCurrentProjectSnapshotFromStore() {
@@ -4446,6 +4752,27 @@ watch(
   },
 );
 
+watch(
+  () => [
+    isMonitorPanelOpen.value,
+    monitorCanvasTopologySignature.value,
+    monitorEntityDataSignature.value,
+  ],
+  ([isOpen], [wasOpen]) => {
+    if (!isOpen) return;
+    const delay = wasOpen ? 440 : 220;
+    scheduleMonitorRefresh(delay);
+  },
+);
+
+watch(
+  () => monitorMessageDraft.value,
+  () => {
+    if (!isMonitorPanelOpen.value) return;
+    scheduleMonitorRefresh(700);
+  },
+);
+
 // Legacy inline entity-info modal handlers are kept temporarily for backward compatibility.
 // The UI now uses shared `EntityInfoModal`, so these symbols must stay referenced
 // until we remove the old implementation completely.
@@ -4494,6 +4821,8 @@ onBeforeUnmount(() => {
   clearViewportSyncTimer();
   clearPendingRemoteCanvasApplyTimer();
   pendingRemoteCanvasSnapshot.value = null;
+  clearMonitorRefreshTimer();
+  clearMonitorNoticeTimer();
   clearLibraryActionMessageTimer();
   queueCanvasSync({ immediate: false });
   dismissNodeMenuHint({ persist: false });
@@ -4760,6 +5089,196 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           </div>
         </div>
       </aside>
+
+      <div class="canvas-monitor" @pointerdown.stop @wheel.stop>
+        <button
+          type="button"
+          class="canvas-monitor-toggle"
+          :class="{ active: isMonitorPanelOpen }"
+          :aria-label="isMonitorPanelOpen ? 'Скрыть мониторинг LLM' : 'Открыть мониторинг LLM'"
+          @click.stop="toggleMonitorPanel"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 5h16v14H4z" />
+            <path d="M8 9h8" />
+            <path d="M8 13h5" />
+            <circle cx="16.5" cy="13.5" r="0.8" />
+          </svg>
+          <span>Мониторинг</span>
+        </button>
+
+        <section v-if="isMonitorPanelOpen" class="canvas-monitor-panel">
+          <header class="canvas-monitor-header">
+            <div>
+              <h3 class="canvas-monitor-title">Контекст для LLM</h3>
+              <p class="canvas-monitor-subtitle">
+                Полный запрос, промты, история проекта и собранный контекст.
+              </p>
+            </div>
+            <button type="button" class="canvas-monitor-close" @click="toggleMonitorPanel">Закрыть</button>
+          </header>
+
+          <div class="canvas-monitor-actions">
+            <button type="button" class="canvas-monitor-btn" :disabled="isMonitorLoading" @click="fetchMonitorSnapshot">
+              Обновить
+            </button>
+            <button type="button" class="canvas-monitor-btn" :disabled="isMonitorLoading" @click="restartMonitorBuild">
+              Перезапустить сборку
+            </button>
+            <button
+              type="button"
+              class="canvas-monitor-btn"
+              :disabled="!monitorPreviewJson"
+              @click="copyMonitorJsonToClipboard"
+            >
+              Копировать
+            </button>
+            <button
+              type="button"
+              class="canvas-monitor-btn primary"
+              :disabled="!monitorPreviewJson"
+              @click="downloadMonitorJson"
+            >
+              Скачать JSON
+            </button>
+          </div>
+
+          <div class="canvas-monitor-message">
+            <label class="canvas-monitor-message-label" for="monitor-prompt-input">Сообщение для превью</label>
+            <textarea
+              id="monitor-prompt-input"
+              v-model="monitorMessageDraft"
+              class="canvas-monitor-message-input"
+              rows="2"
+              placeholder="Необязательно: добавьте сообщение, чтобы увидеть как изменится запрос к LLM"
+            />
+          </div>
+
+          <p v-if="isMonitorLoading" class="canvas-monitor-status">Собираю контекст...</p>
+          <p v-if="monitorErrorMessage" class="canvas-monitor-status error">{{ monitorErrorMessage }}</p>
+          <p v-else-if="monitorNotice" class="canvas-monitor-status">{{ monitorNotice }}</p>
+
+          <div class="canvas-monitor-stats">
+            <article class="canvas-monitor-stat">
+              <span class="canvas-monitor-stat-label">Сущности</span>
+              <strong>{{ monitorStats?.entitiesInContext ?? nodes.length }}</strong>
+            </article>
+            <article class="canvas-monitor-stat">
+              <span class="canvas-monitor-stat-label">Связи</span>
+              <strong>{{ monitorStats?.connectionsInContext ?? edges.length }}</strong>
+            </article>
+            <article class="canvas-monitor-stat">
+              <span class="canvas-monitor-stat-label">История чата</span>
+              <strong>{{ monitorStats?.historyMessages ?? monitorPreviewHistory.length }}</strong>
+            </article>
+            <article class="canvas-monitor-stat">
+              <span class="canvas-monitor-stat-label">Контекст</span>
+              <strong>{{ formatMonitorBytes(monitorStats?.contextBytes || 0) }}</strong>
+            </article>
+            <article class="canvas-monitor-stat">
+              <span class="canvas-monitor-stat-label">Промты</span>
+              <strong>
+                {{
+                  formatMonitorBytes(
+                    (monitorStats?.routerPromptBytes || 0) + (monitorStats?.llmPromptBytes || 0),
+                  )
+                }}
+              </strong>
+            </article>
+            <article class="canvas-monitor-stat">
+              <span class="canvas-monitor-stat-label">Вес JSON</span>
+              <strong>{{ formatMonitorBytes(monitorStats?.previewJsonBytes || 0) }}</strong>
+            </article>
+          </div>
+          <p class="canvas-monitor-scope">
+            Scope: {{ monitorPreviewScope.scopeKey || 'n/a' }} | Проект:
+            {{ monitorPreviewScope.projectId || routeProjectId || 'n/a' }} | Контекстных сущностей:
+            {{ monitorContextEntitiesCount || monitorStats?.entitiesInContext || 0 }}
+          </p>
+
+          <section class="canvas-monitor-section">
+            <h4>Сущности и поля</h4>
+            <div v-if="!monitorPreviewEntitiesSummary.length" class="canvas-monitor-empty">
+              Сущности не найдены в текущем контексте.
+            </div>
+            <div v-else class="canvas-monitor-entities">
+              <article
+                v-for="entity in monitorPreviewEntitiesSummary"
+                :key="entity.id || `${entity.type}:${entity.name}`"
+                class="canvas-monitor-entity"
+              >
+                <div class="canvas-monitor-entity-head">
+                  <strong>{{ entity.name }}</strong>
+                  <span>{{ getMonitorEntityTypeLabel(entity.type) }}</span>
+                </div>
+                <p class="canvas-monitor-entity-desc">{{ entity.description || 'Описание отсутствует.' }}</p>
+                <div class="canvas-monitor-entity-fields">
+                  <span v-if="!Object.keys(entity.fieldCounts).length" class="canvas-monitor-field-chip muted">
+                    Поля не заполнены
+                  </span>
+                  <span
+                    v-for="(count, fieldName) in entity.fieldCounts"
+                    :key="`${entity.id}:${fieldName}`"
+                    class="canvas-monitor-field-chip"
+                  >
+                    {{ fieldName }}: {{ count }}
+                  </span>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section class="canvas-monitor-section">
+            <h4>История проекта для LLM</h4>
+            <div v-if="!monitorPreviewHistory.length" class="canvas-monitor-empty">История чата пустая.</div>
+            <div v-else class="canvas-monitor-history">
+              <article v-for="(item, idx) in monitorPreviewHistory" :key="`history-${idx}`" class="canvas-monitor-history-item">
+                <span class="canvas-monitor-history-role">{{ item.role }}</span>
+                <p>{{ item.text }}</p>
+              </article>
+            </div>
+          </section>
+
+          <section class="canvas-monitor-section">
+            <h4>Запрос и промты</h4>
+            <div class="canvas-monitor-prompt-block">
+              <span>Сообщение пользователя</span>
+              <pre>{{ monitorInputMessage || 'Нет сообщения' }}</pre>
+            </div>
+            <div class="canvas-monitor-prompt-block">
+              <span>Router Prompt (system)</span>
+              <pre>{{ monitorRouterSystemPrompt }}</pre>
+            </div>
+            <div class="canvas-monitor-prompt-block">
+              <span>Router Prompt (user)</span>
+              <pre>{{ monitorRouterUserPrompt }}</pre>
+            </div>
+            <div class="canvas-monitor-prompt-block">
+              <span>Main Prompt (system)</span>
+              <pre>{{ monitorLlmSystemPrompt }}</pre>
+            </div>
+            <div class="canvas-monitor-prompt-block">
+              <span>Main Prompt (user)</span>
+              <pre>{{ monitorLlmUserPrompt }}</pre>
+            </div>
+          </section>
+
+          <section class="canvas-monitor-section">
+            <h4>Связи в контексте</h4>
+            <div v-if="!monitorPreviewConnections.length" class="canvas-monitor-empty">Связи не найдены.</div>
+            <div v-else class="canvas-monitor-connections">
+              <pre v-for="(connection, index) in monitorPreviewConnections" :key="`connection-${index}`">{{
+                stringifyMonitorValue(connection)
+              }}</pre>
+            </div>
+          </section>
+
+          <section class="canvas-monitor-section">
+            <h4>Полный JSON глазами LLM</h4>
+            <pre class="canvas-monitor-json">{{ monitorPreviewJson || '{}' }}</pre>
+          </section>
+        </section>
+      </div>
 
       <div class="canvas-grid" :style="gridStyle" />
       <EdgeLayerCanvas
@@ -5387,6 +5906,409 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 .canvas-library.mobile-device .library-item-main:hover {
   transform: none;
   box-shadow: 0 2px 8px rgba(112, 144, 176, 0.12);
+}
+
+.canvas-monitor {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.canvas-monitor-toggle {
+  height: 36px;
+  border-radius: 11px;
+  border: 1px solid #dbe4f3;
+  background: rgba(255, 255, 255, 0.96);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  box-shadow: 0 8px 20px rgba(112, 144, 176, 0.18);
+  transition:
+    border-color 0.16s ease,
+    color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.canvas-monitor-toggle svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.canvas-monitor-toggle:hover {
+  color: #1058ff;
+  border-color: #bfd5ff;
+  background: #eef4ff;
+}
+
+.canvas-monitor-toggle.active {
+  color: #ffffff;
+  border-color: #1058ff;
+  background: #1058ff;
+}
+
+.canvas-monitor-panel {
+  width: min(560px, calc(100vw - 28px));
+  max-height: min(78vh, 760px);
+  border-radius: 16px;
+  border: 1px solid #dbe4f3;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 20px 38px rgba(15, 23, 42, 0.24);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.canvas-monitor-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.canvas-monitor-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.canvas-monitor-subtitle {
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  line-height: 1.35;
+}
+
+.canvas-monitor-close {
+  height: 28px;
+  border-radius: 9px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 9px;
+  cursor: pointer;
+}
+
+.canvas-monitor-close:hover {
+  border-color: #bfd5ff;
+  background: #eef4ff;
+  color: #1058ff;
+}
+
+.canvas-monitor-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.canvas-monitor-btn {
+  height: 30px;
+  border-radius: 9px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.canvas-monitor-btn:hover:not(:disabled) {
+  border-color: #bfd5ff;
+  color: #1058ff;
+  background: #eef4ff;
+}
+
+.canvas-monitor-btn.primary {
+  border-color: #1058ff;
+  background: #1058ff;
+  color: #ffffff;
+}
+
+.canvas-monitor-btn.primary:hover:not(:disabled) {
+  border-color: #0c46cc;
+  background: #0c46cc;
+  color: #ffffff;
+}
+
+.canvas-monitor-btn:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
+.canvas-monitor-message {
+  border: 1px solid #dbe4f3;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.canvas-monitor-message-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #475569;
+}
+
+.canvas-monitor-message-input {
+  width: 100%;
+  min-height: 52px;
+  border-radius: 8px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.35;
+  outline: none;
+  padding: 7px 8px;
+  resize: vertical;
+}
+
+.canvas-monitor-message-input:focus {
+  border-color: #bfd5ff;
+  box-shadow: 0 0 0 2px rgba(16, 88, 255, 0.12);
+}
+
+.canvas-monitor-status {
+  margin: 0;
+  border-radius: 9px;
+  border: 1px solid #dbe4f3;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 7px 9px;
+}
+
+.canvas-monitor-status.error {
+  border-color: #fecaca;
+  background: #fff1f2;
+  color: #b91c1c;
+}
+
+.canvas-monitor-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.canvas-monitor-stat {
+  border: 1px solid #dbe4f3;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.canvas-monitor-stat-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.canvas-monitor-stat strong {
+  font-size: 13px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.canvas-monitor-scope {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.canvas-monitor-section {
+  border: 1px solid #dbe4f3;
+  border-radius: 11px;
+  background: #ffffff;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.canvas-monitor-section h4 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.canvas-monitor-empty {
+  border-radius: 8px;
+  border: 1px dashed #dbe4f3;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 9px;
+}
+
+.canvas-monitor-entities {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.canvas-monitor-entity {
+  border: 1px solid #dbe4f3;
+  border-radius: 9px;
+  background: #f8fafc;
+  padding: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.canvas-monitor-entity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.canvas-monitor-entity-head strong {
+  font-size: 12px;
+  font-weight: 800;
+  color: #1e293b;
+}
+
+.canvas-monitor-entity-head span {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.canvas-monitor-entity-desc {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #334155;
+  white-space: pre-wrap;
+}
+
+.canvas-monitor-entity-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.canvas-monitor-field-chip {
+  border: 1px solid #cfe0ff;
+  border-radius: 999px;
+  background: #eef4ff;
+  color: #1d4ed8;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 7px;
+}
+
+.canvas-monitor-field-chip.muted {
+  border-color: #dbe4f3;
+  background: #ffffff;
+  color: #64748b;
+}
+
+.canvas-monitor-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.canvas-monitor-history-item {
+  border: 1px solid #dbe4f3;
+  border-radius: 9px;
+  background: #f8fafc;
+  padding: 7px;
+}
+
+.canvas-monitor-history-item p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #334155;
+  white-space: pre-wrap;
+}
+
+.canvas-monitor-history-role {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.canvas-monitor-prompt-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.canvas-monitor-prompt-block span {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.canvas-monitor-prompt-block pre,
+.canvas-monitor-connections pre,
+.canvas-monitor-json {
+  margin: 0;
+  border-radius: 8px;
+  border: 1px solid #dbe4f3;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+  max-height: 220px;
+}
+
+.canvas-monitor-connections {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.canvas-monitor-json {
+  max-height: 360px;
 }
 
 .library-rail {
@@ -6828,7 +7750,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 /* ─── Play mode button ─────────────────────────────────────────────────────── */
 .canvas-play-btn {
   position: absolute;
-  top: 14px;
+  top: 58px;
   right: 14px;
   z-index: 50;
   width: 36px;
@@ -6967,6 +7889,36 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 
   .canvas-control-dropdown {
     min-width: 178px;
+  }
+
+  .canvas-monitor {
+    top: 10px;
+    right: 10px;
+  }
+
+  .canvas-monitor-toggle {
+    height: 34px;
+    font-size: 11px;
+    padding: 0 10px;
+  }
+
+  .canvas-monitor-panel {
+    width: min(96vw, 520px);
+    max-height: min(72vh, 680px);
+    padding: 10px;
+  }
+
+  .canvas-monitor-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .canvas-monitor-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .canvas-play-btn {
+    top: 50px;
+    right: 10px;
   }
 }
 
