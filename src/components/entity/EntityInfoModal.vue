@@ -8,6 +8,7 @@ import { useEntitiesStore } from '../../stores/entities';
 import { useAuthStore } from '../../stores/auth';
 import { calculateEntityProfileProgress } from '../../utils/profileProgress';
 import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../../services/entityAi';
+import { useUnifiedVoiceInput } from '../../composables/useUnifiedVoiceInput';
 import {
   SYSTEM_SOCIAL_LOGOS,
   addCustomLogo,
@@ -292,8 +293,6 @@ const descriptionTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const chatFeedRef = ref<HTMLElement | null>(null);
 const infoSaveTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const pendingComposerHeightReset = ref(false);
-const isVoiceListening = ref(false);
-const isVoiceSubmitting = ref(false);
 const localAiRequestInFlight = ref(false);
 const awaitingAiCompletionEntityId = ref('');
 const awaitingAiCompletionStartedAtMs = ref(0);
@@ -305,11 +304,6 @@ const isAiRequestInFlight = computed(() => {
   return localAiRequestInFlight.value || awaitingSameEntity || entitiesStore.isEntityAiPending(entityId) || entityPending;
 });
 
-const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
-const voiceRestartTimer = ref<ReturnType<typeof setTimeout> | null>(null);
-const voiceShouldRestart = ref(false);
-const voiceSessionBaseText = ref('');
-const voiceCommittedText = ref('');
 const isProjectAddConfirmOpen = ref(false);
 const projectActionMessage = ref('');
 const isProjectActionBusy = ref(false);
@@ -351,6 +345,21 @@ const isDescriptionResizing = ref(false);
 const descriptionResizePointerId = ref<number | null>(null);
 const descriptionResizeStart = ref<{ clientY: number; height: number } | null>(null);
 const isFieldsListExpanded = ref(false);
+
+const voiceInput = useUnifiedVoiceInput({
+  language: 'ru',
+  onTextReady: (transcript) => {
+    if (!draft.value) return;
+    const mergedText = voiceInput.mergeWithCurrentDraft(draft.value.textInput, transcript);
+    draft.value.textInput = mergedText;
+    draft.value.voiceInput = mergedText;
+    autoResizeChatInput();
+    scheduleSave();
+  },
+});
+const isVoiceRecording = computed(() => voiceInput.state.value === 'recording');
+const isVoiceTranscribing = computed(() => voiceInput.state.value === 'transcribing');
+const isVoiceBusy = computed(() => isVoiceRecording.value || isVoiceTranscribing.value);
 
 function toProfile(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -951,7 +960,7 @@ function closeModal() {
     persistDraft(currentDraft.entityId);
   }
   clearSaveTimer();
-  stopVoiceCapture();
+  voiceInput.cancelRecording();
   selectedProjectId.value = '';
   isProjectAddConfirmOpen.value = false;
   isDeleteConfirmOpen.value = false;
@@ -1077,7 +1086,7 @@ async function confirmClearChatHistory() {
 
   isProjectActionBusy.value = true;
   clearSaveTimer();
-  stopVoiceCapture();
+  voiceInput.cancelRecording();
 
   const resetMetadata = buildEntityMetadataResetPayload(toProfile(entity.ai_metadata));
 
@@ -1121,7 +1130,7 @@ async function onDeleteEntity() {
 
   isProjectActionBusy.value = true;
   clearSaveTimer();
-  stopVoiceCapture();
+  voiceInput.cancelRecording();
 
   try {
     await entitiesStore.deleteEntity(currentDraft.entityId);
@@ -1718,147 +1727,136 @@ function openChatAttachment(attachment: EntityAttachment) {
 
 async function onSendInput() {
   if (!draft.value) return;
-  if (isAiRequestInFlight.value || isVoiceSubmitting.value) return;
+  if (isAiRequestInFlight.value) return;
+  if (voiceInput.state.value === 'recording' || voiceInput.state.value === 'transcribing') return;
   closeChatToolsMenus();
+  const message = normalizeChatText(draft.value.textInput);
+  const attachments = [...draft.value.pendingUploads];
+  if (!message && !attachments.length) return;
 
-  const voiceSubmitStarted = isVoiceListening.value;
-  if (voiceSubmitStarted) {
-    isVoiceSubmitting.value = true;
-    stopVoiceCapture();
+  pushChatMessage('user', message, attachments);
+  draft.value.pendingUploads = [];
+  draft.value.documents = Array.from(
+    new Map([...draft.value.documents, ...attachments].map((attachment) => [attachment.id, attachment])).values(),
+  );
+  draft.value.textInput = '';
+  draft.value.voiceInput = '';
+  voiceInput.markTextConsumed();
+
+  resetChatInputSize();
+  void nextTick(() => {
+    scrollEntityChatToBottom('auto');
+  });
+  scheduleSave();
+
+  const activeDraft = draft.value;
+  if (!activeDraft) return;
+  const linkOnlyMessageLinks = attachments.length === 0 ? extractStandaloneChatLinks(message) : [];
+  if (linkOnlyMessageLinks.length) {
+    const existingLinks = Array.isArray(activeDraft.metadataValues.links)
+      ? (activeDraft.metadataValues.links as string[])
+      : [];
+    activeDraft.metadataValues.links = normalizeMetadataValues('links', [
+      ...existingLinks,
+      ...linkOnlyMessageLinks,
+    ]).slice(0, 24);
+    scheduleSave();
+    await nextTick();
+    scrollEntityChatToBottom('auto');
+    return;
   }
 
+  localAiRequestInFlight.value = true;
+  awaitingAiCompletionEntityId.value = activeDraft.entityId;
+  awaitingAiCompletionStartedAtMs.value = Date.now();
+  entitiesStore.setEntityAiPending(activeDraft.entityId, true);
+  const requestPayload = {
+    entityId: activeDraft.entityId,
+    message,
+    voiceInput: activeDraft.voiceInput,
+    history: activeDraft.chatHistory
+      .slice(-12)
+      .map((item) => ({
+        role: item.role,
+        text: item.text,
+      })),
+    attachments: attachments.map(toAiAttachmentPayload),
+    documents: activeDraft.documents.slice(-8).map(toAiAttachmentPayload),
+    debug: true,
+  };
+  console.log('[Modal] submitChatMessage → calling AI', {
+    entityId: activeDraft.entityId,
+    message: message.slice(0, 120),
+  });
   try {
-    const message = normalizeChatText(draft.value.textInput);
-    const attachments = [...draft.value.pendingUploads];
-    if (!message && !attachments.length) return;
-
-    pushChatMessage('user', message, attachments);
-    draft.value.pendingUploads = [];
-    draft.value.documents = Array.from(
-      new Map([...draft.value.documents, ...attachments].map((attachment) => [attachment.id, attachment])).values(),
-    );
-    draft.value.textInput = '';
-    draft.value.voiceInput = '';
-
-    resetChatInputSize();
-    void nextTick(() => {
-      scrollEntityChatToBottom('auto');
+    const response = await analyzeEntityWithAi(requestPayload);
+    console.log('[Modal] submitChatMessage → AI returned', {
+      isProcessing: isEntityAiProcessingResponse(response),
+      hasReply: 'reply' in response,
     });
-    scheduleSave();
 
-    const activeDraft = draft.value;
-    if (!activeDraft) return;
-    const linkOnlyMessageLinks = attachments.length === 0 ? extractStandaloneChatLinks(message) : [];
-    if (linkOnlyMessageLinks.length) {
-      const existingLinks = Array.isArray(activeDraft.metadataValues.links)
-        ? (activeDraft.metadataValues.links as string[])
-        : [];
-      activeDraft.metadataValues.links = normalizeMetadataValues('links', [
-        ...existingLinks,
-        ...linkOnlyMessageLinks,
-      ]).slice(0, 24);
-      scheduleSave();
-      await nextTick();
-      scrollEntityChatToBottom('auto');
+    if (isEntityAiProcessingResponse(response)) {
+      console.log('[Modal] submitChatMessage → background job, waiting for SSE entity.updated');
+      localAiRequestInFlight.value = false;
       return;
     }
 
-    localAiRequestInFlight.value = true;
-    awaitingAiCompletionEntityId.value = activeDraft.entityId;
-    awaitingAiCompletionStartedAtMs.value = Date.now();
-    entitiesStore.setEntityAiPending(activeDraft.entityId, true);
-    const requestPayload = {
-      entityId: activeDraft.entityId,
-      message,
-      voiceInput: activeDraft.voiceInput,
-      history: activeDraft.chatHistory
-        .slice(-12)
-        .map((item) => ({
-          role: item.role,
-          text: item.text,
-        })),
-      attachments: attachments.map(toAiAttachmentPayload),
-      documents: activeDraft.documents.slice(-8).map(toAiAttachmentPayload),
-      debug: true,
-    };
-    console.log('[Modal] submitChatMessage → calling AI', {
-      entityId: activeDraft.entityId,
-      message: message.slice(0, 120),
-    });
-    try {
-      const response = await analyzeEntityWithAi(requestPayload);
-      console.log('[Modal] submitChatMessage → AI returned', {
-        isProcessing: isEntityAiProcessingResponse(response),
-        hasReply: 'reply' in response,
-      });
-
-      if (isEntityAiProcessingResponse(response)) {
-        console.log('[Modal] submitChatMessage → background job, waiting for SSE entity.updated');
-        localAiRequestInFlight.value = false;
-        return;
-      }
-
-      const debugAttachments = response.debug ? [buildDebugAttachment(response.debug)] : [];
-      const assistantText = response.reply || 'Готово.';
-      if (!draft.value || draft.value.entityId !== activeDraft.entityId) {
-        clearAwaitingAiCompletion(activeDraft.entityId);
-        entitiesStore.setEntityAiPending(activeDraft.entityId, false);
-        return;
-      }
-
-      if (response.suggestion?.status === 'ready') {
-        if (response.suggestion.description) {
-          draft.value.description = response.suggestion.description;
-        }
-
-        const fields = response.suggestion.fields || {};
-        for (const field of getEntityContextFields(draft.value.type)) {
-          const rawValues = fields[field.key];
-          const nextValues = Array.isArray(rawValues)
-            ? rawValues.filter((value): value is string => typeof value === 'string')
-            : [];
-          draft.value.metadataValues[field.key] = normalizeMetadataValues(
-            field.key,
-            nextValues.map((value) => value.trim()).filter((value) => value.length > 0),
-          ).slice(0, 16);
-        }
-      }
-
-      pushChatMessage('assistant', assistantText, debugAttachments);
+    const debugAttachments = response.debug ? [buildDebugAttachment(response.debug)] : [];
+    const assistantText = response.reply || 'Готово.';
+    if (!draft.value || draft.value.entityId !== activeDraft.entityId) {
       clearAwaitingAiCompletion(activeDraft.entityId);
       entitiesStore.setEntityAiPending(activeDraft.entityId, false);
-      scheduleSave();
-      await nextTick();
-      scrollEntityChatToBottom('auto');
-    } catch (error: unknown) {
-      const debugAttachments = [buildDebugAttachment(buildLlmErrorDebugPayload(error, requestPayload))];
-      const assistantText = `Не удалось получить ответ от LLM. ${parseRequestError(error)}`;
-      if (!draft.value || draft.value.entityId !== activeDraft.entityId) {
-        clearAwaitingAiCompletion(activeDraft.entityId);
-        entitiesStore.setEntityAiPending(activeDraft.entityId, false);
-        return;
-      }
-
-      pushChatMessage('assistant', assistantText, debugAttachments);
-      clearAwaitingAiCompletion(activeDraft.entityId);
-      entitiesStore.setEntityAiPending(activeDraft.entityId, false);
-      await nextTick();
-      scrollEntityChatToBottom('auto');
-      scheduleSave();
-    } finally {
-      localAiRequestInFlight.value = false;
+      return;
     }
+
+    if (response.suggestion?.status === 'ready') {
+      if (response.suggestion.description) {
+        draft.value.description = response.suggestion.description;
+      }
+
+      const fields = response.suggestion.fields || {};
+      for (const field of getEntityContextFields(draft.value.type)) {
+        const rawValues = fields[field.key];
+        const nextValues = Array.isArray(rawValues)
+          ? rawValues.filter((value): value is string => typeof value === 'string')
+          : [];
+        draft.value.metadataValues[field.key] = normalizeMetadataValues(
+          field.key,
+          nextValues.map((value) => value.trim()).filter((value) => value.length > 0),
+        ).slice(0, 16);
+      }
+    }
+
+    pushChatMessage('assistant', assistantText, debugAttachments);
+    clearAwaitingAiCompletion(activeDraft.entityId);
+    entitiesStore.setEntityAiPending(activeDraft.entityId, false);
+    scheduleSave();
+    await nextTick();
+    scrollEntityChatToBottom('auto');
+  } catch (error: unknown) {
+    const debugAttachments = [buildDebugAttachment(buildLlmErrorDebugPayload(error, requestPayload))];
+    const assistantText = `Не удалось получить ответ от LLM. ${parseRequestError(error)}`;
+    if (!draft.value || draft.value.entityId !== activeDraft.entityId) {
+      clearAwaitingAiCompletion(activeDraft.entityId);
+      entitiesStore.setEntityAiPending(activeDraft.entityId, false);
+      return;
+    }
+
+    pushChatMessage('assistant', assistantText, debugAttachments);
+    clearAwaitingAiCompletion(activeDraft.entityId);
+    entitiesStore.setEntityAiPending(activeDraft.entityId, false);
+    await nextTick();
+    scrollEntityChatToBottom('auto');
+    scheduleSave();
   } finally {
-    if (voiceSubmitStarted) {
-      isVoiceSubmitting.value = false;
-    }
+    localAiRequestInFlight.value = false;
   }
 }
 
 function onChatComposerKeydown(event: KeyboardEvent) {
+  if (voiceInput.state.value === 'recording' || voiceInput.state.value === 'transcribing') return;
   if (event.key !== 'Enter') return;
   if (event.shiftKey) return;
-  if (isVoiceSubmitting.value) return;
 
   event.preventDefault();
   void onSendInput();
@@ -1913,155 +1911,16 @@ function removePendingUpload(attachmentId: string) {
   scheduleSave();
 }
 
-function clearVoiceRestartTimer() {
-  if (!voiceRestartTimer.value) return;
-  clearTimeout(voiceRestartTimer.value);
-  voiceRestartTimer.value = null;
-}
-
-function mergeVoiceSegments(...parts: string[]) {
-  return parts
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .join(' ')
-    .trim();
-}
-
-function applyVoiceDraft(interimText = '') {
+async function onVoiceToggle() {
   if (!draft.value) return;
-  if (isVoiceSubmitting.value) return;
-
-  const merged = mergeVoiceSegments(voiceSessionBaseText.value, voiceCommittedText.value, interimText);
-  draft.value.voiceInput = merged;
-  draft.value.textInput = merged;
-  autoResizeChatInput();
-  scheduleSave();
+  if (isAiRequestInFlight.value) return;
+  if (voiceInput.state.value === 'recording' || voiceInput.state.value === 'transcribing') return;
+  await voiceInput.startRecording();
 }
 
-function stopVoiceCapture() {
-  voiceShouldRestart.value = false;
-  clearVoiceRestartTimer();
-  isVoiceListening.value = false;
-  if (activeVoiceRecognition.value) {
-    activeVoiceRecognition.value.stop();
-    activeVoiceRecognition.value = null;
-  }
-  voiceSessionBaseText.value = '';
-  voiceCommittedText.value = '';
-}
-
-function startVoiceCapture() {
-  if (!draft.value || typeof window === 'undefined') return;
-
-  const speechWindow = window as Window & {
-    SpeechRecognition?: new () => {
-      lang: string;
-      continuous: boolean;
-      interimResults: boolean;
-      onresult: ((event: unknown) => void) | null;
-      onend: (() => void) | null;
-      start: () => void;
-      stop: () => void;
-    };
-    webkitSpeechRecognition?: new () => {
-      lang: string;
-      continuous: boolean;
-      interimResults: boolean;
-      onresult: ((event: unknown) => void) | null;
-      onend: (() => void) | null;
-      start: () => void;
-      stop: () => void;
-    };
-  };
-
-  const RecognitionCtor = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
-  if (!RecognitionCtor) return;
-
-  stopVoiceCapture();
-  voiceSessionBaseText.value = draft.value.textInput.trim();
-  voiceCommittedText.value = '';
-  voiceShouldRestart.value = true;
-
-  const createRecognition = () => {
-    const recognition = new RecognitionCtor();
-    recognition.lang = 'ru-RU';
-    recognition.continuous = true;
-    recognition.interimResults = true;
-
-    recognition.onresult = (event: unknown) => {
-      const payload = event as {
-        resultIndex?: number;
-        results?: ArrayLike<ArrayLike<{ transcript?: string }> & { isFinal?: boolean }>;
-      };
-      const eventResults = payload.results;
-      if (!eventResults) return;
-
-      const startIndex = Number.isFinite(Number(payload.resultIndex))
-        ? Math.max(0, Number(payload.resultIndex))
-        : 0;
-      let interim = '';
-
-      for (let index = startIndex; index < eventResults.length; index += 1) {
-        const result = eventResults[index];
-        const part = typeof result?.[0]?.transcript === 'string' ? result[0].transcript.trim() : '';
-        if (!part) continue;
-        if (result?.isFinal) {
-          voiceCommittedText.value = mergeVoiceSegments(voiceCommittedText.value, part);
-        } else {
-          interim = mergeVoiceSegments(interim, part);
-        }
-      }
-
-      applyVoiceDraft(interim);
-    };
-
-    recognition.onend = () => {
-      activeVoiceRecognition.value = null;
-      if (!voiceShouldRestart.value) {
-        isVoiceListening.value = false;
-        return;
-      }
-
-      clearVoiceRestartTimer();
-      voiceRestartTimer.value = setTimeout(() => {
-        if (!voiceShouldRestart.value) return;
-        try {
-          const nextRecognition = createRecognition();
-          nextRecognition.start();
-          isVoiceListening.value = true;
-          activeVoiceRecognition.value = { stop: () => nextRecognition.stop() };
-        } catch {
-          voiceShouldRestart.value = false;
-          isVoiceListening.value = false;
-          activeVoiceRecognition.value = null;
-        }
-      }, 220);
-    };
-
-    return recognition;
-  };
-
-  try {
-    const recognition = createRecognition();
-    recognition.start();
-    isVoiceListening.value = true;
-    activeVoiceRecognition.value = { stop: () => recognition.stop() };
-  } catch {
-    voiceShouldRestart.value = false;
-    isVoiceListening.value = false;
-    activeVoiceRecognition.value = null;
-    clearVoiceRestartTimer();
-    voiceSessionBaseText.value = '';
-    voiceCommittedText.value = '';
-  }
-}
-
-function onVoiceToggle() {
-  if (isVoiceListening.value) {
-    stopVoiceCapture();
-    return;
-  }
-  startVoiceCapture();
+async function onVoiceConfirm() {
+  if (voiceInput.state.value !== 'recording') return;
+  await voiceInput.finishRecording();
 }
 
 function toDisplayTime(iso: string) {
@@ -3003,7 +2862,7 @@ onBeforeUnmount(() => {
     persistDraft(currentDraft.entityId);
   }
   clearSaveTimer();
-  stopVoiceCapture();
+  voiceInput.cancelRecording();
   stopDescriptionResize();
   if (typeof window !== 'undefined') {
     window.removeEventListener('resize', onDescriptionViewportResize);
@@ -3242,12 +3101,13 @@ onBeforeUnmount(() => {
             v-model="draft.textInput"
             class="entity-info-chat-input"
             :placeholder="chatPlaceholder"
-            :disabled="isAiRequestInFlight || isVoiceSubmitting"
+            :disabled="isAiRequestInFlight || isVoiceTranscribing"
             rows="1"
             @input="onTextInput"
             @keydown="onChatComposerKeydown"
           />
         </div>
+        <p v-if="voiceInput.errorMessage" class="entity-info-voice-error">{{ voiceInput.errorMessage }}</p>
 
         <div class="entity-info-chat-tools">
           <div class="entity-info-chat-tools-left">
@@ -3256,7 +3116,7 @@ onBeforeUnmount(() => {
               class="entity-info-chat-menu-btn"
               :class="{ open: isChatToolsMenuOpen }"
               title="Меню действий"
-              :disabled="isAiRequestInFlight || isVoiceSubmitting"
+              :disabled="isAiRequestInFlight || isVoiceBusy"
               @click="toggleChatToolsMenu"
             >
               <span>Меню</span>
@@ -3279,7 +3139,7 @@ onBeforeUnmount(() => {
                 <button
                   type="button"
                   class="entity-chat-menu-item"
-                  :disabled="isAiRequestInFlight || isVoiceSubmitting"
+                  :disabled="isAiRequestInFlight || isVoiceBusy"
                   @click="onChatToolsAction('import-documents')"
                 >
                   Импорт документов
@@ -3335,35 +3195,49 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="entity-info-chat-icon-btn mic"
-            :class="{ active: isVoiceListening }"
+            :class="{ active: isVoiceRecording }"
             title="Голосовой ввод"
-            :disabled="isAiRequestInFlight || isVoiceSubmitting"
+            :disabled="isAiRequestInFlight || isVoiceBusy || !voiceInput.isSupported"
             @click="onVoiceToggle"
           >
-            <svg v-if="!isVoiceListening" viewBox="0 0 24 24" aria-hidden="true">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 4a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3Z" />
               <path d="M19 11a7 7 0 0 1-14 0" />
               <path d="M12 18v3" />
               <path d="M8 21h8" />
             </svg>
-            <svg v-else viewBox="0 0 24 24" aria-hidden="true">
-              <rect x="7" y="7" width="10" height="10" rx="2" />
-            </svg>
           </button>
+
+          <div v-if="isVoiceBusy" class="entity-info-voice-state">
+            <div v-if="isVoiceRecording" class="entity-info-voice-wave">
+              <span
+                v-for="(bar, index) in voiceInput.waveformBars"
+                :key="`entity-voice-bar-${index}`"
+                :style="{ height: `${bar}px` }"
+              />
+            </div>
+            <div v-else class="entity-info-voice-transcribing">
+              <span class="entity-info-voice-spinner" />
+              Расшифровываю...
+            </div>
+          </div>
 
           <button
             type="button"
             class="entity-info-chat-icon-btn send entity-info-chat-tools-send"
-            title="Отправить"
+            :title="isVoiceRecording ? 'Завершить запись' : 'Отправить'"
             :disabled="
               isAiRequestInFlight ||
-              isVoiceSubmitting ||
-              (!draft.textInput.trim() && !draft.pendingUploads.length)
+              isVoiceTranscribing ||
+              (!isVoiceRecording && !draft.textInput.trim() && !draft.pendingUploads.length)
             "
-            @click="onSendInput"
+            @click="isVoiceRecording ? void onVoiceConfirm() : void onSendInput()"
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
+            <svg v-if="!isVoiceRecording" class="entity-info-send-icon" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M3 11.5 21 3l-7.5 18-2.6-7.1L3 11.5Z" />
+            </svg>
+            <svg v-else class="entity-info-check-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 6 9 17l-5-5" />
             </svg>
           </button>
         </div>
@@ -4509,12 +4383,18 @@ onBeforeUnmount(() => {
 
 .entity-info-chat-tools {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto minmax(120px, 1fr) auto;
   align-items: center;
   gap: 8px;
   position: relative;
   border-top: 1px solid #e8edf7;
   padding-top: 7px;
+}
+
+.entity-info-voice-error {
+  margin: 0;
+  color: #b42318;
+  font-size: 12px;
 }
 
 .entity-info-chat-tools-left {
@@ -4712,9 +4592,56 @@ onBeforeUnmount(() => {
   justify-self: end;
 }
 
-.entity-info-chat-icon-btn.send svg {
+.entity-info-send-icon {
   fill: currentColor;
   stroke: none;
+}
+
+.entity-info-check-icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.entity-info-voice-state {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.entity-info-voice-wave {
+  height: 24px;
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.entity-info-voice-wave span {
+  width: 4px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #1f6aff 0%, #1058ff 100%);
+  transition: height 0.12s ease;
+}
+
+.entity-info-voice-transcribing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.entity-info-voice-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid rgba(16, 88, 255, 0.2);
+  border-top-color: #1058ff;
+  animation: entity-voice-spinner 0.7s linear infinite;
 }
 
 .entity-info-chat-icon-btn:disabled,
@@ -4747,6 +4674,15 @@ onBeforeUnmount(() => {
   100% {
     opacity: 0;
     transform: scale(1.15);
+  }
+}
+
+@keyframes entity-voice-spinner {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
   }
 }
 

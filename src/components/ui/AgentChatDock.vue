@@ -5,6 +5,7 @@ import { useRoute } from 'vue-router';
 import { useEntitiesStore } from '../../stores/entities';
 import type { Entity, EntityType } from '../../types/entity';
 import { apiClient } from '../../services/api';
+import { useUnifiedVoiceInput } from '../../composables/useUnifiedVoiceInput';
 
 type ChatRole = 'user' | 'assistant';
 
@@ -98,7 +99,6 @@ const entitiesStore = useEntitiesStore();
 const isOpen = ref(false);
 const messageDraft = ref('');
 const pendingUploads = ref<EntityAttachment[]>([]);
-const isVoiceListening = ref(false);
 const isSending = ref(false);
 const isResizingPanel = ref(false);
 const isClearHistoryConfirmOpen = ref(false);
@@ -112,12 +112,6 @@ const chatFeedRef = ref<HTMLElement | null>(null);
 const chatInputRef = ref<HTMLTextAreaElement | null>(null);
 const docInputRef = ref<HTMLInputElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
-const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
-const voiceRestartTimer = ref<ReturnType<typeof setTimeout> | null>(null);
-const voiceShouldRestart = ref(false);
-const voiceCaptureSessionId = ref(0);
-const voiceSessionBaseText = ref('');
-const voiceCommittedText = ref('');
 const pendingComposerHeightReset = ref(false);
 const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1366);
 const viewportHeight = ref(typeof window !== 'undefined' ? window.innerHeight : 768);
@@ -143,6 +137,17 @@ const pendingSaveTimersByScope = new Map<string, ReturnType<typeof setTimeout>>(
 const saveInFlightScopes = new Set<string>();
 const queuedResaveScopes = new Set<string>();
 const saveControllersByScope = new Map<string, AbortController>();
+
+const voiceInput = useUnifiedVoiceInput({
+  language: 'ru',
+  onTextReady: (transcript) => {
+    messageDraft.value = voiceInput.mergeWithCurrentDraft(messageDraft.value, transcript);
+    void nextTick(() => {
+      autoResizeComposer();
+    });
+  },
+});
+const voiceState = computed(() => voiceInput.state.value);
 
 function toProfile(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -1386,7 +1391,7 @@ function toggleChat() {
     isClearHistoryConfirmOpen.value = false;
     isChatToolsMenuOpen.value = false;
     stopHistoryPolling();
-    stopVoiceCapture();
+    voiceInput.cancelRecording();
     pendingUploads.value = [];
     isPanelMaximized.value = false;
     lastTitleTapAt.value = 0;
@@ -1540,9 +1545,6 @@ async function confirmClearAllChatHistory() {
 async function sendMessage() {
   if (isSending.value) return;
   closeChatToolsMenu();
-  if (isVoiceListening.value) {
-    stopVoiceCapture();
-  }
 
   const value = messageDraft.value.trim();
   const attachments = [...pendingUploads.value];
@@ -1559,6 +1561,7 @@ async function sendMessage() {
 
   pushMessage('user', value, attachments, activeScopeKey);
   messageDraft.value = '';
+  voiceInput.markTextConsumed();
   pendingUploads.value = [];
 
   if (routeScopeType.value === 'project-canvas' && linkOnlyMessageLinks.length) {
@@ -1620,6 +1623,7 @@ async function sendMessage() {
 
 function onComposerKeydown(event: KeyboardEvent) {
   if (isSending.value) return;
+  if (voiceInput.state.value === 'recording' || voiceInput.state.value === 'transcribing') return;
   if (event.key !== 'Enter') return;
   if (event.shiftKey) return;
   event.preventDefault();
@@ -1672,155 +1676,14 @@ function removePendingUpload(attachmentId: string) {
   pendingUploads.value = pendingUploads.value.filter((attachment) => attachment.id !== attachmentId);
 }
 
-function clearVoiceRestartTimer() {
-  if (!voiceRestartTimer.value) return;
-  clearTimeout(voiceRestartTimer.value);
-  voiceRestartTimer.value = null;
+async function onVoiceToggle() {
+  if (voiceInput.state.value === 'recording' || voiceInput.state.value === 'transcribing') return;
+  await voiceInput.startRecording();
 }
 
-function mergeVoiceSegments(...parts: string[]) {
-  return parts
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function applyVoiceDraft(interimText = '') {
-  const merged = mergeVoiceSegments(voiceSessionBaseText.value, voiceCommittedText.value, interimText);
-  messageDraft.value = merged;
-  void nextTick(() => {
-    autoResizeComposer();
-  });
-}
-
-function stopVoiceCapture() {
-  voiceCaptureSessionId.value += 1;
-  voiceShouldRestart.value = false;
-  clearVoiceRestartTimer();
-  isVoiceListening.value = false;
-  if (activeVoiceRecognition.value) {
-    activeVoiceRecognition.value.stop();
-    activeVoiceRecognition.value = null;
-  }
-  voiceSessionBaseText.value = '';
-  voiceCommittedText.value = '';
-}
-
-function startVoiceCapture() {
-  if (typeof window === 'undefined') return;
-
-  const speechWindow = window as Window & {
-    SpeechRecognition?: new () => {
-      lang: string;
-      continuous: boolean;
-      interimResults: boolean;
-      onresult: ((event: unknown) => void) | null;
-      onend: (() => void) | null;
-      start: () => void;
-      stop: () => void;
-    };
-    webkitSpeechRecognition?: new () => {
-      lang: string;
-      continuous: boolean;
-      interimResults: boolean;
-      onresult: ((event: unknown) => void) | null;
-      onend: (() => void) | null;
-      start: () => void;
-      stop: () => void;
-    };
-  };
-
-  const RecognitionCtor = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
-  if (!RecognitionCtor) return;
-
-  stopVoiceCapture();
-  voiceSessionBaseText.value = messageDraft.value.trim();
-  voiceCommittedText.value = '';
-  voiceShouldRestart.value = true;
-  voiceCaptureSessionId.value += 1;
-  const sessionId = voiceCaptureSessionId.value;
-
-  const createRecognition = () => {
-    const recognition = new RecognitionCtor();
-    recognition.lang = 'ru-RU';
-    recognition.continuous = true;
-    recognition.interimResults = true;
-
-    recognition.onresult = (event: unknown) => {
-      if (voiceCaptureSessionId.value !== sessionId || !voiceShouldRestart.value) return;
-      const payload = event as {
-        resultIndex?: number;
-        results?: ArrayLike<ArrayLike<{ transcript?: string }> & { isFinal?: boolean }>;
-      };
-      const eventResults = payload.results;
-      if (!eventResults) return;
-
-      const startIndex = Number.isFinite(Number(payload.resultIndex))
-        ? Math.max(0, Number(payload.resultIndex))
-        : 0;
-      let interim = '';
-
-      for (let index = startIndex; index < eventResults.length; index += 1) {
-        const result = eventResults[index];
-        const part = typeof result?.[0]?.transcript === 'string' ? result[0].transcript.trim() : '';
-        if (!part) continue;
-        if (result?.isFinal) {
-          voiceCommittedText.value = mergeVoiceSegments(voiceCommittedText.value, part);
-        } else {
-          interim = mergeVoiceSegments(interim, part);
-        }
-      }
-
-      applyVoiceDraft(interim);
-    };
-
-    recognition.onend = () => {
-      if (voiceCaptureSessionId.value !== sessionId) return;
-      activeVoiceRecognition.value = null;
-      if (!voiceShouldRestart.value) {
-        isVoiceListening.value = false;
-        return;
-      }
-
-      clearVoiceRestartTimer();
-      voiceRestartTimer.value = setTimeout(() => {
-        if (voiceCaptureSessionId.value !== sessionId || !voiceShouldRestart.value) return;
-        try {
-          const nextRecognition = createRecognition();
-          nextRecognition.start();
-          isVoiceListening.value = true;
-          activeVoiceRecognition.value = { stop: () => nextRecognition.stop() };
-        } catch {
-          voiceShouldRestart.value = false;
-          isVoiceListening.value = false;
-          activeVoiceRecognition.value = null;
-        }
-      }, 220);
-    };
-
-    return recognition;
-  };
-
-  try {
-    const recognition = createRecognition();
-    recognition.start();
-    isVoiceListening.value = true;
-    activeVoiceRecognition.value = { stop: () => recognition.stop() };
-  } catch {
-    voiceShouldRestart.value = false;
-    isVoiceListening.value = false;
-    activeVoiceRecognition.value = null;
-  }
-}
-
-function onVoiceToggle() {
-  if (isVoiceListening.value) {
-    stopVoiceCapture();
-    return;
-  }
-  startVoiceCapture();
+async function onVoiceConfirm() {
+  if (voiceInput.state.value !== 'recording') return;
+  await voiceInput.finishRecording();
 }
 
 function toDisplayTime(iso: string) {
@@ -1949,7 +1812,7 @@ watch(
     pendingUploads.value = [];
     isProjectProfileExpanded.value = false;
     resetProjectProfileLocally();
-    stopVoiceCapture();
+    voiceInput.cancelRecording();
     pendingComposerHeightReset.value = true;
     if (!isOpen.value) return;
     void syncScopeHistoryFromServer(nextScopeKey);
@@ -1999,7 +1862,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   stopPanelResize();
   stopHistoryPolling();
-  stopVoiceCapture();
+  voiceInput.cancelRecording();
   for (const timer of pendingSaveTimersByScope.values()) {
     clearTimeout(timer);
   }
@@ -2247,35 +2110,67 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="agent-chat-tool-btn mic"
-            :class="{ active: isVoiceListening }"
+            :class="{ active: voiceState === 'recording' }"
             title="Голосовой ввод"
-            :disabled="isSending"
+            :disabled="
+              isSending ||
+              voiceState === 'recording' ||
+              voiceState === 'transcribing' ||
+              !voiceInput.isSupported
+            "
             @click="onVoiceToggle"
           >
-            <svg v-if="!isVoiceListening" viewBox="0 0 24 24" aria-hidden="true">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 4a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3Z" />
               <path d="M19 11a7 7 0 0 1-14 0" />
               <path d="M12 18v3" />
               <path d="M8 21h8" />
             </svg>
-            <svg v-else viewBox="0 0 24 24" aria-hidden="true">
-              <rect x="7" y="7" width="10" height="10" rx="2" />
-            </svg>
           </button>
+
+          <div
+            v-if="voiceState === 'recording' || voiceState === 'transcribing'"
+            class="agent-chat-voice-state"
+          >
+            <div v-if="voiceState === 'recording'" class="agent-chat-voice-wave" aria-label="Идёт запись">
+              <span
+                v-for="(bar, index) in voiceInput.waveformBars"
+                :key="`agent-voice-bar-${index}`"
+                :style="{ height: `${bar}px` }"
+              />
+            </div>
+            <div v-else class="agent-chat-voice-transcribing">
+              <span class="agent-chat-voice-spinner" />
+              Расшифровываю...
+            </div>
+          </div>
 
           <button
             type="button"
             class="agent-chat-tool-btn send agent-chat-tools-send"
-            title="Отправить"
-            :disabled="isSending || (!messageDraft.trim() && !pendingUploads.length)"
-            @click="void sendMessage()"
+            :title="voiceState === 'recording' ? 'Завершить запись' : 'Отправить'"
+            :disabled="
+              isSending ||
+              voiceState === 'transcribing' ||
+              (voiceState !== 'recording' && !messageDraft.trim() && !pendingUploads.length)
+            "
+            @click="voiceState === 'recording' ? void onVoiceConfirm() : void sendMessage()"
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
+            <svg
+              v-if="voiceState !== 'recording'"
+              class="agent-chat-send-icon"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
               <path d="M3 11.5 21 3l-7.5 18-2.6-7.1L3 11.5Z" />
+            </svg>
+            <svg v-else class="agent-chat-check-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 6 9 17l-5-5" />
             </svg>
           </button>
 
         </div>
+        <p v-if="voiceInput.errorMessage" class="agent-chat-voice-error">{{ voiceInput.errorMessage }}</p>
       </section>
 
       <div
@@ -2821,7 +2716,7 @@ onBeforeUnmount(() => {
 
 .agent-chat-tools {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto minmax(120px, 1fr) auto;
   align-items: center;
   gap: 8px;
   border-top: 1px solid #e8edf7;
@@ -3014,9 +2909,62 @@ onBeforeUnmount(() => {
   border-color: #1058ff;
 }
 
-.agent-chat-tool-btn.send svg {
+.agent-chat-send-icon {
   fill: currentColor;
   stroke: none;
+}
+
+.agent-chat-check-icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.agent-chat-voice-state {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.agent-chat-voice-wave {
+  height: 24px;
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.agent-chat-voice-wave span {
+  width: 4px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #1f6aff 0%, #1058ff 100%);
+  transition: height 0.12s ease;
+}
+
+.agent-chat-voice-transcribing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.agent-chat-voice-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid rgba(16, 88, 255, 0.2);
+  border-top-color: #1058ff;
+  animation: agent-voice-spinner 0.7s linear infinite;
+}
+
+.agent-chat-voice-error {
+  margin: 6px 0 0;
+  color: #b42318;
+  font-size: 12px;
 }
 
 .agent-chat-tool-btn:disabled {
@@ -3051,6 +2999,15 @@ onBeforeUnmount(() => {
   100% {
     opacity: 0;
     transform: scale(1.15);
+  }
+}
+
+@keyframes agent-voice-spinner {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
   }
 }
 

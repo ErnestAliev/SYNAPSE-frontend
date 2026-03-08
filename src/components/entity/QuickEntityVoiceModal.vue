@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../../services/entityAi';
 import { useEntitiesStore } from '../../stores/entities';
+import { useUnifiedVoiceInput } from '../../composables/useUnifiedVoiceInput';
 
 type ChatRole = 'user' | 'assistant';
 
@@ -36,15 +37,7 @@ const messageDraft = ref('');
 const pendingUploads = ref<ChatAttachment[]>([]);
 const chatHistory = ref<ChatMessage[]>([]);
 const isSubmitting = ref(false);
-const isVoiceListening = ref(false);
 const isToolsMenuOpen = ref(false);
-const voiceError = ref('');
-const activeVoiceRecognition = ref<{ stop: () => void } | null>(null);
-const voiceRestartTimer = ref<ReturnType<typeof setTimeout> | null>(null);
-const voiceShouldRestart = ref(false);
-const voiceSessionBaseText = ref('');
-const voiceCommittedText = ref('');
-const VOICE_RESTART_DELAY_MS = 120;
 
 const entity = computed(() => entitiesStore.byId(props.entityId) || null);
 const entityName = computed(() => entity.value?.name?.trim() || 'Без названия');
@@ -53,6 +46,14 @@ const isAiRequestInFlight = computed(() => {
   const pending = Boolean((toRecord(current?.ai_metadata) as Record<string, unknown>).analysis_pending);
   return isSubmitting.value || entitiesStore.isEntityAiPending(props.entityId) || pending;
 });
+
+const voiceInput = useUnifiedVoiceInput({
+  language: 'ru',
+  onTextReady: (transcript) => {
+    messageDraft.value = voiceInput.mergeWithCurrentDraft(messageDraft.value, transcript);
+  },
+});
+const voiceState = computed(() => voiceInput.state.value);
 
 function toRecord(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {} as Record<string, unknown>;
@@ -104,136 +105,14 @@ function normalizeChatHistory(value: unknown) {
     .filter((row): row is ChatMessage => Boolean(row));
 }
 
-function stopVoiceRestartTimer() {
-  if (!voiceRestartTimer.value) return;
-  clearTimeout(voiceRestartTimer.value);
-  voiceRestartTimer.value = null;
+async function onVoiceToggle() {
+  if (voiceInput.state.value === 'recording' || voiceInput.state.value === 'transcribing') return;
+  await voiceInput.startRecording();
 }
 
-function mergeVoiceSegments(base: string, committed: string, interim: string) {
-  const clean = (value: string) => value.trim().replace(/\s+/g, ' ');
-  const parts = [clean(base), clean(committed), clean(interim)].filter(Boolean);
-  return parts.join(' ').trim();
-}
-
-function applyVoiceDraft(interimText = '') {
-  messageDraft.value = mergeVoiceSegments(
-    voiceSessionBaseText.value,
-    voiceCommittedText.value,
-    interimText,
-  );
-}
-
-function stopVoiceCapture() {
-  voiceShouldRestart.value = false;
-  stopVoiceRestartTimer();
-  if (activeVoiceRecognition.value) {
-    activeVoiceRecognition.value.stop();
-    activeVoiceRecognition.value = null;
-  }
-  isVoiceListening.value = false;
-  voiceSessionBaseText.value = '';
-  voiceCommittedText.value = '';
-}
-
-function startVoiceCapture() {
-  if (typeof window === 'undefined') return;
-  if (isVoiceListening.value) return;
-
-  const speechWindow = window as unknown as {
-    SpeechRecognition?: new () => {
-      lang: string;
-      interimResults: boolean;
-      continuous: boolean;
-      maxAlternatives: number;
-      onresult: ((event: unknown) => void) | null;
-      onerror: ((event: unknown) => void) | null;
-      onend: (() => void) | null;
-      start: () => void;
-      stop: () => void;
-    };
-    webkitSpeechRecognition?: new () => {
-      lang: string;
-      interimResults: boolean;
-      continuous: boolean;
-      maxAlternatives: number;
-      onresult: ((event: unknown) => void) | null;
-      onerror: ((event: unknown) => void) | null;
-      onend: (() => void) | null;
-      start: () => void;
-      stop: () => void;
-    };
-  };
-
-  const RecognitionCtor = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
-  if (!RecognitionCtor) {
-    voiceError.value = 'Голосовой ввод не поддерживается в этом браузере.';
-    return;
-  }
-
-  voiceError.value = '';
-  voiceSessionBaseText.value = messageDraft.value.trim();
-  voiceCommittedText.value = '';
-  voiceShouldRestart.value = true;
-
-  const recognition = new RecognitionCtor();
-  recognition.lang = 'ru-RU';
-  recognition.interimResults = true;
-  recognition.continuous = true;
-  recognition.maxAlternatives = 1;
-
-  recognition.onresult = (event: unknown) => {
-    const payload = event as {
-      resultIndex?: number;
-      results?: ArrayLike<ArrayLike<{ transcript?: string }> & { isFinal?: boolean }>;
-    };
-    const eventResults = payload.results;
-    if (!eventResults) return;
-
-    const startIndex = Number.isFinite(Number(payload.resultIndex))
-      ? Math.max(0, Number(payload.resultIndex))
-      : 0;
-    let interim = '';
-    for (let i = startIndex; i < eventResults.length; i += 1) {
-      const result = eventResults[i];
-      const transcript = result?.[0]?.transcript?.trim() || '';
-      if (!transcript) continue;
-      if (result?.isFinal) {
-        voiceCommittedText.value = mergeVoiceSegments(voiceCommittedText.value, transcript, '');
-      } else {
-        interim = mergeVoiceSegments(interim, transcript, '');
-      }
-    }
-    applyVoiceDraft(interim);
-  };
-
-  recognition.onerror = () => {
-    voiceError.value = 'Не удалось распознать речь.';
-  };
-
-  recognition.onend = () => {
-    activeVoiceRecognition.value = null;
-    if (!voiceShouldRestart.value) {
-      isVoiceListening.value = false;
-      return;
-    }
-
-    stopVoiceRestartTimer();
-    voiceRestartTimer.value = setTimeout(() => {
-      if (!voiceShouldRestart.value) return;
-      startVoiceCapture();
-    }, VOICE_RESTART_DELAY_MS);
-  };
-
-  try {
-    recognition.start();
-    activeVoiceRecognition.value = recognition;
-    isVoiceListening.value = true;
-  } catch {
-    voiceShouldRestart.value = false;
-    isVoiceListening.value = false;
-    voiceError.value = 'Не удалось запустить голосовой ввод.';
-  }
+async function onVoiceConfirm() {
+  if (voiceInput.state.value !== 'recording') return;
+  await voiceInput.finishRecording();
 }
 
 function scrollToBottom() {
@@ -312,7 +191,8 @@ async function onSubmit() {
     .map((item) => ({ role: item.role, text: item.text }));
   historyPayload.push({ role: 'user', text: historyText });
 
-  stopVoiceCapture();
+  voiceInput.cancelRecording();
+  voiceInput.markTextConsumed();
   messageDraft.value = '';
   pendingUploads.value = [];
   isSubmitting.value = true;
@@ -353,6 +233,7 @@ async function onSubmit() {
 }
 
 function onComposerKeydown(event: KeyboardEvent) {
+  if (voiceInput.state.value === 'recording' || voiceInput.state.value === 'transcribing') return;
   if (event.key !== 'Enter') return;
   if (event.shiftKey) return;
   event.preventDefault();
@@ -361,7 +242,7 @@ function onComposerKeydown(event: KeyboardEvent) {
 
 function closeModal() {
   closeToolsMenu();
-  stopVoiceCapture();
+  voiceInput.cancelRecording();
   pendingUploads.value = [];
   isSubmitting.value = false;
   emit('close');
@@ -392,10 +273,10 @@ watch(
     closeToolsMenu();
     pendingUploads.value = [];
     messageDraft.value = '';
-    voiceError.value = '';
+    voiceInput.markTextConsumed();
+    voiceInput.cancelRecording();
     await nextTick();
     messageInputRef.value?.focus();
-    startVoiceCapture();
   },
   { immediate: true },
 );
@@ -408,7 +289,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  stopVoiceCapture();
+  voiceInput.cancelRecording();
 });
 </script>
 
@@ -423,7 +304,7 @@ onBeforeUnmount(() => {
   >
     <section
       class="quick-voice-modal"
-      :class="{ dictating: isVoiceListening }"
+      :class="{ dictating: voiceState === 'recording' || voiceState === 'transcribing' }"
       @pointerdown.stop
       @touchstart.stop
       @click.stop
@@ -454,7 +335,7 @@ onBeforeUnmount(() => {
           class="entity-info-chat-input quick-voice-input"
           rows="10"
           placeholder="Скажите или напишите сообщение"
-          :disabled="isAiRequestInFlight"
+          :disabled="isAiRequestInFlight || voiceState === 'transcribing'"
           @keydown="onComposerKeydown"
         />
       </div>
@@ -468,7 +349,7 @@ onBeforeUnmount(() => {
         </span>
       </div>
 
-      <p v-if="voiceError" class="quick-voice-error">{{ voiceError }}</p>
+      <p v-if="voiceInput.errorMessage" class="quick-voice-error">{{ voiceInput.errorMessage }}</p>
 
       <footer class="quick-voice-actions">
         <div class="quick-voice-actions-left">
@@ -510,31 +391,57 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="quick-voice-btn mic"
-          :class="{ active: isVoiceListening }"
-          :title="isVoiceListening ? 'Остановить запись' : 'Включить микрофон'"
-          :aria-label="isVoiceListening ? 'Остановить запись' : 'Включить микрофон'"
-          @click="isVoiceListening ? stopVoiceCapture() : startVoiceCapture()"
+          :class="{ active: voiceState === 'recording' }"
+          title="Голосовой ввод"
+          :aria-label="'Голосовой ввод'"
+          :disabled="
+            isAiRequestInFlight ||
+            voiceState === 'recording' ||
+            voiceState === 'transcribing' ||
+            !voiceInput.isSupported
+          "
+          @click="onVoiceToggle"
         >
-          <svg v-if="!isVoiceListening" viewBox="0 0 24 24" aria-hidden="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 4a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3Z" />
             <path d="M19 11a7 7 0 0 1-14 0" />
             <path d="M12 18v3" />
             <path d="M8 21h8" />
           </svg>
-          <svg v-else viewBox="0 0 24 24" aria-hidden="true">
-            <rect x="7" y="7" width="10" height="10" rx="2" />
-          </svg>
         </button>
+        <div
+          v-if="voiceState === 'recording' || voiceState === 'transcribing'"
+          class="quick-voice-state"
+        >
+          <div v-if="voiceState === 'recording'" class="quick-voice-wave">
+            <span
+              v-for="(bar, index) in voiceInput.waveformBars"
+              :key="`quick-voice-bar-${index}`"
+              :style="{ height: `${bar}px` }"
+            />
+          </div>
+          <div v-else class="quick-voice-transcribing">
+            <span class="quick-voice-spinner" />
+            Расшифровываю...
+          </div>
+        </div>
         <button
           type="button"
           class="quick-voice-btn send"
-          title="Отправить"
-          aria-label="Отправить"
-          :disabled="isAiRequestInFlight || (!messageDraft.trim() && !pendingUploads.length)"
-          @click="onSubmit"
+          :title="voiceState === 'recording' ? 'Завершить запись' : 'Отправить'"
+          :aria-label="voiceState === 'recording' ? 'Завершить запись' : 'Отправить'"
+          :disabled="
+            isAiRequestInFlight ||
+            voiceState === 'transcribing' ||
+            (voiceState !== 'recording' && !messageDraft.trim() && !pendingUploads.length)
+          "
+          @click="voiceState === 'recording' ? void onVoiceConfirm() : void onSubmit()"
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
+          <svg v-if="voiceState !== 'recording'" class="quick-voice-send-icon" viewBox="0 0 24 24" aria-hidden="true">
             <path d="m3 11 17-8-4 18-5-6-8-4Z" />
+          </svg>
+          <svg v-else class="quick-voice-check-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 6 9 17l-5-5" />
           </svg>
         </button>
       </footer>
@@ -713,7 +620,7 @@ onBeforeUnmount(() => {
 
 .quick-voice-actions {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: minmax(0, 1fr) auto minmax(120px, 1fr) auto;
   align-items: center;
   gap: 8px;
   position: relative;
@@ -908,15 +815,62 @@ onBeforeUnmount(() => {
   color: #ffffff;
 }
 
-.quick-voice-btn.send svg {
+.quick-voice-send-icon {
   fill: currentColor;
   stroke: none;
+}
+
+.quick-voice-check-icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .quick-voice-btn:disabled {
   opacity: 0.5;
   cursor: wait;
   transform: none;
+}
+
+.quick-voice-state {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.quick-voice-wave {
+  height: 24px;
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.quick-voice-wave span {
+  width: 4px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #1f6aff 0%, #1058ff 100%);
+  transition: height 0.12s ease;
+}
+
+.quick-voice-transcribing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.quick-voice-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid rgba(16, 88, 255, 0.2);
+  border-top-color: #1058ff;
+  animation: quick-voice-spinner 0.7s linear infinite;
 }
 
 @keyframes quick-voice-record-pulse {
@@ -931,6 +885,15 @@ onBeforeUnmount(() => {
   100% {
     opacity: 0;
     transform: scale(1.15);
+  }
+}
+
+@keyframes quick-voice-spinner {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
   }
 }
 </style>

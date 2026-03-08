@@ -9,6 +9,7 @@ import EntityInfoModal from '../components/entity/EntityInfoModal.vue';
 import QuickEntityVoiceModal from '../components/entity/QuickEntityVoiceModal.vue';
 import AppIcon from '../components/ui/AppIcon.vue';
 import ProfileProgressRing from '../components/ui/ProfileProgressRing.vue';
+import { useUnifiedVoiceInput } from '../composables/useUnifiedVoiceInput';
 import { useEntitiesStore } from '../stores/entities';
 import { useAuthStore } from '../stores/auth';
 import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../services/entityAi';
@@ -533,7 +534,6 @@ const quickVoiceEntityId = ref<string | null>(null);
 const entityInfoDocInputRef = ref<HTMLInputElement | null>(null);
 const entityInfoChatInputRef = ref<HTMLTextAreaElement | null>(null);
 const entityInfoChatFeedRef = ref<HTMLElement | null>(null);
-const isVoiceListening = ref(false);
 const localEntityInfoAiRequestInFlight = ref(false);
 const isEntityInfoAiRequestInFlight = computed(() => {
   const entityId = entityInfoModal.value?.entityId;
@@ -548,9 +548,6 @@ const isEntityInfoAiRequestInFlight = computed(() => {
 });
 const pendingComposerHeightReset = ref(false);
 const infoSaveTimer = ref<ReturnType<typeof setTimeout> | null>(null);
-const activeVoiceRecognition = ref<{
-  stop: () => void;
-} | null>(null);
 const viewportSyncTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const nodeSearchOpen = ref(false);
 const nodeSearchQuery = ref('');
@@ -571,6 +568,19 @@ const lastCanvasTouchTap = ref<{
   clientY: number;
 } | null>(null);
 const suppressCanvasDoubleClickUntil = ref(0);
+
+const legacyVoiceInput = useUnifiedVoiceInput({
+  language: 'ru',
+  onTextReady: (transcript) => {
+    const draft = entityInfoModal.value;
+    if (!draft) return;
+    const mergedText = legacyVoiceInput.mergeWithCurrentDraft(draft.textInput, transcript);
+    draft.voiceInput = mergedText;
+    draft.textInput = mergedText;
+    autoResizeChatInput();
+    scheduleEntityInfoSave();
+  },
+});
 
 const routeProjectId = computed(() => {
   const id = route.params.id;
@@ -1997,11 +2007,7 @@ function persistEntityInfoDraft(entityId: string) {
 }
 
 function stopVoiceCapture() {
-  isVoiceListening.value = false;
-  if (activeVoiceRecognition.value) {
-    activeVoiceRecognition.value.stop();
-    activeVoiceRecognition.value = null;
-  }
+  legacyVoiceInput.cancelRecording();
 }
 
 function openEntityInfoModal(entityId: string) {
@@ -2218,6 +2224,7 @@ async function onInfoSendInput() {
   const draft = entityInfoModal.value;
   if (!draft) return;
   if (isEntityInfoAiRequestInFlight.value) return;
+  if (legacyVoiceInput.state.value === 'recording' || legacyVoiceInput.state.value === 'transcribing') return;
 
   const message = normalizeChatText(draft.textInput);
   const attachments = [...draft.pendingUploads];
@@ -2232,6 +2239,7 @@ async function onInfoSendInput() {
   );
 
   draft.textInput = '';
+  legacyVoiceInput.markTextConsumed();
   resetEntityInfoChatInputSize();
   void nextTick(() => {
     scrollEntityChatToBottom('auto');
@@ -2304,6 +2312,7 @@ async function onInfoSendInput() {
 }
 
 function onChatComposerKeydown(event: KeyboardEvent) {
+  if (legacyVoiceInput.state.value === 'recording' || legacyVoiceInput.state.value === 'transcribing') return;
   if (event.key !== 'Enter') return;
   if (event.shiftKey) return;
 
@@ -2361,77 +2370,14 @@ function removePendingUpload(attachmentId: string) {
   scheduleEntityInfoSave();
 }
 
-function startVoiceCapture() {
-  if (typeof window === 'undefined') return;
+async function startVoiceCapture() {
   if (!entityInfoModal.value) return;
-
-  const speechWindow = window as Window & {
-    SpeechRecognition?: new () => {
-      lang: string;
-      continuous: boolean;
-      interimResults: boolean;
-      onresult: ((event: unknown) => void) | null;
-      onend: (() => void) | null;
-      start: () => void;
-      stop: () => void;
-    };
-    webkitSpeechRecognition?: new () => {
-      lang: string;
-      continuous: boolean;
-      interimResults: boolean;
-      onresult: ((event: unknown) => void) | null;
-      onend: (() => void) | null;
-      start: () => void;
-      stop: () => void;
-    };
-  };
-  const RecognitionCtor = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
-  if (!RecognitionCtor) {
-    return;
-  }
-
-  stopVoiceCapture();
-
-  const recognition = new RecognitionCtor();
-  recognition.lang = 'ru-RU';
-  recognition.continuous = true;
-  recognition.interimResults = true;
-
-  recognition.onresult = (event: unknown) => {
-    const draft = entityInfoModal.value;
-    if (!draft) return;
-
-    const eventResults = (event as { results?: ArrayLike<ArrayLike<{ transcript?: string }>> }).results;
-    const transcript = Array.from(eventResults || [])
-      .map((result) => result?.[0]?.transcript || '')
-      .join(' ')
-      .trim();
-
-    draft.voiceInput = transcript;
-    draft.textInput = transcript;
-    autoResizeChatInput();
-    scheduleEntityInfoSave();
-  };
-
-  recognition.onend = () => {
-    isVoiceListening.value = false;
-    activeVoiceRecognition.value = null;
-  };
-
-  recognition.start();
-  isVoiceListening.value = true;
-  activeVoiceRecognition.value = {
-    stop: () => recognition.stop(),
-  };
+  if (legacyVoiceInput.state.value === 'recording' || legacyVoiceInput.state.value === 'transcribing') return;
+  await legacyVoiceInput.startRecording();
 }
 
-function onVoiceToggle() {
-  if (isVoiceListening.value) {
-    stopVoiceCapture();
-    return;
-  }
-
-  startVoiceCapture();
+async function onVoiceToggle() {
+  await startVoiceCapture();
 }
 
 function normalizeCanvasData(canvasData: ProjectCanvasData | undefined): ProjectCanvasData {
