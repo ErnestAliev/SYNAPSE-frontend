@@ -3881,7 +3881,7 @@ function onViewportClick(event: MouseEvent) {
   const target = event.target as HTMLElement | null;
   if (
     target?.closest(
-      '.canvas-library, .canvas-node, .canvas-controls, .menu-backdrop, .canvas-node-search',
+      '.canvas-library, .canvas-node, .canvas-controls, .menu-backdrop, .canvas-node-search, .canvas-monitor',
     )
   ) {
     return;
@@ -5125,7 +5125,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
         </div>
       </aside>
 
-      <div class="canvas-monitor" @pointerdown.stop @wheel.stop>
+      <div class="canvas-monitor" @pointerdown.stop @click.stop @dblclick.stop @wheel.stop>
         <button
           type="button"
           class="canvas-monitor-toggle"
