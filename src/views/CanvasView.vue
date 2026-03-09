@@ -212,6 +212,12 @@ interface AgentChatPreviewResponse {
   preview: Record<string, unknown>;
 }
 
+interface AgentChatMonitorReplyResponse {
+  reply: string;
+  model?: string;
+  debug?: Record<string, unknown>;
+}
+
 interface AgentChatPreviewEntitySummary {
   id: string;
   type: string;
@@ -573,6 +579,9 @@ const monitorErrorMessage = ref('');
 const monitorNotice = ref('');
 const monitorMessageDraft = ref('');
 const monitorPayload = ref<AgentChatPreviewResponse | null>(null);
+const monitorReplyPayload = ref<AgentChatMonitorReplyResponse | null>(null);
+const isMonitorReasoningLoading = ref(false);
+const monitorReasoningErrorMessage = ref('');
 const monitorRefreshTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const monitorNoticeTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const localEntityInfoAiRequestInFlight = ref(false);
@@ -1228,6 +1237,114 @@ const monitorPreviewJson = computed(() => {
     return '';
   }
 });
+const monitorReplyText = computed(() => {
+  const reply = monitorReplyPayload.value?.reply;
+  return typeof reply === 'string' ? reply.trim() : '';
+});
+const monitorReplyModel = computed(() => {
+  const model = monitorReplyPayload.value?.model;
+  return typeof model === 'string' ? model.trim() : '';
+});
+const monitorReplyDebug = computed(() => toProfile(monitorReplyPayload.value?.debug));
+const monitorDeepReasoning = computed(() => toProfile(monitorReplyDebug.value.deepReasoning));
+const monitorReasoningState = computed(() => toProfile(monitorDeepReasoning.value.reasoningState));
+const monitorReasoningQualityGate = computed(() => toProfile(monitorDeepReasoning.value.qualityGate));
+const monitorReasoningRelevantEntities = computed(() => {
+  const source = Array.isArray(monitorReasoningState.value.relevant_entities)
+    ? monitorReasoningState.value.relevant_entities
+    : [];
+  return source
+    .map((item) => {
+      const entity = toProfile(item);
+      return {
+        id: typeof entity.id === 'string' ? entity.id : '',
+        type: typeof entity.type === 'string' ? entity.type : '',
+        name: typeof entity.name === 'string' ? entity.name : '',
+        whyRelevant: typeof entity.why_relevant === 'string' ? entity.why_relevant : '',
+      };
+    })
+    .filter((item) => item.id || item.name || item.type || item.whyRelevant);
+});
+const monitorReasoningConfirmedFacts = computed(() =>
+  normalizeMonitorStringList(monitorReasoningState.value.confirmed_facts, 20),
+);
+const monitorReasoningUncertainFacts = computed(() =>
+  normalizeMonitorStringList(monitorReasoningState.value.uncertain_facts, 20),
+);
+const monitorReasoningConflicts = computed(() =>
+  normalizeMonitorStringList(monitorReasoningState.value.conflicts, 20),
+);
+const monitorReasoningConstraints = computed(() =>
+  normalizeMonitorStringList(monitorReasoningState.value.constraints, 12),
+);
+const monitorReasoningFastLevers = computed(() =>
+  normalizeMonitorStringList(monitorReasoningState.value.fast_levers, 12),
+);
+const monitorReasoningExcludedPaths = computed(() =>
+  normalizeMonitorStringList(monitorReasoningState.value.excluded_paths, 12),
+);
+const monitorReasoningConclusion = computed(() => {
+  const value = monitorReasoningState.value.core_conclusion || monitorReasoningState.value.conclusion;
+  return typeof value === 'string' ? value.trim() : '';
+});
+const monitorReasoningInsufficiencyReason = computed(() => {
+  const value = monitorReasoningState.value.why_not_enough || monitorReasoningState.value.insufficiency_reason;
+  return typeof value === 'string' ? value.trim() : '';
+});
+const monitorReasoningNextGrowthContour = computed(() => {
+  const value = monitorReasoningState.value.next_growth_contour;
+  return typeof value === 'string' ? value.trim() : '';
+});
+const monitorReasoningMissingBlocks = computed(() =>
+  normalizeMonitorStringList(monitorReasoningQualityGate.value.missingMandatoryBlocks, 16),
+);
+const monitorReasoningAttempts = computed(() => {
+  const source = Array.isArray(monitorDeepReasoning.value.attempts) ? monitorDeepReasoning.value.attempts : [];
+  return source.map((item) => {
+    const attempt = toProfile(item);
+    const gate = toProfile(attempt.qualityGate);
+    const nextQuestionQuality = toProfile(gate.nextQuestionQuality);
+    return {
+      attemptIndex:
+        typeof attempt.attemptIndex === 'number' && Number.isFinite(attempt.attemptIndex)
+          ? Math.max(1, Math.floor(attempt.attemptIndex))
+          : 1,
+      score:
+        typeof gate.score === 'number' && Number.isFinite(gate.score)
+          ? Math.floor(gate.score)
+          : 0,
+      passed: gate.passed === true,
+      parseError: typeof attempt.parseError === 'string' ? attempt.parseError : '',
+      model: typeof attempt.model === 'string' ? attempt.model : '',
+      nextQuestionReason:
+        typeof nextQuestionQuality.reason === 'string' ? nextQuestionQuality.reason : '',
+    };
+  });
+});
+const monitorReasoningSelectedAttempt = computed(() => {
+  const raw = monitorDeepReasoning.value.selectedAttempt;
+  return typeof raw === 'number' && Number.isFinite(raw) ? Math.max(1, Math.floor(raw)) : null;
+});
+const monitorReasoningNextBestQuestion = computed(() => {
+  const raw = toProfile(monitorDeepReasoning.value.nextBestQuestion).value;
+  if (typeof raw === 'string') return raw.trim();
+  const fallback = monitorReasoningState.value.next_best_question;
+  return typeof fallback === 'string' ? fallback.trim() : '';
+});
+const monitorReasoningAnswerPattern = computed(() => {
+  const pattern = monitorDeepReasoning.value.answerPattern;
+  return typeof pattern === 'string' ? pattern.trim() : '';
+});
+const monitorExportJson = computed(() => {
+  if (monitorReplyPayload.value) {
+    try {
+      return JSON.stringify(monitorReplyPayload.value, null, 2);
+    } catch {
+      return '';
+    }
+  }
+  return monitorPreviewJson.value;
+});
 
 function clearMonitorRefreshTimer() {
   if (!monitorRefreshTimer.value) return;
@@ -1259,10 +1376,46 @@ function buildMonitorScopePayload() {
   };
 }
 
+function buildMonitorReplyHistoryPayload() {
+  return monitorPreviewHistory.value.slice(-12).map((item) => ({
+    role: item.role,
+    text: item.text,
+  }));
+}
+
+function buildMonitorReplyAttachmentsPayload() {
+  const source = Array.isArray(monitorPreviewInput.value.attachments) ? monitorPreviewInput.value.attachments : [];
+  return source
+    .map((item) => {
+      const attachment = toProfile(item);
+      const name = typeof attachment.name === 'string' ? attachment.name : '';
+      if (!name.trim()) return null;
+      return {
+        name,
+        mime: typeof attachment.mime === 'string' ? attachment.mime : '',
+        size:
+          typeof attachment.size === 'number' && Number.isFinite(attachment.size)
+            ? Math.max(0, Math.floor(attachment.size))
+            : 0,
+        text: typeof attachment.text === 'string' ? attachment.text : '',
+      };
+    })
+    .filter((item): item is { name: string; mime: string; size: number; text: string } => Boolean(item))
+    .slice(0, 6);
+}
+
+function clearMonitorReasoningState({ keepError = false } = {}) {
+  monitorReplyPayload.value = null;
+  if (!keepError) {
+    monitorReasoningErrorMessage.value = '';
+  }
+}
+
 async function fetchMonitorSnapshot() {
   const scope = buildMonitorScopePayload();
   if (!scope) {
     monitorErrorMessage.value = 'Проект не определен.';
+    clearMonitorReasoningState();
     return;
   }
 
@@ -1292,6 +1445,52 @@ async function fetchMonitorSnapshot() {
   }
 }
 
+async function runMonitorReasoningTrace() {
+  const scope = buildMonitorScopePayload();
+  if (!scope) {
+    monitorReasoningErrorMessage.value = 'Проект не определен.';
+    clearMonitorReasoningState({ keepError: true });
+    return;
+  }
+
+  const message = monitorMessageDraft.value.trim();
+  if (!message) {
+    monitorReasoningErrorMessage.value = 'Введите вопрос, чтобы получить ответ и reasoning trace.';
+    clearMonitorReasoningState({ keepError: true });
+    return;
+  }
+
+  isMonitorReasoningLoading.value = true;
+  monitorReasoningErrorMessage.value = '';
+  try {
+    const { data } = await apiClient.post<AgentChatMonitorReplyResponse>(
+      '/ai/agent-chat',
+      {
+        scope,
+        message,
+        history: buildMonitorReplyHistoryPayload(),
+        attachments: buildMonitorReplyAttachmentsPayload(),
+        debug: true,
+        monitorMode: true,
+      },
+      {
+        timeout: 130_000,
+      },
+    );
+    monitorReplyPayload.value = data;
+    setMonitorNotice('Ответ и reasoning trace обновлены.');
+  } catch (error: unknown) {
+    const messageText =
+      error instanceof Error && typeof error.message === 'string'
+        ? error.message
+        : 'Не удалось получить ответ и reasoning trace.';
+    monitorReasoningErrorMessage.value = messageText;
+    clearMonitorReasoningState({ keepError: true });
+  } finally {
+    isMonitorReasoningLoading.value = false;
+  }
+}
+
 function scheduleMonitorRefresh(delayMs = 480) {
   clearMonitorRefreshTimer();
   monitorRefreshTimer.value = setTimeout(() => {
@@ -1308,6 +1507,7 @@ function toggleMonitorPanel() {
   } else {
     monitorErrorMessage.value = '';
     monitorNotice.value = '';
+    clearMonitorReasoningState();
     clearMonitorRefreshTimer();
   }
 }
@@ -1322,6 +1522,7 @@ async function restartMonitorBuild() {
   clearMonitorRefreshTimer();
   monitorPayload.value = null;
   monitorErrorMessage.value = '';
+  clearMonitorReasoningState();
   isMonitorLoading.value = true;
   try {
     // 1) Force legacy scope-key migration into canonical project-canvas key.
@@ -1362,7 +1563,7 @@ async function restartMonitorBuild() {
 }
 
 async function copyMonitorJsonToClipboard() {
-  const payload = monitorPreviewJson.value;
+  const payload = monitorExportJson.value;
   if (!payload || typeof window === 'undefined' || !navigator?.clipboard?.writeText) {
     return;
   }
@@ -1375,7 +1576,7 @@ async function copyMonitorJsonToClipboard() {
 }
 
 function downloadMonitorJson() {
-  const payload = monitorPreviewJson.value;
+  const payload = monitorExportJson.value;
   if (!payload || typeof window === 'undefined') return;
   const fileName = `llm-context-monitor-${Date.now()}.json`;
   const blob = new Blob([payload], { type: 'application/json;charset=utf-8' });
@@ -1398,6 +1599,14 @@ function formatMonitorBytes(value: unknown) {
   if (kb < 1024) return `${kb.toFixed(1)} KB`;
   const mb = kb / 1024;
   return `${mb.toFixed(2)} MB`;
+}
+
+function normalizeMonitorStringList(value: unknown, limit = 16) {
+  if (!Array.isArray(value)) return [] as string[];
+  return value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter((item) => item.length > 0)
+    .slice(0, Math.max(1, limit));
 }
 
 function stringifyMonitorValue(value: unknown) {
@@ -4803,6 +5012,7 @@ watch(
 watch(
   () => monitorMessageDraft.value,
   () => {
+    clearMonitorReasoningState();
     if (!isMonitorPanelOpen.value) return;
     scheduleMonitorRefresh(700);
   },
@@ -5144,9 +5354,9 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
         <section v-if="isMonitorPanelOpen" class="canvas-monitor-panel">
           <header class="canvas-monitor-header">
             <div>
-              <h3 class="canvas-monitor-title">Контекст для LLM</h3>
+              <h3 class="canvas-monitor-title">Контекст и reasoning для LLM</h3>
               <p class="canvas-monitor-subtitle">
-                Полный запрос, промты, история проекта и собранный контекст.
+                Полный запрос, промты, история проекта, ответ и пошаговый reasoning trace.
               </p>
             </div>
             <button type="button" class="canvas-monitor-close" @click="toggleMonitorPanel">Закрыть</button>
@@ -5162,7 +5372,15 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
             <button
               type="button"
               class="canvas-monitor-btn"
-              :disabled="!monitorPreviewJson"
+              :disabled="isMonitorLoading || isMonitorReasoningLoading || !monitorMessageDraft.trim()"
+              @click="runMonitorReasoningTrace"
+            >
+              Ответ + reasoning
+            </button>
+            <button
+              type="button"
+              class="canvas-monitor-btn"
+              :disabled="!monitorExportJson"
               @click="copyMonitorJsonToClipboard"
             >
               Копировать
@@ -5170,7 +5388,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
             <button
               type="button"
               class="canvas-monitor-btn primary"
-              :disabled="!monitorPreviewJson"
+              :disabled="!monitorExportJson"
               @click="downloadMonitorJson"
             >
               Скачать JSON
@@ -5189,7 +5407,9 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           </div>
 
           <p v-if="isMonitorLoading" class="canvas-monitor-status">Собираю контекст...</p>
+          <p v-if="isMonitorReasoningLoading" class="canvas-monitor-status">Запрашиваю ответ и reasoning trace...</p>
           <p v-if="monitorErrorMessage" class="canvas-monitor-status error">{{ monitorErrorMessage }}</p>
+          <p v-if="monitorReasoningErrorMessage" class="canvas-monitor-status error">{{ monitorReasoningErrorMessage }}</p>
           <p v-else-if="monitorNotice" class="canvas-monitor-status">{{ monitorNotice }}</p>
 
           <div class="canvas-monitor-stats">
@@ -5269,6 +5489,191 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
               <article v-for="(item, idx) in monitorPreviewHistory" :key="`history-${idx}`" class="canvas-monitor-history-item">
                 <span class="canvas-monitor-history-role">{{ item.role }}</span>
                 <p>{{ item.text }}</p>
+              </article>
+            </div>
+          </section>
+
+          <section class="canvas-monitor-section">
+            <h4>Ответ модели и итог</h4>
+            <div v-if="!monitorReplyText" class="canvas-monitor-empty">
+              Ответ еще не запрошен. Введите сообщение и нажмите «Ответ + reasoning».
+            </div>
+            <template v-else>
+              <p v-if="monitorReplyModel" class="canvas-monitor-hint">Модель: {{ monitorReplyModel }}</p>
+              <pre class="canvas-monitor-json">{{ monitorReplyText }}</pre>
+              <p v-if="monitorReasoningAnswerPattern" class="canvas-monitor-hint">
+                Шаблон ответа: {{ monitorReasoningAnswerPattern }}
+              </p>
+              <p v-if="monitorReasoningNextBestQuestion" class="canvas-monitor-hint">
+                Next best question: {{ monitorReasoningNextBestQuestion }}
+              </p>
+            </template>
+          </section>
+
+          <section class="canvas-monitor-section">
+            <h4>Пошаговый reasoning trace</h4>
+            <div v-if="!Object.keys(monitorReasoningState).length" class="canvas-monitor-empty">
+              Reasoning trace отсутствует. Выполните вызов «Ответ + reasoning».
+            </div>
+            <template v-else>
+              <div class="canvas-monitor-grid-two">
+                <div class="canvas-monitor-note">
+                  <span class="canvas-monitor-note-label">Как понят вопрос (actor)</span>
+                  <p>{{ monitorReasoningState.actor || 'n/a' }}</p>
+                </div>
+                <div class="canvas-monitor-note">
+                  <span class="canvas-monitor-note-label">Как понят intent</span>
+                  <p>{{ monitorReasoningState.intent || 'n/a' }}</p>
+                </div>
+              </div>
+
+              <div class="canvas-monitor-grid-two">
+                <div class="canvas-monitor-note">
+                  <span class="canvas-monitor-note-label">Текущая точка</span>
+                  <p>{{ monitorReasoningState.current_point || 'n/a' }}</p>
+                </div>
+                <div class="canvas-monitor-note">
+                  <span class="canvas-monitor-note-label">Целевая точка</span>
+                  <p>{{ monitorReasoningState.target_point || 'n/a' }}</p>
+                </div>
+              </div>
+
+              <div class="canvas-monitor-grid-two">
+                <div class="canvas-monitor-note">
+                  <span class="canvas-monitor-note-label">Ограничения</span>
+                  <ul v-if="monitorReasoningConstraints.length" class="canvas-monitor-list">
+                    <li v-for="(item, idx) in monitorReasoningConstraints" :key="`constraint-${idx}`">{{ item }}</li>
+                  </ul>
+                  <p v-else>Не выделены</p>
+                </div>
+                <div class="canvas-monitor-note">
+                  <span class="canvas-monitor-note-label">Быстрые рычаги</span>
+                  <ul v-if="monitorReasoningFastLevers.length" class="canvas-monitor-list">
+                    <li v-for="(item, idx) in monitorReasoningFastLevers" :key="`lever-${idx}`">{{ item }}</li>
+                  </ul>
+                  <p v-else>Не выделены</p>
+                </div>
+              </div>
+
+              <div class="canvas-monitor-note">
+                <span class="canvas-monitor-note-label">Что отброшено (excluded_paths)</span>
+                <ul v-if="monitorReasoningExcludedPaths.length" class="canvas-monitor-list">
+                  <li v-for="(item, idx) in monitorReasoningExcludedPaths" :key="`excluded-${idx}`">{{ item }}</li>
+                </ul>
+                <p v-else>Отсечения не зафиксированы</p>
+              </div>
+
+              <div class="canvas-monitor-grid-two">
+                <div class="canvas-monitor-note">
+                  <span class="canvas-monitor-note-label">К какому выводу пришла модель</span>
+                  <p>{{ monitorReasoningConclusion || 'Вывод не сформулирован' }}</p>
+                </div>
+                <div class="canvas-monitor-note">
+                  <span class="canvas-monitor-note-label">Почему этого недостаточно</span>
+                  <p>{{ monitorReasoningInsufficiencyReason || 'Причина недостаточности не указана' }}</p>
+                </div>
+              </div>
+
+              <div class="canvas-monitor-note">
+                <span class="canvas-monitor-note-label">Следующий контур роста (next_growth_contour)</span>
+                <p>{{ monitorReasoningNextGrowthContour || 'Контур роста не указан' }}</p>
+              </div>
+
+              <div class="canvas-monitor-note">
+                <span class="canvas-monitor-note-label">Выбранные важные данные (relevant_entities)</span>
+                <div v-if="!monitorReasoningRelevantEntities.length" class="canvas-monitor-empty">
+                  Важные сущности не выделены.
+                </div>
+                <div v-else class="canvas-monitor-entities">
+                  <article
+                    v-for="entity in monitorReasoningRelevantEntities"
+                    :key="`${entity.id}:${entity.name}:${entity.type}`"
+                    class="canvas-monitor-entity"
+                  >
+                    <div class="canvas-monitor-entity-head">
+                      <strong>{{ entity.name || entity.id || 'Без имени' }}</strong>
+                      <span>{{ entity.type || 'n/a' }}</span>
+                    </div>
+                    <p class="canvas-monitor-entity-desc">{{ entity.whyRelevant || 'Причина не указана.' }}</p>
+                  </article>
+                </div>
+              </div>
+
+              <div class="canvas-monitor-grid-two">
+                <div class="canvas-monitor-note">
+                  <span class="canvas-monitor-note-label">Промежуточные выводы (confirmed_facts)</span>
+                  <ul v-if="monitorReasoningConfirmedFacts.length" class="canvas-monitor-list">
+                    <li v-for="(item, idx) in monitorReasoningConfirmedFacts" :key="`fact-${idx}`">{{ item }}</li>
+                  </ul>
+                  <p v-else>Не выделены</p>
+                </div>
+                <div class="canvas-monitor-note">
+                  <span class="canvas-monitor-note-label">Неопределенности / конфликты</span>
+                  <ul v-if="monitorReasoningUncertainFacts.length" class="canvas-monitor-list">
+                    <li v-for="(item, idx) in monitorReasoningUncertainFacts" :key="`uncertain-${idx}`">{{ item }}</li>
+                  </ul>
+                  <ul v-if="monitorReasoningConflicts.length" class="canvas-monitor-list">
+                    <li v-for="(item, idx) in monitorReasoningConflicts" :key="`conflict-${idx}`">{{ item }}</li>
+                  </ul>
+                  <p v-if="!monitorReasoningUncertainFacts.length && !monitorReasoningConflicts.length">
+                    Не зафиксированы
+                  </p>
+                </div>
+              </div>
+            </template>
+          </section>
+
+          <section class="canvas-monitor-section">
+            <h4>Почему получился именно такой ответ</h4>
+            <div v-if="!Object.keys(monitorReasoningQualityGate).length" class="canvas-monitor-empty">
+              Quality gate отсутствует.
+            </div>
+            <template v-else>
+              <p class="canvas-monitor-hint">
+                Passed:
+                <strong>{{ monitorReasoningQualityGate.passed === true ? 'yes' : 'no' }}</strong>
+                |
+                Score:
+                <strong>{{
+                  typeof monitorReasoningQualityGate.score === 'number' ? monitorReasoningQualityGate.score : 0
+                }}</strong>
+                |
+                Selected attempt:
+                <strong>{{ monitorReasoningSelectedAttempt || 'n/a' }}</strong>
+              </p>
+              <p v-if="monitorReasoningMissingBlocks.length" class="canvas-monitor-hint">
+                Непокрытые обязательные блоки: {{ monitorReasoningMissingBlocks.join(', ') }}
+              </p>
+              <p v-if="monitorReasoningQualityGate.factAnchored === false" class="canvas-monitor-hint">
+                Ответ ослаблен: недостаточная привязка к фактам/сущностям.
+              </p>
+              <p
+                v-if="toProfile(monitorReasoningQualityGate.nextQuestionQuality).present === true"
+                class="canvas-monitor-hint"
+              >
+                Next-question quality:
+                {{
+                  toProfile(monitorReasoningQualityGate.nextQuestionQuality).accepted === true
+                    ? 'accepted'
+                    : `rejected (${toProfile(monitorReasoningQualityGate.nextQuestionQuality).reason || 'unknown'})`
+                }}
+              </p>
+            </template>
+            <div v-if="monitorReasoningAttempts.length" class="canvas-monitor-attempts">
+              <article
+                v-for="attempt in monitorReasoningAttempts"
+                :key="`attempt-${attempt.attemptIndex}`"
+                class="canvas-monitor-attempt"
+              >
+                <div class="canvas-monitor-attempt-head">
+                  <strong>Pass {{ attempt.attemptIndex }}</strong>
+                  <span>{{ attempt.model || 'unknown' }}</span>
+                </div>
+                <p>
+                  score={{ attempt.score }} | passed={{ attempt.passed ? 'yes' : 'no' }}
+                  <template v-if="attempt.parseError"> | parse={{ attempt.parseError }}</template>
+                  <template v-if="attempt.nextQuestionReason"> | nextQ={{ attempt.nextQuestionReason }}</template>
+                </p>
               </article>
             </div>
           </section>
@@ -6193,6 +6598,57 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   color: #0f172a;
 }
 
+.canvas-monitor-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #334155;
+}
+
+.canvas-monitor-grid-two {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.canvas-monitor-note {
+  border: 1px solid #dbe4f3;
+  border-radius: 9px;
+  background: #f8fafc;
+  padding: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.canvas-monitor-note-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.canvas-monitor-note p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #334155;
+  white-space: pre-wrap;
+}
+
+.canvas-monitor-list {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.canvas-monitor-list li {
+  font-size: 11px;
+  line-height: 1.35;
+  color: #334155;
+}
+
 .canvas-monitor-empty {
   border-radius: 8px;
   border: 1px dashed #dbe4f3;
@@ -6336,6 +6792,46 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 
 .canvas-monitor-json {
   max-height: 360px;
+}
+
+.canvas-monitor-attempts {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.canvas-monitor-attempt {
+  border: 1px solid #dbe4f3;
+  border-radius: 9px;
+  background: #f8fafc;
+  padding: 7px;
+}
+
+.canvas-monitor-attempt-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.canvas-monitor-attempt-head strong {
+  font-size: 11px;
+  font-weight: 800;
+  color: #1e293b;
+}
+
+.canvas-monitor-attempt-head span {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.canvas-monitor-attempt p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #334155;
+  white-space: pre-wrap;
 }
 
 .library-rail {
@@ -7941,6 +8437,10 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   }
 
   .canvas-monitor-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .canvas-monitor-grid-two {
     grid-template-columns: 1fr;
   }
 
