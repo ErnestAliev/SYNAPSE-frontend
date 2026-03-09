@@ -1474,7 +1474,7 @@ async function runMonitorReasoningTrace() {
         monitorMode: true,
       },
       {
-        timeout: 130_000,
+        timeout: 180_000,
       },
     );
     monitorReplyPayload.value = data;
