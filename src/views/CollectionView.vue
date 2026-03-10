@@ -2753,6 +2753,7 @@ watch(entityInfoEntityId, (id) => {
     <QuickEntityVoiceModal
       v-if="quickVoiceEntityId"
       :entity-id="quickVoiceEntityId"
+      auto-start
       @close="quickVoiceEntityId = null"
     />
 

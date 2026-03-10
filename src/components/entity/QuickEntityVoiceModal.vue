@@ -23,6 +23,7 @@ interface ChatMessage {
 
 const props = defineProps<{
   entityId: string;
+  autoStart?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -54,6 +55,7 @@ const voiceInput = useUnifiedVoiceInput({
   },
 });
 const voiceState = computed(() => voiceInput.state.value);
+const hasTriedAutoStart = ref(false);
 
 function toRecord(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {} as Record<string, unknown>;
@@ -117,6 +119,17 @@ async function onVoiceToggle() {
 async function onVoiceConfirm() {
   if (voiceInput.state.value !== 'recording') return;
   await voiceInput.finishRecording();
+}
+
+async function tryAutoStartRecording() {
+  if (!props.autoStart) return;
+  if (hasTriedAutoStart.value) return;
+  if (isAiRequestInFlight.value) return;
+  if (!voiceInput.isSupported.value) return;
+  if (voiceInput.state.value === 'recording' || voiceInput.state.value === 'transcribing') return;
+
+  hasTriedAutoStart.value = true;
+  await voiceInput.startRecording();
 }
 
 function scrollToBottom() {
@@ -274,6 +287,7 @@ watch(
 watch(
   () => props.entityId,
   async () => {
+    hasTriedAutoStart.value = false;
     closeToolsMenu();
     pendingUploads.value = [];
     messageDraft.value = '';
@@ -281,6 +295,7 @@ watch(
     voiceInput.cancelRecording();
     await nextTick();
     messageInputRef.value?.focus();
+    void tryAutoStartRecording();
   },
   { immediate: true },
 );

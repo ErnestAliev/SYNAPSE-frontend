@@ -6200,6 +6200,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
     <QuickEntityVoiceModal
       v-if="quickVoiceEntityId"
       :entity-id="quickVoiceEntityId"
+      auto-start
       @close="quickVoiceEntityId = null"
     />
   </section>
