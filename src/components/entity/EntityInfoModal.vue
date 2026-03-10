@@ -299,6 +299,7 @@ const draft = ref<{
 } | null>(null);
 
 const docInputRef = ref<HTMLInputElement | null>(null);
+const nameInputRef = ref<HTMLInputElement | null>(null);
 const chatInputRef = ref<HTMLTextAreaElement | null>(null);
 const descriptionTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const chatFeedRef = ref<HTMLElement | null>(null);
@@ -2843,6 +2844,7 @@ watch(
       entity._id === draft.value.entityId
     ) {
       const remoteMeta = toProfile(entity.ai_metadata);
+      const remoteName = typeof entity.name === 'string' ? entity.name : '';
       const remoteRawHistoryLen = Array.isArray(remoteMeta.chat_history) ? remoteMeta.chat_history.length : 0;
       const localHistoryLen = draft.value.chatHistory.length;
       const remoteHistory = normalizeChatHistory(remoteMeta.chat_history);
@@ -2888,6 +2890,17 @@ watch(
         localAiRequestInFlight.value = false;
         clearAwaitingAiCompletion(entity._id);
         entitiesStore.setEntityAiPending(entity._id, false);
+      }
+
+      const isNameFocused =
+        typeof document !== 'undefined' && nameInputRef.value
+          ? document.activeElement === nameInputRef.value
+          : false;
+      if (!isNameFocused) {
+        const nextName = remoteName.trim();
+        if (nextName && nextName !== draft.value.name.trim()) {
+          draft.value.name = remoteName;
+        }
       }
 
       if (!isAiRequestInFlight.value) {
@@ -3033,6 +3046,7 @@ onBeforeUnmount(() => {
         <div class="entity-info-title">
           <div class="entity-info-title-row">
             <input
+              ref="nameInputRef"
               v-model="draft.name"
               type="text"
               maxlength="64"
