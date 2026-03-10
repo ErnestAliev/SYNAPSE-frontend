@@ -265,6 +265,11 @@ function closeModal() {
   emit('close');
 }
 
+function onOverlayPointerUp(event: PointerEvent) {
+  if (event.target !== event.currentTarget) return;
+  closeModal();
+}
+
 watch(
   entity,
   (nextEntity) => {
@@ -316,21 +321,20 @@ onBeforeUnmount(() => {
   <div
     class="quick-voice-overlay"
     @pointerdown.stop
-    @touchstart.stop.prevent
-    @touchend.stop.prevent
-    @click.stop.prevent
-    @click.self.prevent="closeModal"
+    @pointerup.self.stop.prevent="onOverlayPointerUp"
   >
     <section
       class="quick-voice-modal"
       :class="{ dictating: voiceState === 'recording' || voiceState === 'transcribing' }"
       @pointerdown.stop
-      @touchstart.stop
+      @pointerup.stop
       @click.stop
     >
       <header class="quick-voice-header">
         <h3 class="quick-voice-title">{{ entityName }}</h3>
-        <button type="button" class="quick-voice-close" @click="closeModal">×</button>
+        <button type="button" class="quick-voice-close quick-voice-tap-target" @pointerup.stop.prevent="closeModal">
+          ×
+        </button>
       </header>
 
       <section ref="feedRef" class="quick-voice-feed">
@@ -362,7 +366,11 @@ onBeforeUnmount(() => {
       <div v-if="pendingUploads.length" class="quick-voice-pending-uploads">
         <span v-for="attachment in pendingUploads" :key="attachment.id" class="quick-voice-upload-chip">
           {{ attachment.name }}
-          <button type="button" class="quick-voice-upload-chip-remove" @click="removePendingUpload(attachment.id)">
+          <button
+            type="button"
+            class="quick-voice-upload-chip-remove quick-voice-tap-target"
+            @pointerup.stop.prevent="removePendingUpload(attachment.id)"
+          >
             ×
           </button>
         </span>
@@ -374,10 +382,10 @@ onBeforeUnmount(() => {
         <div class="quick-voice-actions-left">
           <button
             type="button"
-            class="quick-voice-menu-btn"
+            class="quick-voice-menu-btn quick-voice-tap-target"
             :class="{ open: isToolsMenuOpen }"
             :disabled="isAiRequestInFlight"
-            @click="toggleToolsMenu"
+            @pointerup.stop.prevent="toggleToolsMenu"
           >
             <span>Меню</span>
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -393,14 +401,14 @@ onBeforeUnmount(() => {
           />
 
           <template v-if="isToolsMenuOpen">
-            <div class="quick-voice-menu-backdrop" @click="closeToolsMenu" />
+            <div class="quick-voice-menu-backdrop" @pointerup.stop.prevent="closeToolsMenu" />
             <div class="quick-voice-menu-dropdown" @pointerdown.stop @click.stop>
               <p class="quick-voice-menu-label">Действия</p>
               <button
                 type="button"
-                class="quick-voice-menu-item"
+                class="quick-voice-menu-item quick-voice-tap-target"
                 :disabled="isAiRequestInFlight"
-                @click="onMenuImportDocuments"
+                @pointerup.stop.prevent="onMenuImportDocuments"
               >
                 Импорт документов
               </button>
@@ -409,7 +417,7 @@ onBeforeUnmount(() => {
         </div>
         <button
           type="button"
-          class="quick-voice-btn mic"
+          class="quick-voice-btn quick-voice-tap-target mic"
           :class="{ active: voiceState === 'recording' }"
           :title="voiceState === 'recording' ? 'Остановить запись' : 'Голосовой ввод'"
           :aria-label="voiceState === 'recording' ? 'Остановить запись' : 'Голосовой ввод'"
@@ -418,7 +426,7 @@ onBeforeUnmount(() => {
             voiceState === 'transcribing' ||
             !voiceInput.isSupported
           "
-          @click="onVoiceToggle"
+          @pointerup.stop.prevent="void onVoiceToggle()"
         >
           <svg v-if="voiceState !== 'recording'" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 4a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3Z" />
@@ -451,7 +459,7 @@ onBeforeUnmount(() => {
         </div>
         <button
           type="button"
-          class="quick-voice-btn send"
+          class="quick-voice-btn quick-voice-tap-target send"
           :title="voiceState === 'recording' ? 'Завершить запись' : 'Отправить'"
           :aria-label="voiceState === 'recording' ? 'Завершить запись' : 'Отправить'"
           :disabled="
@@ -459,7 +467,7 @@ onBeforeUnmount(() => {
             voiceState === 'transcribing' ||
             (voiceState !== 'recording' && !messageDraft.trim() && !pendingUploads.length)
           "
-          @click="voiceState === 'recording' ? void onVoiceConfirm() : void onSubmit()"
+          @pointerup.stop.prevent="voiceState === 'recording' ? void onVoiceConfirm() : void onSubmit()"
         >
           <svg v-if="voiceState !== 'recording'" class="quick-voice-send-icon" viewBox="0 0 24 24" aria-hidden="true">
             <path d="m3 11 17-8-4 18-5-6-8-4Z" />
@@ -483,6 +491,11 @@ onBeforeUnmount(() => {
   justify-content: center;
   z-index: 5200;
   padding: 16px;
+}
+
+.quick-voice-tap-target {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .quick-voice-modal {
