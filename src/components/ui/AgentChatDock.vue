@@ -1248,19 +1248,6 @@ function buildAttachmentsPayload(attachments: EntityAttachment[]) {
   });
 }
 
-function buildDebugAttachment(debug: Record<string, unknown>) {
-  const fileName = `llm-log-${Date.now()}.json`;
-  const json = JSON.stringify(debug, null, 2);
-  const encoded = encodeURIComponent(json);
-  return {
-    id: createAttachmentId(),
-    name: fileName,
-    mime: 'application/json',
-    size: json.length,
-    data: `data:application/json;charset=utf-8,${encoded}`,
-  } satisfies EntityAttachment;
-}
-
 function buildErrorLogAttachment(payload: Record<string, unknown>) {
   const fileName = `llm-error-log-${Date.now()}.json`;
   const json = JSON.stringify(payload, null, 2);
@@ -1285,14 +1272,13 @@ async function requestAssistantReply(args: {
     message: args.message,
     history: args.history,
     attachments: buildAttachmentsPayload(args.attachments),
-    debug: true,
+    debug: false,
   }, {
     timeout: AGENT_CHAT_REQUEST_TIMEOUT_MS,
   });
 
   return {
     reply: typeof data.reply === 'string' ? data.reply.trim() : '',
-    debug: data.debug,
   };
 }
 
@@ -1590,11 +1576,10 @@ async function sendMessage() {
       history: historyPayload,
       attachments,
     });
-    const debugAttachments = aiResponse.debug ? [buildDebugAttachment(aiResponse.debug)] : [];
     if (aiResponse.reply) {
-      pushMessage('assistant', aiResponse.reply, debugAttachments, activeScopeKey);
+      pushMessage('assistant', aiResponse.reply, [], activeScopeKey);
     } else {
-      pushMessage('assistant', 'Недостаточно данных в текущем контексте.', debugAttachments, activeScopeKey);
+      pushMessage('assistant', 'Недостаточно данных в текущем контексте.', [], activeScopeKey);
     }
   } catch (error) {
     const errorLog = buildErrorLogAttachment({
