@@ -7,7 +7,12 @@ import ProfileProgressRing from '../ui/ProfileProgressRing.vue';
 import { useEntitiesStore } from '../../stores/entities';
 import { useAuthStore } from '../../stores/auth';
 import { calculateEntityProfileProgress } from '../../utils/profileProgress';
-import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../../services/entityAi';
+import {
+  analyzeEntityWithAi,
+  isEntityAiProcessingResponse,
+  prepareEntityLinkPreview,
+  type EntityLinkPreviewResponse,
+} from '../../services/entityAi';
 import { useUnifiedVoiceInput } from '../../composables/useUnifiedVoiceInput';
 import {
   SYSTEM_SOCIAL_LOGOS,
@@ -105,6 +110,11 @@ interface EmojiItem {
   label: string;
   searchLabel: string;
   searchTags: string[];
+}
+
+interface ResourceLinkPreviewState extends EntityLinkPreviewResponse {
+  mode: 'ready' | 'error';
+  errorMessage: string;
 }
 
 type MetadataFieldKey =
@@ -297,13 +307,22 @@ const pendingComposerHeightReset = ref(false);
 const localAiRequestInFlight = ref(false);
 const awaitingAiCompletionEntityId = ref('');
 const awaitingAiCompletionStartedAtMs = ref(0);
+const isResourceLinkPreviewLoading = ref(false);
+const resourceLinkPreview = ref<ResourceLinkPreviewState | null>(null);
 const isAiRequestInFlight = computed(() => {
   const entityId = draft.value?.entityId || currentEntity.value?._id;
   if (!entityId) return localAiRequestInFlight.value;
   const awaitingSameEntity = awaitingAiCompletionEntityId.value === entityId;
   const entityPending = Boolean(toProfile(currentEntity.value?.ai_metadata).analysis_pending);
-  return localAiRequestInFlight.value || awaitingSameEntity || entitiesStore.isEntityAiPending(entityId) || entityPending;
+  return (
+    isResourceLinkPreviewLoading.value ||
+    localAiRequestInFlight.value ||
+    awaitingSameEntity ||
+    entitiesStore.isEntityAiPending(entityId) ||
+    entityPending
+  );
 });
+const shouldShowAiThinking = computed(() => isAiRequestInFlight.value && !isResourceLinkPreviewLoading.value);
 
 const isProjectAddConfirmOpen = ref(false);
 const projectActionMessage = ref('');
@@ -819,6 +838,8 @@ function loadDraft(entityId: string) {
   if (!entity) return;
 
   closeProfileFooter();
+  isResourceLinkPreviewLoading.value = false;
+  clearResourceLinkPreview();
 
   const aiMetadata = toProfile(entity.ai_metadata);
   const rawDocuments = Array.isArray(aiMetadata.documents) ? aiMetadata.documents : [];
@@ -1728,6 +1749,73 @@ function openChatAttachment(attachment: EntityAttachment) {
   window.document.body.removeChild(anchor);
 }
 
+function clearResourceLinkPreview() {
+  resourceLinkPreview.value = null;
+}
+
+function isResourceLinkPreviewCandidate(message: string, attachments: EntityAttachment[]) {
+  return Boolean(draft.value && draft.value.type === 'resource' && attachments.length === 0 && extractStandaloneChatLinks(message).length);
+}
+
+async function prepareResourceLinkPreview(message: string, attachments: EntityAttachment[]) {
+  const currentDraft = draft.value;
+  if (!currentDraft || !isResourceLinkPreviewCandidate(message, attachments)) {
+    return false;
+  }
+
+  const sourceUrl = extractStandaloneChatLinks(message)[0] || '';
+  if (!sourceUrl) return false;
+
+  isResourceLinkPreviewLoading.value = true;
+  resourceLinkPreview.value = null;
+
+  try {
+    const preview = await prepareEntityLinkPreview({
+      entityId: currentDraft.entityId,
+      url: sourceUrl,
+    });
+
+    if (!draft.value || draft.value.entityId !== currentDraft.entityId) {
+      return true;
+    }
+
+    draft.value.textInput = preview.preparedText;
+    draft.value.voiceInput = '';
+    draft.value.metadataValues.links = normalizeMetadataValues('links', [
+      ...(draft.value.metadataValues.links || []),
+      preview.finalUrl || preview.sourceUrl,
+    ]).slice(0, 24);
+    resourceLinkPreview.value = {
+      ...preview,
+      mode: 'ready',
+      errorMessage: '',
+    };
+
+    scheduleSave();
+    await nextTick();
+    autoResizeChatInput();
+    chatInputRef.value?.focus();
+    return true;
+  } catch (error: unknown) {
+    resourceLinkPreview.value = {
+      sourceUrl,
+      finalUrl: '',
+      hostname: '',
+      siteLabel: '',
+      sourceKind: '',
+      title: '',
+      description: '',
+      textSnippet: '',
+      preparedText: '',
+      mode: 'error',
+      errorMessage: `Не удалось разобрать ссылку. ${parseRequestError(error)}`,
+    };
+    return true;
+  } finally {
+    isResourceLinkPreviewLoading.value = false;
+  }
+}
+
 async function onSendInput() {
   if (!draft.value) return;
   if (isAiRequestInFlight.value) return;
@@ -1737,6 +1825,10 @@ async function onSendInput() {
   const attachments = [...draft.value.pendingUploads];
   if (!message && !attachments.length) return;
 
+  if (await prepareResourceLinkPreview(message, attachments)) {
+    return;
+  }
+
   pushChatMessage('user', message, attachments);
   draft.value.pendingUploads = [];
   draft.value.documents = Array.from(
@@ -1744,6 +1836,7 @@ async function onSendInput() {
   );
   draft.value.textInput = '';
   draft.value.voiceInput = '';
+  clearResourceLinkPreview();
   voiceInput.markTextConsumed();
 
   resetChatInputSize();
@@ -1866,6 +1959,11 @@ function onChatComposerKeydown(event: KeyboardEvent) {
 }
 
 function onTextInput() {
+  if (resourceLinkPreview.value?.mode === 'error') {
+    clearResourceLinkPreview();
+  } else if (resourceLinkPreview.value?.mode === 'ready' && !draft.value?.textInput.trim()) {
+    clearResourceLinkPreview();
+  }
   autoResizeChatInput();
   scheduleSave();
 }
@@ -2264,6 +2362,9 @@ const entityProfileTotalFieldCount = computed(() => activeFields.value.length + 
 
 const chatPlaceholder = computed(() => {
   const type = draft.value?.type || 'shape';
+  if (type === 'resource') {
+    return 'Вставьте ссылку или опишите ресурс';
+  }
   return `Опишите ${ENTITY_TYPE_CHAT_TARGET[type]}`;
 });
 
@@ -3077,7 +3178,7 @@ onBeforeUnmount(() => {
           </div>
           <time class="entity-chat-time">{{ toDisplayTime(message.createdAt) }}</time>
         </article>
-        <article v-if="isAiRequestInFlight" class="entity-chat-message assistant">
+        <article v-if="shouldShowAiThinking" class="entity-chat-message assistant">
           <div class="entity-chat-bubble thinking">
             <span class="entity-chat-thinking-text">Думаю...</span>
           </div>
@@ -3100,6 +3201,31 @@ onBeforeUnmount(() => {
               ×
             </button>
           </span>
+        </div>
+
+        <div
+          v-if="isResourceLinkPreviewLoading || resourceLinkPreview"
+          class="entity-info-link-preview"
+          :class="{
+            loading: isResourceLinkPreviewLoading,
+            error: resourceLinkPreview?.mode === 'error',
+          }"
+        >
+          <p v-if="isResourceLinkPreviewLoading" class="entity-info-link-preview-title">
+            Разбираю ссылку и готовлю текст для анализа...
+          </p>
+          <template v-else-if="resourceLinkPreview?.mode === 'ready'">
+            <p class="entity-info-link-preview-title">
+              Ссылка разобрана. В поле ввода подставлен очищенный блок, его можно проверить и отправить в LLM.
+            </p>
+            <p class="entity-info-link-preview-meta">
+              {{ resourceLinkPreview.siteLabel || resourceLinkPreview.hostname }}
+              <span v-if="resourceLinkPreview.title">• {{ resourceLinkPreview.title }}</span>
+            </p>
+          </template>
+          <p v-else class="entity-info-link-preview-title">
+            {{ resourceLinkPreview?.errorMessage }}
+          </p>
         </div>
 
         <div class="entity-info-chat-bar">
@@ -4358,6 +4484,42 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.entity-info-link-preview {
+  border-radius: 12px;
+  border: 1px solid #dbe4f3;
+  background: linear-gradient(180deg, #f8fbff 0%, #f1f6ff 100%);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.entity-info-link-preview.loading {
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+}
+
+.entity-info-link-preview.error {
+  border-color: rgba(180, 35, 24, 0.2);
+  background: linear-gradient(180deg, #fff7f6 0%, #ffefed 100%);
+}
+
+.entity-info-link-preview-title,
+.entity-info-link-preview-meta {
+  margin: 0;
+}
+
+.entity-info-link-preview-title {
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.entity-info-link-preview-meta {
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .entity-info-upload-chip {

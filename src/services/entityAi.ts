@@ -53,6 +53,23 @@ export interface EntityAiAnalyzeResponse {
   debug?: Record<string, unknown>;
 }
 
+export interface EntityLinkPreviewPayload {
+  entityId: string;
+  url: string;
+}
+
+export interface EntityLinkPreviewResponse {
+  sourceUrl: string;
+  finalUrl: string;
+  hostname: string;
+  siteLabel: string;
+  sourceKind: string;
+  title: string;
+  description: string;
+  textSnippet: string;
+  preparedText: string;
+}
+
 export interface EntityAiAnalyzeProcessingResponse {
   status: 'processing';
   message?: string;
@@ -87,4 +104,11 @@ export async function analyzeEntityWithAi(payload: EntityAiAnalyzePayload) {
     console.error('[AI] analyzeEntityWithAi → ERROR', err);
     throw err;
   }
+}
+
+export async function prepareEntityLinkPreview(payload: EntityLinkPreviewPayload) {
+  const { data } = await apiClient.post<EntityLinkPreviewResponse>('/ai/entity-link-preview', payload, {
+    timeout: 30_000,
+  });
+  return data;
 }
