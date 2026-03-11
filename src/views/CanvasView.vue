@@ -43,6 +43,8 @@ const CANVAS_CACHE_PREFIX = 'synapse12.canvas.v1';
 const CANVAS_SYNC_DELAY = 650;
 const VIEWPORT_SYNC_DELAY = 220;
 const ENTITY_SYNC_DELAY = 420;
+const CANVAS_HISTORY_DELAY = 180;
+const CANVAS_HISTORY_LIMIT = 80;
 const SELECTION_MOVE_THRESHOLD_PX = 4;
 const PROFILE_PROGRESS_RING_SIZE = 72;
 const PROFILE_PROGRESS_STROKE_WIDTH = 5;
@@ -599,6 +601,7 @@ const isEntityInfoAiRequestInFlight = computed(() => {
 const pendingComposerHeightReset = ref(false);
 const infoSaveTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const viewportSyncTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+const canvasHistoryTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const nodeSearchOpen = ref(false);
 const nodeSearchQuery = ref('');
 const nodeSearchInputRef = ref<HTMLInputElement | null>(null);
@@ -618,6 +621,10 @@ const lastCanvasTouchTap = ref<{
   clientY: number;
 } | null>(null);
 const suppressCanvasDoubleClickUntil = ref(0);
+const canvasUndoStack = ref<ProjectCanvasData[]>([]);
+const canvasRedoStack = ref<ProjectCanvasData[]>([]);
+const lastCommittedCanvasHistory = ref<ProjectCanvasData | null>(null);
+const isApplyingCanvasHistory = ref(false);
 
 const legacyVoiceInput = useUnifiedVoiceInput({
   language: 'ru',
@@ -659,6 +666,8 @@ const activeLibraryLabel = computed(() => {
 });
 
 const zoomPercent = computed(() => Math.round(camera.value.zoom * 100));
+const canUndoCanvas = computed(() => canvasUndoStack.value.length > 0);
+const canRedoCanvas = computed(() => canvasRedoStack.value.length > 0);
 const selectedNodeIdSet = computed(() => new Set(selectedNodeIds.value));
 const selectedNodes = computed(() => {
   if (!selectedNodeIds.value.length) return [] as CanvasNodeProjection[];
@@ -3003,6 +3012,172 @@ function normalizeCanvasData(canvasData: ProjectCanvasData | undefined): Project
   };
 }
 
+function buildCanvasHistorySnapshot(source?: Partial<ProjectCanvasData>): ProjectCanvasData {
+  return {
+    nodes: (source?.nodes ?? nodes.value).map((node) => ({
+      id: node.id,
+      entityId: node.entityId,
+      x: node.x,
+      y: node.y,
+      scale: normalizeNodeScale(node.scale),
+    })),
+    edges: (source?.edges ?? edges.value).map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      label: edge.label,
+      color: edge.color,
+      arrowLeft: edge.arrowLeft,
+      arrowRight: edge.arrowRight,
+    })),
+    background:
+      typeof source?.background === 'string' && source.background.trim()
+        ? source.background.trim()
+        : canvasBackgroundId.value,
+  };
+}
+
+function areCanvasHistorySnapshotsEqual(
+  left: ProjectCanvasData | null | undefined,
+  right: ProjectCanvasData | null | undefined,
+) {
+  if (!left || !right) return false;
+  if ((left.background || DEFAULT_CANVAS_BACKGROUND) !== (right.background || DEFAULT_CANVAS_BACKGROUND)) {
+    return false;
+  }
+  if (left.nodes.length !== right.nodes.length || left.edges.length !== right.edges.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.nodes.length; index += 1) {
+    const leftNode = left.nodes[index];
+    const rightNode = right.nodes[index];
+    if (
+      !leftNode ||
+      !rightNode ||
+      leftNode.id !== rightNode.id ||
+      leftNode.entityId !== rightNode.entityId ||
+      leftNode.x !== rightNode.x ||
+      leftNode.y !== rightNode.y ||
+      normalizeNodeScale(leftNode.scale) !== normalizeNodeScale(rightNode.scale)
+    ) {
+      return false;
+    }
+  }
+
+  for (let index = 0; index < left.edges.length; index += 1) {
+    const leftEdge = left.edges[index];
+    const rightEdge = right.edges[index];
+    if (
+      !leftEdge ||
+      !rightEdge ||
+      leftEdge.id !== rightEdge.id ||
+      leftEdge.source !== rightEdge.source ||
+      leftEdge.target !== rightEdge.target ||
+      (leftEdge.label || '') !== (rightEdge.label || '') ||
+      (leftEdge.color || '') !== (rightEdge.color || '') ||
+      Boolean(leftEdge.arrowLeft) !== Boolean(rightEdge.arrowLeft) ||
+      Boolean(leftEdge.arrowRight) !== Boolean(rightEdge.arrowRight)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function clearCanvasHistoryTimer() {
+  if (!canvasHistoryTimer.value) return;
+  clearTimeout(canvasHistoryTimer.value);
+  canvasHistoryTimer.value = null;
+}
+
+function resetCanvasHistory(snapshot = buildCanvasHistorySnapshot()) {
+  clearCanvasHistoryTimer();
+  canvasUndoStack.value = [];
+  canvasRedoStack.value = [];
+  lastCommittedCanvasHistory.value = buildCanvasHistorySnapshot(snapshot);
+}
+
+function commitCanvasHistoryStep() {
+  const currentSnapshot = buildCanvasHistorySnapshot();
+  const previousSnapshot = lastCommittedCanvasHistory.value;
+
+  if (!previousSnapshot) {
+    lastCommittedCanvasHistory.value = currentSnapshot;
+    return;
+  }
+
+  if (areCanvasHistorySnapshotsEqual(currentSnapshot, previousSnapshot)) {
+    return;
+  }
+
+  canvasUndoStack.value = [...canvasUndoStack.value, buildCanvasHistorySnapshot(previousSnapshot)].slice(
+    -CANVAS_HISTORY_LIMIT,
+  );
+  canvasRedoStack.value = [];
+  lastCommittedCanvasHistory.value = currentSnapshot;
+}
+
+function flushCanvasHistoryStep() {
+  if (!canvasHistoryTimer.value) return;
+  clearCanvasHistoryTimer();
+  commitCanvasHistoryStep();
+}
+
+function scheduleCanvasHistoryStep() {
+  if (isLoading.value || isApplyingCanvasHistory.value || !routeProjectId.value) return;
+
+  clearCanvasHistoryTimer();
+  canvasHistoryTimer.value = setTimeout(() => {
+    canvasHistoryTimer.value = null;
+    commitCanvasHistoryStep();
+  }, CANVAS_HISTORY_DELAY);
+}
+
+function applyCanvasHistorySnapshot(snapshot: ProjectCanvasData) {
+  const normalized = normalizeCanvasData(snapshot);
+  isApplyingCanvasHistory.value = true;
+  clearCanvasHistoryTimer();
+  nodes.value = normalized.nodes;
+  edges.value = normalized.edges;
+  canvasBackgroundId.value =
+    typeof normalized.background === 'string' && normalized.background.trim()
+      ? normalized.background
+      : DEFAULT_CANVAS_BACKGROUND;
+  lastCommittedCanvasHistory.value = buildCanvasHistorySnapshot(normalized);
+  closeContextMenu();
+  closeEdgeMenu();
+  closeResetCanvasConfirm();
+  void nextTick(() => {
+    isApplyingCanvasHistory.value = false;
+  });
+}
+
+function undoCanvasChange() {
+  flushCanvasHistoryStep();
+  const previousSnapshot = canvasUndoStack.value[canvasUndoStack.value.length - 1];
+  if (!previousSnapshot) return;
+
+  const currentSnapshot = buildCanvasHistorySnapshot();
+  canvasUndoStack.value = canvasUndoStack.value.slice(0, -1);
+  canvasRedoStack.value = [...canvasRedoStack.value, currentSnapshot].slice(-CANVAS_HISTORY_LIMIT);
+  applyCanvasHistorySnapshot(previousSnapshot);
+  queueCanvasSync();
+}
+
+function redoCanvasChange() {
+  flushCanvasHistoryStep();
+  const nextSnapshot = canvasRedoStack.value[canvasRedoStack.value.length - 1];
+  if (!nextSnapshot) return;
+
+  const currentSnapshot = buildCanvasHistorySnapshot();
+  canvasRedoStack.value = canvasRedoStack.value.slice(0, -1);
+  canvasUndoStack.value = [...canvasUndoStack.value, currentSnapshot].slice(-CANVAS_HISTORY_LIMIT);
+  applyCanvasHistorySnapshot(nextSnapshot);
+  queueCanvasSync();
+}
+
 function isCanvasInteractionActive() {
   return Boolean(
     isLoading.value ||
@@ -3028,13 +3203,11 @@ function applyIncomingCanvasSnapshot(snapshot: {
   if (!snapshot.projectId || snapshot.projectId !== routeProjectId.value) return;
 
   const normalized = normalizeCanvasData(snapshot.canvasData);
-  nodes.value = normalized.nodes;
-  edges.value = normalized.edges;
-  canvasBackgroundId.value =
-    typeof normalized.background === 'string' && normalized.background.trim()
-      ? normalized.background
-      : DEFAULT_CANVAS_BACKGROUND;
-
+  const currentSnapshot = buildCanvasHistorySnapshot();
+  if (!areCanvasHistorySnapshotsEqual(currentSnapshot, normalized)) {
+    applyCanvasHistorySnapshot(normalized);
+    resetCanvasHistory(normalized);
+  }
   writeCanvasCache(snapshot.projectId, normalized);
   lastAppliedProjectCanvasVersion.value = snapshot.projectVersion;
 }
@@ -3833,6 +4006,7 @@ async function loadProjectCanvas(projectId: string) {
       typeof canvasData.background === 'string' && canvasData.background.trim()
         ? canvasData.background
         : DEFAULT_CANVAS_BACKGROUND;
+    resetCanvasHistory(canvasData);
     lastAppliedProjectCanvasVersion.value = projectCanvasVersion;
 
     await nextTick();
@@ -3852,6 +4026,7 @@ async function loadProjectCanvas(projectId: string) {
         },
       ];
       edges.value = [];
+      resetCanvasHistory(buildCanvasHistorySnapshot());
       queueCanvasSync({ immediate: true });
       requestViewportCenter(0, 0);
     } else if (currentVersion === loadVersion) {
@@ -3886,6 +4061,7 @@ async function loadProjectCanvas(projectId: string) {
     nodes.value = [];
     edges.value = [];
     canvasBackgroundId.value = DEFAULT_CANVAS_BACKGROUND;
+    resetCanvasHistory();
   } finally {
     if (currentVersion === loadVersion) {
       isLoading.value = false;
@@ -4108,7 +4284,7 @@ function onViewportClick(event: MouseEvent) {
   const target = event.target as HTMLElement | null;
   if (
     target?.closest(
-      '.canvas-library, .canvas-node, .canvas-controls, .menu-backdrop, .canvas-node-search, .canvas-monitor',
+      '.canvas-library, .canvas-node, .canvas-controls, .canvas-history-controls, .menu-backdrop, .canvas-node-search, .canvas-monitor',
     )
   ) {
     return;
@@ -4344,6 +4520,17 @@ function onWindowKeyDown(event: KeyboardEvent) {
   if (event.key === 'Escape' && nodeSearchOpen.value) {
     event.preventDefault();
     closeNodeSearch();
+    return;
+  }
+
+  const isUndoShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'z';
+  if (isUndoShortcut && !isEditableElement(event.target)) {
+    event.preventDefault();
+    if (event.shiftKey) {
+      redoCanvasChange();
+    } else {
+      undoCanvasChange();
+    }
     return;
   }
 
@@ -4904,6 +5091,14 @@ function onNodeNameEditFinished(payload: { nodeId: string }) {
 }
 
 watch(
+  () => [nodes.value, edges.value, canvasBackgroundId.value],
+  () => {
+    scheduleCanvasHistoryStep();
+  },
+  { deep: true, flush: 'sync' },
+);
+
+watch(
   [isLoading, viewportRef],
   async ([loading]) => {
     if (loading) return;
@@ -5082,6 +5277,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearViewportSyncTimer();
+  clearCanvasHistoryTimer();
   clearPendingRemoteCanvasApplyTimer();
   pendingRemoteCanvasSnapshot.value = null;
   clearMonitorRefreshTimer();
@@ -5352,6 +5548,36 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           </div>
         </div>
       </aside>
+
+      <div class="canvas-history-controls" @pointerdown.stop @click.stop @dblclick.stop @wheel.stop>
+        <button
+          type="button"
+          class="canvas-history-btn"
+          :disabled="!canUndoCanvas"
+          aria-label="Отменить шаг назад"
+          title="Отменить (Ctrl/Cmd+Z)"
+          @click="undoCanvasChange"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m14.5 6.5-5 5.5 5 5.5" />
+            <path d="M10 12h8" />
+          </svg>
+        </button>
+
+        <button
+          type="button"
+          class="canvas-history-btn"
+          :disabled="!canRedoCanvas"
+          aria-label="Повторить шаг вперед"
+          title="Повторить (Ctrl/Cmd+Shift+Z)"
+          @click="redoCanvasChange"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m9.5 6.5 5 5.5-5 5.5" />
+            <path d="M6 12h8" />
+          </svg>
+        </button>
+      </div>
 
       <div class="canvas-monitor" @pointerdown.stop @click.stop @dblclick.stop @wheel.stop>
         <button
@@ -6372,6 +6598,64 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   align-items: flex-start;
   gap: 8px;
   pointer-events: auto;
+}
+
+.canvas-history-controls {
+  position: absolute;
+  top: calc(14px + env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 22px rgba(112, 144, 176, 0.18);
+  max-width: calc(100% - 28px);
+}
+
+.canvas-history-btn {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  border-radius: 12px;
+  border: 1px solid #dbe4f3;
+  background: #ffffff;
+  color: #475569;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.canvas-history-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.canvas-history-btn:hover:not(:disabled) {
+  color: #1058ff;
+  border-color: #bfd5ff;
+  background: #eef4ff;
+}
+
+.canvas-history-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .canvas-monitor-toggle {
@@ -8438,6 +8722,19 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   .canvas-monitor {
     top: 10px;
     left: 10px;
+  }
+
+  .canvas-history-controls {
+    top: calc(10px + env(safe-area-inset-top, 0px));
+    gap: 5px;
+    padding: 5px;
+    max-width: calc(100% - 20px);
+  }
+
+  .canvas-history-btn {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
   }
 
   .canvas-monitor-toggle {
