@@ -6608,21 +6608,15 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   z-index: 60;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px;
-  border-radius: 999px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  background: rgba(255, 255, 255, 0.94);
-  backdrop-filter: blur(10px);
-  box-shadow: 0 10px 22px rgba(112, 144, 176, 0.18);
+  gap: 12px;
   max-width: calc(100% - 28px);
 }
 
 .canvas-history-btn {
-  width: 36px;
-  height: 36px;
-  min-width: 36px;
-  border-radius: 12px;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  border-radius: 6px;
   border: 1px solid #dbe4f3;
   background: #ffffff;
   color: #475569;
@@ -6638,8 +6632,8 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 }
 
 .canvas-history-btn svg {
-  width: 16px;
-  height: 16px;
+  width: 12px;
+  height: 12px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
@@ -8726,15 +8720,14 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 
   .canvas-history-controls {
     top: calc(10px + env(safe-area-inset-top, 0px));
-    gap: 5px;
-    padding: 5px;
+    gap: 10px;
     max-width: calc(100% - 20px);
   }
 
   .canvas-history-btn {
-    width: 34px;
-    height: 34px;
-    min-width: 34px;
+    width: 18px;
+    height: 18px;
+    min-width: 18px;
   }
 
   .canvas-monitor-toggle {
