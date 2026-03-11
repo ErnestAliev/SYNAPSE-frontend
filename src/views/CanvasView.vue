@@ -6609,7 +6609,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   display: inline-flex;
   align-items: center;
   gap: 12px;
-  max-width: calc(100% - 28px);
+  max-width: calc(100% - 38px);
 }
 
 .canvas-history-btn {
@@ -6632,7 +6632,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 }
 
 .canvas-history-btn svg {
-  width: 12px;
+  width: 64px;
   height: 12px;
   fill: none;
   stroke: currentColor;
@@ -8725,7 +8725,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   }
 
   .canvas-history-btn {
-    width: 18px;
+    width: 64px;
     height: 18px;
     min-width: 18px;
   }
