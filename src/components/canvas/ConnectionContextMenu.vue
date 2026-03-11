@@ -9,6 +9,8 @@ const props = withDefaults(
     label?: string;
     options?: string[];
     color?: string;
+    sourceLabel?: string;
+    targetLabel?: string;
     arrowLeft?: boolean;
     arrowRight?: boolean;
   }>(),
@@ -16,6 +18,8 @@ const props = withDefaults(
     label: '',
     options: () => [],
     color: '#262626',
+    sourceLabel: '',
+    targetLabel: '',
     arrowLeft: false,
     arrowRight: false,
   },
@@ -37,6 +41,12 @@ const EMPTY_RELATION_LABEL = 'Связь не указана';
 const selectedLabel = ref(props.label || '');
 const searchQuery = ref(props.label || '');
 const isSearchOpen = ref(false);
+const sourceArrowTitle = computed(() =>
+  props.sourceLabel?.trim() ? `Стрелка к "${props.sourceLabel.trim()}"` : 'Стрелка к началу связи',
+);
+const targetArrowTitle = computed(() =>
+  props.targetLabel?.trim() ? `Стрелка к "${props.targetLabel.trim()}"` : 'Стрелка к концу связи',
+);
 const menuStyle = computed(() => ({
   left: `${props.x}px`,
   top: `${props.y}px`,
@@ -173,7 +183,8 @@ function onColorInput(event: Event) {
       type="button"
       class="connection-btn vector-btn left"
       :class="{ active: arrowLeft }"
-      title="Стрелка влево"
+      :title="sourceArrowTitle"
+      :aria-label="sourceArrowTitle"
       @click="emit('toggle-arrow-left')"
     >
       ←
@@ -183,7 +194,8 @@ function onColorInput(event: Event) {
       type="button"
       class="connection-btn vector-btn right"
       :class="{ active: arrowRight }"
-      title="Стрелка вправо"
+      :title="targetArrowTitle"
+      :aria-label="targetArrowTitle"
       @click="emit('toggle-arrow-right')"
     >
       →

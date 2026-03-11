@@ -140,21 +140,21 @@ function draw() {
 
     const midX = (sourceX + targetX) / 2;
     const midY = (sourceY + targetY) / 2;
+    const sourceDx = sourceX - midX;
+    const sourceDy = sourceY - midY;
+    const targetDx = targetX - midX;
+    const targetDy = targetY - midY;
+    const sourceLength = Math.hypot(sourceDx, sourceDy) || 1;
+    const targetLength = Math.hypot(targetDx, targetDy) || 1;
+    const sourceUnitX = sourceDx / sourceLength;
+    const sourceUnitY = sourceDy / sourceLength;
+    const targetUnitX = targetDx / targetLength;
+    const targetUnitY = targetDy / targetLength;
     const sourceIsLeft = sourceX < targetX || (sourceX === targetX && sourceY <= targetY);
     const leftNodeX = sourceIsLeft ? sourceX : targetX;
     const leftNodeY = sourceIsLeft ? sourceY : targetY;
     const rightNodeX = sourceIsLeft ? targetX : sourceX;
     const rightNodeY = sourceIsLeft ? targetY : sourceY;
-    const leftDx = leftNodeX - midX;
-    const leftDy = leftNodeY - midY;
-    const rightDx = rightNodeX - midX;
-    const rightDy = rightNodeY - midY;
-    const leftLength = Math.hypot(leftDx, leftDy) || 1;
-    const rightLength = Math.hypot(rightDx, rightDy) || 1;
-    const leftUnitX = leftDx / leftLength;
-    const leftUnitY = leftDy / leftLength;
-    const rightUnitX = rightDx / rightLength;
-    const rightUnitY = rightDy / rightLength;
     const chipScale = props.camera.zoom;
     const edgeAngle = Math.atan2(rightNodeY - leftNodeY, rightNodeX - leftNodeX);
     const chipAngle =
@@ -192,10 +192,10 @@ function draw() {
         const arrowOffset = rectWidth / 2 + 12 * chipScale;
         drawArrowAt(
           context,
-          midX + leftUnitX * arrowOffset,
-          midY + leftUnitY * arrowOffset,
-          leftUnitX,
-          leftUnitY,
+          midX + sourceUnitX * arrowOffset,
+          midY + sourceUnitY * arrowOffset,
+          sourceUnitX,
+          sourceUnitY,
           color,
           chipScale,
         );
@@ -205,10 +205,10 @@ function draw() {
         const arrowOffset = rectWidth / 2 + 12 * chipScale;
         drawArrowAt(
           context,
-          midX + rightUnitX * arrowOffset,
-          midY + rightUnitY * arrowOffset,
-          rightUnitX,
-          rightUnitY,
+          midX + targetUnitX * arrowOffset,
+          midY + targetUnitY * arrowOffset,
+          targetUnitX,
+          targetUnitY,
           color,
           chipScale,
         );

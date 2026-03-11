@@ -816,6 +816,24 @@ const activeEdgeNodes = computed(() => {
   return { sourceNode, targetNode };
 });
 
+const activeEdgeLabels = computed(() => {
+  const pair = activeEdgeNodes.value;
+  if (!pair) {
+    return {
+      sourceLabel: '',
+      targetLabel: '',
+    };
+  }
+
+  const sourceEntity = entitiesStore.byId(pair.sourceNode.entityId);
+  const targetEntity = entitiesStore.byId(pair.targetNode.entityId);
+
+  return {
+    sourceLabel: sourceEntity?.name?.trim() || 'Начало связи',
+    targetLabel: targetEntity?.name?.trim() || 'Конец связи',
+  };
+});
+
 const edgeMenuPosition = computed(() => {
   const viewport = viewportRef.value;
   const pair = activeEdgeNodes.value;
@@ -6180,6 +6198,8 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       :label="activeEdge.label || ''"
       :options="connectionRelationOptions"
       :color="activeEdge.color || EDGE_DEFAULT_COLOR"
+      :source-label="activeEdgeLabels.sourceLabel"
+      :target-label="activeEdgeLabels.targetLabel"
       :arrow-left="Boolean(activeEdge.arrowLeft)"
       :arrow-right="Boolean(activeEdge.arrowRight)"
       @close="closeEdgeMenu"
