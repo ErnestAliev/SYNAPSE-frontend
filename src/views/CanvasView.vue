@@ -4882,6 +4882,16 @@ function onWindowContextMenuCapture(event: MouseEvent) {
   event.stopPropagation();
 }
 
+function onDocumentPointerDownCapture(event: PointerEvent) {
+  if (event.button !== 2) return;
+  const viewport = viewportRef.value;
+  const target = event.target as Node | null;
+  if (!viewport || !target) return;
+  if (!viewport.contains(target)) return;
+
+  event.preventDefault();
+}
+
 function onGroupPointerDown(groupId: string, event: PointerEvent) {
   if (event.button === 2) {
     event.preventDefault();
@@ -5963,11 +5973,12 @@ void _legacyEntityInfoBindings;
 onMounted(() => {
   syncDeviceLayoutMetrics();
   window.setTimeout(syncDeviceLayoutMetrics, 120);
+  document.addEventListener('pointerdown', onDocumentPointerDownCapture, true);
+  document.addEventListener('contextmenu', onWindowContextMenuCapture, true);
   window.addEventListener('pointermove', onWindowPointerMove);
   window.addEventListener('pointerup', onWindowPointerUp);
   window.addEventListener('pointercancel', onWindowPointerUp);
   window.addEventListener('keydown', onWindowKeyDown);
-  window.addEventListener('contextmenu', onWindowContextMenuCapture, true);
   window.addEventListener('resize', syncDeviceLayoutMetrics);
   window.addEventListener('orientationchange', syncDeviceLayoutMetrics);
   window.visualViewport?.addEventListener('resize', syncDeviceLayoutMetrics);
@@ -5987,11 +5998,12 @@ onBeforeUnmount(() => {
   dismissNodeMenuHint({ persist: false });
   closeEntityInfoModal();
 
+  document.removeEventListener('pointerdown', onDocumentPointerDownCapture, true);
+  document.removeEventListener('contextmenu', onWindowContextMenuCapture, true);
   window.removeEventListener('pointermove', onWindowPointerMove);
   window.removeEventListener('pointerup', onWindowPointerUp);
   window.removeEventListener('pointercancel', onWindowPointerUp);
   window.removeEventListener('keydown', onWindowKeyDown);
-  window.removeEventListener('contextmenu', onWindowContextMenuCapture, true);
   window.removeEventListener('resize', syncDeviceLayoutMetrics);
   window.removeEventListener('orientationchange', syncDeviceLayoutMetrics);
   window.visualViewport?.removeEventListener('resize', syncDeviceLayoutMetrics);
