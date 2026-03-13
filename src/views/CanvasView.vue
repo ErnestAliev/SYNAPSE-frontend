@@ -749,8 +749,8 @@ interface CanvasGroupBounds {
   top: number;
   width: number;
   height: number;
-  centerX: number;
-  centerY: number;
+  anchorX: number;
+  anchorY: number;
 }
 
 interface CanvasGroupDisplay {
@@ -779,26 +779,29 @@ function computeGroupBounds(nodeIds: string[]): CanvasGroupBounds | null {
 
   if (groupNodes.length < 2) return null;
 
-  const rawLeft = Math.min(...groupNodes.map((node) => node.x - getNodeRadiusWorld(node))) - GROUP_PADDING_X;
-  const rawRight = Math.max(...groupNodes.map((node) => node.x + getNodeRadiusWorld(node))) + GROUP_PADDING_X;
-  const rawTop = Math.min(...groupNodes.map((node) => node.y - getNodeRadiusWorld(node))) - GROUP_PADDING_Y;
+  const contentLeft = Math.min(...groupNodes.map((node) => node.x - getNodeRadiusWorld(node)));
+  const contentRight = Math.max(...groupNodes.map((node) => node.x + getNodeRadiusWorld(node)));
+  const contentTop = Math.min(...groupNodes.map((node) => node.y - getNodeRadiusWorld(node)));
+  const contentBottom = Math.max(...groupNodes.map((node) => node.y + getNodeRadiusWorld(node)));
+
+  const rawLeft = contentLeft - GROUP_PADDING_X;
+  const rawRight = contentRight + GROUP_PADDING_X;
+  const rawTop = contentTop - GROUP_PADDING_Y;
   const rawBottom = Math.max(
     ...groupNodes.map((node) => node.y + Math.max(getNodeRadiusWorld(node), NODE_INPUT_BOTTOM_EXTENT_PX)),
   ) + GROUP_INPUT_BOTTOM_OFFSET_PX;
-  const centerX = (rawLeft + rawRight) / 2;
-  const centerY = (rawTop + rawBottom) / 2;
   const width = Math.max(1, rawRight - rawLeft);
   const height = Math.max(1, rawBottom - rawTop);
-  const left = centerX - width / 2;
-  const top = centerY - height / 2;
+  const left = rawLeft;
+  const top = rawTop;
 
   return {
     left,
     top,
     width,
     height,
-    centerX,
-    centerY,
+    anchorX: (contentLeft + contentRight) / 2,
+    anchorY: (contentTop + contentBottom) / 2,
   };
 }
 
@@ -841,8 +844,8 @@ const focusedGroupViewportBounds = computed(() => {
 const canvasGroupAnchors = computed<CanvasAnchorProjection[]>(() =>
   displayGroups.value.map((group) => ({
     id: group.id,
-    x: group.bounds.centerX,
-    y: group.bounds.centerY,
+    x: group.bounds.anchorX,
+    y: group.bounds.anchorY,
     label: group.name || 'Группа',
     kind: 'group',
     bounds: group.bounds,
@@ -2003,8 +2006,8 @@ function getCanvasAnchorById(anchorId: string): CanvasAnchorProjection | null {
   if (group) {
     return {
       id: group.id,
-      x: group.bounds.centerX,
-      y: group.bounds.centerY,
+      x: group.bounds.anchorX,
+      y: group.bounds.anchorY,
       label: group.name || 'Группа',
       kind: 'group',
       bounds: group.bounds,
@@ -2583,7 +2586,7 @@ function connectNodeToNearest(nodeId: string) {
     .filter((group) => !group.nodeIds.includes(node.id))
     .map((group) => ({
       anchorId: group.id,
-      centerDistance: Math.hypot(group.bounds.centerX - node.x, group.bounds.centerY - node.y),
+      centerDistance: Math.hypot(group.bounds.anchorX - node.x, group.bounds.anchorY - node.y),
       edgeGap: distancePointToBounds(node.x, node.y, group.bounds) - currentRadius,
     }));
 
