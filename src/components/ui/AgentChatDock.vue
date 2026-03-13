@@ -829,7 +829,32 @@ const projectProfileDescription = computed(() => {
   const project = activeProjectEntity.value;
   if (!project) return '';
   const metadata = toProfile(project.ai_metadata);
+  if (typeof metadata.project_context_compiled_description === 'string' && metadata.project_context_compiled_description.trim()) {
+    return metadata.project_context_compiled_description.trim();
+  }
   return typeof metadata.description === 'string' ? metadata.description.trim() : '';
+});
+
+const projectAnalysisMap = computed(() => {
+  const project = activeProjectEntity.value;
+  if (!project) return {} as Record<string, unknown>;
+  return toProfile(toProfile(project.ai_metadata).project_analysis_map);
+});
+
+const projectAnalysisEntityCount = computed(() => {
+  const entities = Array.isArray(projectAnalysisMap.value.entities) ? projectAnalysisMap.value.entities : [];
+  return entities.length;
+});
+
+const projectAnalysisConnectionCount = computed(() => {
+  const connections = Array.isArray(projectAnalysisMap.value.connections) ? projectAnalysisMap.value.connections : [];
+  return connections.length;
+});
+
+const projectAnalysisConfidence = computed(() => {
+  const synthesis = toProfile(projectAnalysisMap.value.project_synthesis);
+  const value = Number(synthesis.confidence);
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : 0;
 });
 
 const projectContextCurrentHash = computed(() => {
@@ -1143,11 +1168,25 @@ function openProjectFieldLink(value: string) {
   window.open(normalized, '_blank', 'noopener,noreferrer');
 }
 
+void extractStandaloneChatLinks;
+void getProjectLinkChipLabel;
+void getProjectFieldPlaceholder;
+void projectProfileFilledFieldCount;
+void setProjectFieldInputRef;
+void onProjectFieldDraftInput;
+void onProjectFieldDraftKeydown;
+void startEditProjectFieldValue;
+void addProjectFieldValue;
+void removeProjectFieldValue;
+void openProjectFieldLink;
+
 function buildProjectMetadataResetPatch() {
   const clearedFields = Object.fromEntries(PROJECT_PROFILE_FIELD_KEYS.map((fieldKey) => [fieldKey, []]));
   return {
     ...clearedFields,
     description: '',
+    project_context_compiled_description: '',
+    project_analysis_map: {},
     text_input: '',
     voice_input: '',
     documents: [],
@@ -1165,6 +1204,8 @@ function buildProjectMetadataResetPatch() {
     project_context_summary: '',
     project_context_change_reason: '',
     project_context_missing: [],
+    project_context_build_mode: '',
+    project_context_last_llm_error: '',
     project_context_entity_count: 0,
     project_context_connection_count: 0,
     project_context_group_count: 0,
@@ -1809,7 +1850,6 @@ async function sendMessage() {
   const value = messageDraft.value.trim();
   const attachments = [...pendingUploads.value];
   if (!value && !attachments.length) return;
-  const linkOnlyMessageLinks = attachments.length === 0 ? extractStandaloneChatLinks(value) : [];
   const activeScope = buildRequestScope();
   if (!activeScope) {
     pushMessage('assistant', 'Не удалось определить контекст анализа.');
@@ -1823,17 +1863,6 @@ async function sendMessage() {
   messageDraft.value = '';
   voiceInput.markTextConsumed();
   pendingUploads.value = [];
-
-  if (routeScopeType.value === 'project-canvas' && linkOnlyMessageLinks.length) {
-    const existingLinks = getProjectFieldValues('links');
-    applyProjectFieldValues('links', mergeProjectProfileValues('links', existingLinks, linkOnlyMessageLinks));
-    void nextTick(() => {
-      autoResizeComposer();
-      shouldAutoScrollToBottom.value = true;
-      maybeScrollToBottom('auto', true);
-    });
-    return;
-  }
 
   isSending.value = true;
 
@@ -1982,17 +2011,18 @@ function buildScopeStructuredText() {
     lines.push('');
     lines.push('Описание');
     lines.push(projectProfileDescription.value || '—');
-    lines.push('');
-    lines.push('Поля');
-
-    let hasFields = false;
-    for (const field of projectProfileFields.value) {
-      if (!field.values.length) continue;
-      hasFields = true;
-      lines.push(`${field.label}: ${field.values.join(', ')}`);
-    }
-    if (!hasFields) {
-      lines.push('—');
+    const synthesis = toProfile(projectAnalysisMap.value.project_synthesis);
+    const synthesisLines = [
+      typeof synthesis.main_goal === 'string' ? synthesis.main_goal.trim() : '',
+      typeof synthesis.main_bottleneck === 'string' ? synthesis.main_bottleneck.trim() : '',
+      typeof synthesis.next_focus === 'string' ? synthesis.next_focus.trim() : '',
+    ].filter(Boolean);
+    if (synthesisLines.length) {
+      lines.push('');
+      lines.push('Синтез');
+      for (const line of synthesisLines) {
+        lines.push(`- ${line}`);
+      }
     }
   } else {
     lines.push(scopeTitle.value);
@@ -2243,9 +2273,9 @@ onBeforeUnmount(() => {
           :class="{ expanded: isProjectProfileExpanded }"
           @click="isProjectProfileExpanded = !isProjectProfileExpanded"
         >
-          <span class="agent-project-profile-title">Профиль проекта</span>
+          <span class="agent-project-profile-title">Контекст проекта</span>
           <span class="agent-project-profile-count">
-            {{ projectProfileFilledFieldCount }} / {{ PROJECT_PROFILE_FIELD_KEYS.length }}
+            {{ projectAnalysisEntityCount }} сущн. / {{ projectAnalysisConnectionCount }} связей
           </span>
           <span class="agent-project-profile-chevron" aria-hidden="true"></span>
         </button>
@@ -2266,54 +2296,9 @@ onBeforeUnmount(() => {
             title="Изменить высоту описания"
             @pointerdown="onProjectDescriptionResizePointerDown"
           />
-
-          <div class="agent-project-fields-list">
-            <div
-              v-for="field in projectProfileFields"
-              :key="field.key"
-              class="agent-project-field-row"
-            >
-              <div class="agent-project-field-scroll">
-                <input
-                  :ref="(el) => setProjectFieldInputRef(field.key, el)"
-                  :value="getProjectFieldDraft(field.key)"
-                  type="text"
-                  class="agent-project-field-input"
-                  :maxlength="getProjectFieldMaxLength(field.key)"
-                  :placeholder="getProjectFieldPlaceholder(field.key, field.label)"
-                  @input="onProjectFieldDraftInput(field.key, $event)"
-                  @keydown.enter.prevent="addProjectFieldValue(field.key)"
-                  @keydown="onProjectFieldDraftKeydown(field.key, $event)"
-                />
-                <div
-                  v-for="value in field.values"
-                  :key="`${field.key}:${value}`"
-                  class="agent-project-field-chip-wrap"
-                >
-                  <button
-                    type="button"
-                    class="agent-project-field-chip-main"
-                    :class="{ link: field.key === 'links' }"
-                    :title="field.key === 'links' ? value : 'Редактировать'"
-                    @click="
-                      field.key === 'links'
-                        ? openProjectFieldLink(value)
-                        : startEditProjectFieldValue(field.key, value)
-                    "
-                  >
-                    {{ field.key === 'links' ? getProjectLinkChipLabel(value) : value }}
-                  </button>
-                  <button
-                    type="button"
-                    class="agent-project-field-chip-remove"
-                    title="Удалить"
-                    @click.stop="removeProjectFieldValue(field.key, value)"
-                  >
-                    ×
-                  </button>
-                </div>
-              </div>
-            </div>
+          <div class="agent-project-analysis-meta">
+            <span v-if="projectAnalysisConfidence > 0">Уверенность синтеза: {{ projectAnalysisConfidence }}%</span>
+            <span v-if="projectContextBuiltAt">Последняя сборка: {{ toDisplayDateTime(projectContextBuiltAt) }}</span>
           </div>
         </div>
       </section>
@@ -2860,6 +2845,15 @@ onBeforeUnmount(() => {
   margin: 4px auto 0;
   border-radius: 999px;
   background: #cbd5e1;
+}
+
+.agent-project-analysis-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .agent-project-fields-list {
