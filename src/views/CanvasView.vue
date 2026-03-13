@@ -640,6 +640,7 @@ const canvasUndoStack = ref<ProjectCanvasData[]>([]);
 const canvasRedoStack = ref<ProjectCanvasData[]>([]);
 const lastCommittedCanvasHistory = ref<ProjectCanvasData | null>(null);
 const isApplyingCanvasHistory = ref(false);
+let guardedViewportElement: HTMLDivElement | null = null;
 
 const legacyVoiceInput = useUnifiedVoiceInput({
   language: 'ru',
@@ -4880,6 +4881,7 @@ function onWindowContextMenuCapture(event: MouseEvent) {
 
   event.preventDefault();
   event.stopPropagation();
+  event.stopImmediatePropagation();
 }
 
 function onDocumentPointerDownCapture(event: PointerEvent) {
@@ -4890,6 +4892,36 @@ function onDocumentPointerDownCapture(event: PointerEvent) {
   if (!viewport.contains(target)) return;
 
   event.preventDefault();
+}
+
+function onViewportNativeSecondaryDown(event: MouseEvent) {
+  if (event.button !== 2) return;
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation();
+}
+
+function onViewportNativeContextMenu(event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation();
+}
+
+function attachViewportInteractionGuards(element: HTMLDivElement | null) {
+  if (!element || guardedViewportElement === element) return;
+  detachViewportInteractionGuards();
+  guardedViewportElement = element;
+  element.addEventListener('mousedown', onViewportNativeSecondaryDown, true);
+  element.addEventListener('auxclick', onViewportNativeSecondaryDown, true);
+  element.addEventListener('contextmenu', onViewportNativeContextMenu, true);
+}
+
+function detachViewportInteractionGuards() {
+  if (!guardedViewportElement) return;
+  guardedViewportElement.removeEventListener('mousedown', onViewportNativeSecondaryDown, true);
+  guardedViewportElement.removeEventListener('auxclick', onViewportNativeSecondaryDown, true);
+  guardedViewportElement.removeEventListener('contextmenu', onViewportNativeContextMenu, true);
+  guardedViewportElement = null;
 }
 
 function onGroupPointerDown(groupId: string, event: PointerEvent) {
@@ -5940,6 +5972,14 @@ watch(
   },
 );
 
+watch(
+  viewportRef,
+  (element) => {
+    attachViewportInteractionGuards(element);
+  },
+  { flush: 'post' },
+);
+
 // Legacy inline entity-info modal handlers are kept temporarily for backward compatibility.
 // The UI now uses shared `EntityInfoModal`, so these symbols must stay referenced
 // until we remove the old implementation completely.
@@ -5973,6 +6013,7 @@ void _legacyEntityInfoBindings;
 onMounted(() => {
   syncDeviceLayoutMetrics();
   window.setTimeout(syncDeviceLayoutMetrics, 120);
+  attachViewportInteractionGuards(viewportRef.value);
   document.addEventListener('pointerdown', onDocumentPointerDownCapture, true);
   document.addEventListener('contextmenu', onWindowContextMenuCapture, true);
   window.addEventListener('pointermove', onWindowPointerMove);
@@ -5997,6 +6038,7 @@ onBeforeUnmount(() => {
   queueCanvasSync({ immediate: false });
   dismissNodeMenuHint({ persist: false });
   closeEntityInfoModal();
+  detachViewportInteractionGuards();
 
   document.removeEventListener('pointerdown', onDocumentPointerDownCapture, true);
   document.removeEventListener('contextmenu', onWindowContextMenuCapture, true);
@@ -7286,6 +7328,9 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   background: var(--canvas-bg-color, var(--bg-app));
   touch-action: none;
   cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .canvas-viewport.is-panning {
