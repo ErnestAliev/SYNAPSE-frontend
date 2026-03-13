@@ -37,7 +37,9 @@ const MAX_NODE_SCALE = 1.2;
 const DEFAULT_NODE_SCALE = 1;
 const NODE_CIRCLE_DIAMETER = 72;
 const GROUP_PADDING_X = 22;
-const GROUP_PADDING_Y = 28;
+const GROUP_PADDING_Y = 18;
+const NODE_INPUT_BOTTOM_EXTENT_PX = 76;
+const GROUP_INPUT_BOTTOM_OFFSET_PX = 30;
 const AUTO_CONNECT_EDGE_GAP_PX = 20;
 const AUTO_CONNECT_LIMIT = 2;
 const EDGE_DEFAULT_COLOR = '#262626';
@@ -770,7 +772,9 @@ function computeGroupBounds(nodeIds: string[]): CanvasGroupBounds | null {
   const rawLeft = Math.min(...groupNodes.map((node) => node.x - getNodeRadiusWorld(node))) - GROUP_PADDING_X;
   const rawRight = Math.max(...groupNodes.map((node) => node.x + getNodeRadiusWorld(node))) + GROUP_PADDING_X;
   const rawTop = Math.min(...groupNodes.map((node) => node.y - getNodeRadiusWorld(node))) - GROUP_PADDING_Y;
-  const rawBottom = Math.max(...groupNodes.map((node) => node.y + getNodeRadiusWorld(node))) + GROUP_PADDING_Y;
+  const rawBottom = Math.max(
+    ...groupNodes.map((node) => node.y + Math.max(getNodeRadiusWorld(node), NODE_INPUT_BOTTOM_EXTENT_PX)),
+  ) + GROUP_INPUT_BOTTOM_OFFSET_PX;
   const centerX = (rawLeft + rawRight) / 2;
   const centerY = (rawTop + rawBottom) / 2;
   const width = Math.max(1, rawRight - rawLeft);
@@ -4678,6 +4682,15 @@ function onViewportPointerDown(event: PointerEvent) {
     return;
   }
 
+  if (event.button === 2) {
+    const world = clientToWorld(event.clientX, event.clientY);
+    if (isWorldPointInsideBounds(world.x, world.y, multiSelectionBounds.value)) {
+      event.preventDefault();
+      openSelectionGroupMenu(event.clientX, event.clientY);
+    }
+    return;
+  }
+
   if (event.button !== 0) return;
 
   const target = event.target as HTMLElement | null;
@@ -4711,12 +4724,6 @@ function onViewportClick(event: MouseEvent) {
       '.canvas-library, .canvas-node, .canvas-controls, .canvas-history-controls, .menu-backdrop, .canvas-node-search, .canvas-monitor, .canvas-group-menu',
     )
   ) {
-    return;
-  }
-
-  const world = clientToWorld(event.clientX, event.clientY);
-  if (!isPlayMode.value && !selectedGroupId.value && isWorldPointInsideBounds(world.x, world.y, multiSelectionBounds.value)) {
-    openSelectionGroupMenu(event.clientX, event.clientY);
     return;
   }
 
@@ -4766,6 +4773,13 @@ function onViewportContextMenu(event: MouseEvent) {
 }
 
 function onGroupPointerDown(groupId: string, event: PointerEvent) {
+  if (event.button === 2) {
+    event.preventDefault();
+    event.stopPropagation();
+    openGroupMenu(groupId, event.clientX, event.clientY);
+    return;
+  }
+
   if (event.button !== 0) return;
   if (editingGroupId.value === groupId) return;
 
@@ -4803,17 +4817,11 @@ function onGroupClick(groupId: string, event: MouseEvent) {
   event.preventDefault();
   event.stopPropagation();
 
-  const shouldOpenMenu =
-    isMobileLikeDevice.value || selectedGroupId.value === groupId;
-
   selectedGroupId.value = groupId;
   clearSelectedNodes();
   closeContextMenu();
   closeEdgeMenu();
-
-  if (shouldOpenMenu) {
-    openGroupMenu(groupId, event.clientX, event.clientY);
-  }
+  closeGroupContextMenu();
 }
 
 function onGroupDoubleClick(groupId: string, event: MouseEvent) {
