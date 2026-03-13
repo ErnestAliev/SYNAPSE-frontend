@@ -3,7 +3,7 @@ import axios from 'axios';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useEntitiesStore } from '../../stores/entities';
-import type { Entity, EntityType } from '../../types/entity';
+import type { Entity, EntityType, ProjectCanvasData } from '../../types/entity';
 import { apiClient } from '../../services/api';
 import { useUnifiedVoiceInput } from '../../composables/useUnifiedVoiceInput';
 
@@ -41,6 +41,8 @@ interface AgentChatHistoryResponse {
   messages?: unknown;
   updatedAt?: string | null;
 }
+
+type ProjectContextUiState = 'never_built' | 'building' | 'fresh' | 'stale' | 'failed';
 
 const STORAGE_KEY = 'synapse12.agent-chat.v2';
 const PANEL_SIZE_STORAGE_KEY = 'synapse12.agent-chat.panel-size.v1';
@@ -104,6 +106,8 @@ const isResizingPanel = ref(false);
 const isClearHistoryConfirmOpen = ref(false);
 const isChatToolsMenuOpen = ref(false);
 const isProjectProfileExpanded = ref(false);
+const isBuildingProjectContext = ref(false);
+const projectContextBuildError = ref('');
 const projectFieldDrafts = ref<Record<ProjectProfileFieldKey, string>>(buildProjectFieldDrafts());
 const projectFieldInputRefs = ref<Partial<Record<ProjectProfileFieldKey, HTMLInputElement | null>>>({});
 const projectEditingFieldValue = ref<{ fieldKey: ProjectProfileFieldKey; originalValue: string } | null>(null);
@@ -154,6 +158,82 @@ function toProfile(value: unknown) {
     return {} as Record<string, unknown>;
   }
   return value as Record<string, unknown>;
+}
+
+function buildProjectContextCanvasSignature(canvasData: ProjectCanvasData | undefined) {
+  const canvas = toProfile(canvasData);
+  const nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : [])
+    .map((node) => {
+      const row = toProfile(node);
+      const id = typeof row.id === 'string' ? row.id.trim() : '';
+      const entityId = typeof row.entityId === 'string' ? row.entityId.trim() : '';
+      if (!id || !entityId) return null;
+      return {
+        id,
+        entityId,
+        x: Number.isFinite(Number(row.x)) ? Number(row.x) : 0,
+        y: Number.isFinite(Number(row.y)) ? Number(row.y) : 0,
+        scale: Number.isFinite(Number(row.scale)) ? Number(row.scale) : 1,
+      };
+    })
+    .filter((row): row is { id: string; entityId: string; x: number; y: number; scale: number } => Boolean(row))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const edges = (Array.isArray(canvas.edges) ? canvas.edges : [])
+    .map((edge) => {
+      const row = toProfile(edge);
+      const source = typeof row.source === 'string' ? row.source.trim() : '';
+      const target = typeof row.target === 'string' ? row.target.trim() : '';
+      if (!source || !target) return null;
+      return {
+        id: typeof row.id === 'string' ? row.id.trim() : '',
+        source,
+        target,
+        label: typeof row.label === 'string' ? row.label.trim() : '',
+        color: typeof row.color === 'string' ? row.color.trim() : '',
+        arrowLeft: row.arrowLeft === true,
+        arrowRight: row.arrowRight === true,
+      };
+    })
+    .filter((row): row is {
+      id: string;
+      source: string;
+      target: string;
+      label: string;
+      color: string;
+      arrowLeft: boolean;
+      arrowRight: boolean;
+    } => Boolean(row))
+    .sort((left, right) => {
+      const leftKey = `${left.id}|${left.source}|${left.target}|${left.label}`;
+      const rightKey = `${right.id}|${right.source}|${right.target}|${right.label}`;
+      return leftKey.localeCompare(rightKey);
+    });
+  const groups = (Array.isArray(canvas.groups) ? canvas.groups : [])
+    .map((group) => {
+      const row = toProfile(group);
+      const id = typeof row.id === 'string' ? row.id.trim() : '';
+      if (!id) return null;
+      const nodeIds = (Array.isArray(row.nodeIds) ? row.nodeIds : [])
+        .map((nodeId) => (typeof nodeId === 'string' ? nodeId.trim() : ''))
+        .filter(Boolean)
+        .sort((left, right) => left.localeCompare(right));
+      if (nodeIds.length < 2) return null;
+      return { id, nodeIds };
+    })
+    .filter((row): row is { id: string; nodeIds: string[] } => Boolean(row))
+    .sort((left, right) => left.id.localeCompare(right.id));
+
+  return { nodes, edges, groups };
+}
+
+function buildProjectContextSourceHash(canvasData: ProjectCanvasData | undefined) {
+  const text = JSON.stringify(buildProjectContextCanvasSignature(canvasData));
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `ctx-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
 function createAttachmentId() {
@@ -747,6 +827,58 @@ const projectProfileDescription = computed(() => {
   return typeof metadata.description === 'string' ? metadata.description.trim() : '';
 });
 
+const projectContextCurrentHash = computed(() => {
+  const project = activeProjectEntity.value;
+  if (!project) return '';
+  return buildProjectContextSourceHash(project.canvas_data);
+});
+
+const projectContextStoredHash = computed(() => {
+  const project = activeProjectEntity.value;
+  if (!project) return '';
+  const metadata = toProfile(project.ai_metadata);
+  return typeof metadata.project_context_source_hash === 'string' ? metadata.project_context_source_hash.trim() : '';
+});
+
+const projectContextBuiltAt = computed(() => {
+  const project = activeProjectEntity.value;
+  if (!project) return '';
+  const metadata = toProfile(project.ai_metadata);
+  return typeof metadata.project_context_built_at === 'string' ? metadata.project_context_built_at.trim() : '';
+});
+
+const projectContextState = computed<ProjectContextUiState>(() => {
+  if (isBuildingProjectContext.value) return 'building';
+
+  const project = activeProjectEntity.value;
+  if (!project) return 'never_built';
+  const metadata = toProfile(project.ai_metadata);
+  const rawStatus = typeof metadata.project_context_status === 'string' ? metadata.project_context_status.trim() : '';
+  const storedHash = projectContextStoredHash.value;
+  const currentHash = projectContextCurrentHash.value;
+
+  if (!storedHash) {
+    return rawStatus === 'failed' ? 'failed' : 'never_built';
+  }
+  if (rawStatus === 'failed') return 'failed';
+  if (storedHash !== currentHash) return 'stale';
+  return 'fresh';
+});
+
+const projectContextButtonLabel = computed(() => {
+  if (projectContextState.value === 'building') return 'Сборка...';
+  if (projectContextState.value === 'never_built') return 'Собрать контекст';
+  return 'Обновить контекст';
+});
+
+const projectContextStatusLabel = computed(() => {
+  if (projectContextState.value === 'building') return 'Контекст собирается';
+  if (projectContextState.value === 'fresh') return 'Контекст актуален';
+  if (projectContextState.value === 'stale') return 'Контекст устарел';
+  if (projectContextState.value === 'failed') return 'Сборка не удалась';
+  return 'Контекст не собран';
+});
+
 const projectProfileFields = computed(() => {
   const project = activeProjectEntity.value;
   const metadata = toProfile(project?.ai_metadata);
@@ -920,6 +1052,17 @@ function buildProjectMetadataResetPatch() {
     importance_history: [],
     ai_last_analysis: {},
     importance_source: 'auto',
+    project_context_status: '',
+    project_context_source_hash: '',
+    project_context_built_at: '',
+    project_context_version: 0,
+    project_context_error: '',
+    project_context_summary: '',
+    project_context_change_reason: '',
+    project_context_missing: [],
+    project_context_entity_count: 0,
+    project_context_connection_count: 0,
+    project_context_group_count: 0,
   } as Record<string, unknown>;
 }
 
@@ -1478,6 +1621,32 @@ function clearProjectProfileMetadata() {
   resetProjectProfileLocally();
 }
 
+async function buildProjectContext() {
+  const project = activeProjectEntity.value;
+  if (!project || isBuildingProjectContext.value) return;
+
+  isProjectProfileExpanded.value = true;
+  isBuildingProjectContext.value = true;
+  projectContextBuildError.value = '';
+
+  try {
+    await entitiesStore.flushQueuedEntityUpdate(project._id);
+    const { data } = await apiClient.post<{ entity?: Entity }>('/ai/project-context/build', {
+      projectId: project._id,
+    }, {
+      timeout: AGENT_CHAT_REQUEST_TIMEOUT_MS,
+    });
+
+    if (data?.entity?._id) {
+      entitiesStore.upsertEntityFromRealtime(data.entity);
+    }
+  } catch (error) {
+    projectContextBuildError.value = formatApiError(error);
+  } finally {
+    isBuildingProjectContext.value = false;
+  }
+}
+
 async function confirmClearAllChatHistory() {
   isClearHistoryConfirmOpen.value = false;
 
@@ -1684,6 +1853,17 @@ function toDisplayTime(iso: string) {
   }).format(date);
 }
 
+function toDisplayDateTime(iso: string) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
 function sanitizeFileNamePart(value: string) {
   return value.replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -1800,6 +1980,8 @@ watch(
     messageDraft.value = '';
     pendingUploads.value = [];
     isProjectProfileExpanded.value = false;
+    isBuildingProjectContext.value = false;
+    projectContextBuildError.value = '';
     resetProjectProfileLocally();
     voiceInput.cancelRecording();
     pendingComposerHeightReset.value = true;
@@ -1817,6 +1999,8 @@ watch(
 watch(
   activeProjectEntity,
   () => {
+    isBuildingProjectContext.value = false;
+    projectContextBuildError.value = '';
     resetProjectProfileLocally();
   },
   { immediate: true },
@@ -1922,6 +2106,31 @@ onBeforeUnmount(() => {
         </button>
 
         <div v-show="isProjectProfileExpanded" class="agent-project-profile-body">
+          <div class="agent-project-context-toolbar">
+            <div
+              class="agent-project-context-status"
+              :class="[`state-${projectContextState}`]"
+            >
+              <span class="agent-project-context-status-dot" aria-hidden="true"></span>
+              <span>{{ projectContextStatusLabel }}</span>
+              <span v-if="projectContextBuiltAt" class="agent-project-context-built-at">
+                {{ toDisplayDateTime(projectContextBuiltAt) }}
+              </span>
+            </div>
+            <button
+              type="button"
+              class="agent-project-context-build-btn"
+              :disabled="isBuildingProjectContext"
+              @click="void buildProjectContext()"
+            >
+              {{ projectContextButtonLabel }}
+            </button>
+          </div>
+
+          <p v-if="projectContextBuildError" class="agent-project-context-error">
+            {{ projectContextBuildError }}
+          </p>
+
           <textarea
             class="agent-project-description-input"
             rows="2"
@@ -2395,6 +2604,87 @@ onBeforeUnmount(() => {
   gap: 6px;
   max-height: 210px;
   overflow: auto;
+}
+
+.agent-project-context-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-project-context-status {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.agent-project-context-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+.agent-project-context-status.state-fresh {
+  color: #15803d;
+}
+
+.agent-project-context-status.state-stale,
+.agent-project-context-status.state-never_built {
+  color: #b45309;
+}
+
+.agent-project-context-status.state-failed {
+  color: #b91c1c;
+}
+
+.agent-project-context-status.state-building {
+  color: #1058ff;
+}
+
+.agent-project-context-built-at {
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.agent-project-context-build-btn {
+  border: 1px solid #cfe0ff;
+  border-radius: 9px;
+  background: #eef4ff;
+  color: #1058ff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  padding: 7px 10px;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    color 0.16s ease;
+}
+
+.agent-project-context-build-btn:hover:not(:disabled) {
+  border-color: #a9c6ff;
+  background: #e3eeff;
+}
+
+.agent-project-context-build-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.agent-project-context-error {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .agent-project-description-input {
