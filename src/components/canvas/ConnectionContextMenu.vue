@@ -9,8 +9,8 @@ const props = withDefaults(
     label?: string;
     options?: string[];
     color?: string;
-    sourceLabel?: string;
-    targetLabel?: string;
+    leftLabel?: string;
+    rightLabel?: string;
     arrowLeft?: boolean;
     arrowRight?: boolean;
   }>(),
@@ -18,8 +18,8 @@ const props = withDefaults(
     label: '',
     options: () => [],
     color: '#262626',
-    sourceLabel: '',
-    targetLabel: '',
+    leftLabel: '',
+    rightLabel: '',
     arrowLeft: false,
     arrowRight: false,
   },
@@ -41,11 +41,11 @@ const EMPTY_RELATION_LABEL = 'Связь не указана';
 const selectedLabel = ref(props.label || '');
 const searchQuery = ref(props.label || '');
 const isSearchOpen = ref(false);
-const sourceArrowTitle = computed(() =>
-  props.sourceLabel?.trim() ? `Стрелка к "${props.sourceLabel.trim()}"` : 'Стрелка к началу связи',
+const leftArrowTitle = computed(() =>
+  props.leftLabel?.trim() ? `Стрелка к "${props.leftLabel.trim()}"` : 'Стрелка к левой сущности',
 );
-const targetArrowTitle = computed(() =>
-  props.targetLabel?.trim() ? `Стрелка к "${props.targetLabel.trim()}"` : 'Стрелка к концу связи',
+const rightArrowTitle = computed(() =>
+  props.rightLabel?.trim() ? `Стрелка к "${props.rightLabel.trim()}"` : 'Стрелка к правой сущности',
 );
 const menuStyle = computed(() => ({
   left: `${props.x}px`,
@@ -183,8 +183,8 @@ function onColorInput(event: Event) {
       type="button"
       class="connection-btn vector-btn left"
       :class="{ active: arrowLeft }"
-      :title="sourceArrowTitle"
-      :aria-label="sourceArrowTitle"
+      :title="leftArrowTitle"
+      :aria-label="leftArrowTitle"
       @click="emit('toggle-arrow-left')"
     >
       ←
@@ -194,8 +194,8 @@ function onColorInput(event: Event) {
       type="button"
       class="connection-btn vector-btn right"
       :class="{ active: arrowRight }"
-      :title="targetArrowTitle"
-      :aria-label="targetArrowTitle"
+      :title="rightArrowTitle"
+      :aria-label="rightArrowTitle"
       @click="emit('toggle-arrow-right')"
     >
       →

@@ -825,21 +825,48 @@ const activeEdgeNodes = computed(() => {
   return { sourceNode, targetNode };
 });
 
-const activeEdgeLabels = computed(() => {
+const activeEdgeMenuState = computed(() => {
+  const edge = activeEdge.value;
   const pair = activeEdgeNodes.value;
-  if (!pair) {
-    return {
-      sourceLabel: '',
-      targetLabel: '',
-    };
+  const fallback = {
+    leftLabel: 'Левая сущность',
+    rightLabel: 'Правая сущность',
+    leftActive: Boolean(edge?.arrowLeft),
+    rightActive: Boolean(edge?.arrowRight),
+    leftBinding: 'source' as const,
+    rightBinding: 'target' as const,
+  };
+
+  if (!edge || !pair) {
+    return fallback;
   }
 
   const sourceEntity = entitiesStore.byId(pair.sourceNode.entityId);
   const targetEntity = entitiesStore.byId(pair.targetNode.entityId);
+  const sourceLabel = sourceEntity?.name?.trim() || 'Начало связи';
+  const targetLabel = targetEntity?.name?.trim() || 'Конец связи';
+  const sourceIsVisuallyLeft =
+    pair.sourceNode.x < pair.targetNode.x
+    || (pair.sourceNode.x === pair.targetNode.x && pair.sourceNode.y <= pair.targetNode.y);
+
+  if (sourceIsVisuallyLeft) {
+    return {
+      leftLabel: sourceLabel,
+      rightLabel: targetLabel,
+      leftActive: Boolean(edge.arrowLeft),
+      rightActive: Boolean(edge.arrowRight),
+      leftBinding: 'source' as const,
+      rightBinding: 'target' as const,
+    };
+  }
 
   return {
-    sourceLabel: sourceEntity?.name?.trim() || 'Начало связи',
-    targetLabel: targetEntity?.name?.trim() || 'Конец связи',
+    leftLabel: targetLabel,
+    rightLabel: sourceLabel,
+    leftActive: Boolean(edge.arrowRight),
+    rightActive: Boolean(edge.arrowLeft),
+    leftBinding: 'target' as const,
+    rightBinding: 'source' as const,
   };
 });
 
@@ -4096,18 +4123,32 @@ function onEdgeToggleArrowLeft() {
   const edge = activeEdge.value;
   if (!edge) return;
 
-  patchActiveEdge({
-    arrowLeft: !edge.arrowLeft,
-  });
+  const binding = activeEdgeMenuState.value.leftBinding;
+  patchActiveEdge(
+    binding === 'source'
+      ? {
+          arrowLeft: !edge.arrowLeft,
+        }
+      : {
+          arrowRight: !edge.arrowRight,
+        },
+  );
 }
 
 function onEdgeToggleArrowRight() {
   const edge = activeEdge.value;
   if (!edge) return;
 
-  patchActiveEdge({
-    arrowRight: !edge.arrowRight,
-  });
+  const binding = activeEdgeMenuState.value.rightBinding;
+  patchActiveEdge(
+    binding === 'target'
+      ? {
+          arrowRight: !edge.arrowRight,
+        }
+      : {
+          arrowLeft: !edge.arrowLeft,
+        },
+  );
 }
 
 function onEdgeColorChange(payload: { color: string }) {
@@ -6424,10 +6465,10 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       :label="activeEdge.label || ''"
       :options="connectionRelationOptions"
       :color="activeEdge.color || EDGE_DEFAULT_COLOR"
-      :source-label="activeEdgeLabels.sourceLabel"
-      :target-label="activeEdgeLabels.targetLabel"
-      :arrow-left="Boolean(activeEdge.arrowLeft)"
-      :arrow-right="Boolean(activeEdge.arrowRight)"
+      :left-label="activeEdgeMenuState.leftLabel"
+      :right-label="activeEdgeMenuState.rightLabel"
+      :arrow-left="activeEdgeMenuState.leftActive"
+      :arrow-right="activeEdgeMenuState.rightActive"
       @close="closeEdgeMenu"
       @toggle-arrow-left="onEdgeToggleArrowLeft"
       @toggle-arrow-right="onEdgeToggleArrowRight"
