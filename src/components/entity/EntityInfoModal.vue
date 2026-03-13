@@ -23,6 +23,7 @@ import {
 } from '../../data/logoLibrary';
 import type {
   CanvasEdgeProjection,
+  CanvasGroupProjection,
   CanvasNodeProjection,
   Entity,
   EntityType,
@@ -772,6 +773,7 @@ function normalizeProjectCanvasData(canvasData: unknown): ProjectCanvasData {
   const raw = toProfile(canvasData);
   const rawNodes = Array.isArray(raw.nodes) ? raw.nodes : [];
   const rawEdges = Array.isArray(raw.edges) ? raw.edges : [];
+  const rawGroups = Array.isArray(raw.groups) ? raw.groups : [];
 
   const nodes: CanvasNodeProjection[] = rawNodes.flatMap((node) => {
     const record = toProfile(node);
@@ -804,7 +806,30 @@ function normalizeProjectCanvasData(canvasData: unknown): ProjectCanvasData {
     return [{ id, source, target, label, color, arrowLeft, arrowRight }];
   });
 
-  return { nodes, edges };
+  const nodeIdSet = new Set(nodes.map((node) => node.id));
+  const groups: CanvasGroupProjection[] = rawGroups.flatMap((group) => {
+    const record = toProfile(group);
+    const id = typeof record.id === 'string' ? record.id : '';
+    const name = typeof record.name === 'string' && record.name.trim() ? record.name.trim().slice(0, 120) : 'Группа';
+    const color = typeof record.color === 'string' && record.color.trim() ? record.color.trim().slice(0, 24) : undefined;
+    const nodeIds = Array.isArray(record.nodeIds)
+      ? Array.from(
+        new Set(
+          record.nodeIds
+            .map((nodeId) => (typeof nodeId === 'string' ? nodeId : ''))
+            .filter((nodeId) => nodeId && nodeIdSet.has(nodeId)),
+        ),
+      )
+      : [];
+
+    if (!id || nodeIds.length < 2) {
+      return [];
+    }
+
+    return [{ id, name, nodeIds, color }];
+  });
+
+  return { nodes, edges, groups };
 }
 
 function findProjectInsertPosition(nodes: CanvasNodeProjection[]) {
@@ -1058,6 +1083,7 @@ async function onAddToProject(projectId: string) {
       },
     ],
     edges: canvasData.edges,
+    groups: canvasData.groups,
   };
 
   isProjectActionBusy.value = true;

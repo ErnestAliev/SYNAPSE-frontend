@@ -18,6 +18,7 @@ import { calculateEntityProfileProgress } from '../utils/profileProgress';
 import type { LogoLibraryItem } from '../data/logoLibrary';
 import type {
   CanvasEdgeProjection,
+  CanvasGroupProjection,
   CanvasNodeProjection,
   Entity,
   EntityType,
@@ -30,10 +31,15 @@ const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 3.0;
 const MENU_WIDTH = 320;
 const MENU_HEIGHT = 320;
+const GROUP_MENU_WIDTH = 220;
 const MIN_NODE_SCALE = 0.8;
 const MAX_NODE_SCALE = 1.2;
 const DEFAULT_NODE_SCALE = 1;
 const NODE_CIRCLE_DIAMETER = 72;
+const GROUP_PADDING_X = 84;
+const GROUP_PADDING_Y = 96;
+const GROUP_MIN_WIDTH = 240;
+const GROUP_MIN_HEIGHT = 180;
 const AUTO_CONNECT_EDGE_GAP_PX = 20;
 const AUTO_CONNECT_LIMIT = 2;
 const EDGE_DEFAULT_COLOR = '#262626';
@@ -487,6 +493,7 @@ const authStore = useAuthStore();
 const viewportRef = ref<HTMLDivElement | null>(null);
 const nodes = ref<CanvasNodeProjection[]>([]);
 const edges = ref<CanvasEdgeProjection[]>([]);
+const groups = ref<CanvasGroupProjection[]>([]);
 const isLoading = ref(true);
 const loadError = ref<string | null>(null);
 
@@ -531,6 +538,14 @@ const draggingGroup = ref<{
   moved: boolean;
 } | null>(null);
 const nameEditingNodeId = ref<string | null>(null);
+const selectedGroupId = ref<string | null>(null);
+const editingGroupId = ref<string | null>(null);
+const groupContextMenu = ref<{
+  kind: 'selection' | 'group';
+  groupId?: string;
+  clientX: number;
+  clientY: number;
+} | null>(null);
 
 const suppressMenuOpenUntil = ref(0);
 const contextMenu = ref<{
@@ -675,6 +690,15 @@ const selectedNodes = computed(() => {
   const selectedSet = selectedNodeIdSet.value;
   return nodes.value.filter((node) => selectedSet.has(node.id));
 });
+const nodeIdToGroupId = computed(() => {
+  const map = new Map<string, string>();
+  for (const group of groups.value) {
+    for (const nodeId of group.nodeIds) {
+      map.set(nodeId, group.id);
+    }
+  }
+  return map;
+});
 const activeCanvasBackground = computed<CanvasBackgroundPreset>(() => {
   return (
     CANVAS_BACKGROUND_PRESETS.find((item) => item.id === canvasBackgroundId.value) ||
@@ -717,6 +741,75 @@ const selectionRectStyle = computed<CSSProperties | null>(() => {
     width: `${width}px`,
     height: `${height}px`,
   };
+});
+
+interface CanvasGroupBounds {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+}
+
+interface CanvasGroupDisplay {
+  id: string;
+  name: string;
+  color: string;
+  nodeIds: string[];
+  bounds: CanvasGroupBounds;
+  isSelected: boolean;
+  isEditing: boolean;
+}
+
+function computeGroupBounds(nodeIds: string[]): CanvasGroupBounds | null {
+  const groupNodes = nodeIds
+    .map((nodeId) => getNodeById(nodeId))
+    .filter((node): node is CanvasNodeProjection => Boolean(node));
+
+  if (groupNodes.length < 2) return null;
+
+  const rawLeft = Math.min(...groupNodes.map((node) => node.x - getNodeRadiusWorld(node))) - GROUP_PADDING_X;
+  const rawRight = Math.max(...groupNodes.map((node) => node.x + getNodeRadiusWorld(node))) + GROUP_PADDING_X;
+  const rawTop = Math.min(...groupNodes.map((node) => node.y - getNodeRadiusWorld(node))) - GROUP_PADDING_Y;
+  const rawBottom = Math.max(...groupNodes.map((node) => node.y + getNodeRadiusWorld(node))) + GROUP_PADDING_Y;
+  const centerX = (rawLeft + rawRight) / 2;
+  const centerY = (rawTop + rawBottom) / 2;
+  const width = Math.max(GROUP_MIN_WIDTH, rawRight - rawLeft);
+  const height = Math.max(GROUP_MIN_HEIGHT, rawBottom - rawTop);
+  const left = centerX - width / 2;
+  const top = centerY - height / 2;
+
+  return {
+    left,
+    top,
+    width,
+    height,
+    centerX,
+    centerY,
+  };
+}
+
+const displayGroups = computed<CanvasGroupDisplay[]>(() => {
+  return groups.value.flatMap((group) => {
+    const bounds = computeGroupBounds(group.nodeIds);
+    if (!bounds) return [];
+
+    return [{
+      id: group.id,
+      name: group.name || 'Группа',
+      color: group.color || '#1058ff',
+      nodeIds: group.nodeIds,
+      bounds,
+      isSelected: selectedGroupId.value === group.id,
+      isEditing: editingGroupId.value === group.id,
+    }];
+  });
+});
+
+const multiSelectionBounds = computed<CanvasGroupBounds | null>(() => {
+  if (selectedNodes.value.length < 2 || selectedGroupId.value) return null;
+  return computeGroupBounds(selectedNodes.value.map((node) => node.id));
 });
 
 const activeMenuNode = computed(() => {
@@ -804,6 +897,26 @@ const contextMenuPosition = computed(() => {
     ),
     y: Math.min(
       Math.max(rawY, padding + menuHalfHeight),
+      window.innerHeight - padding - menuHalfHeight,
+    ),
+  };
+});
+
+const groupContextMenuPosition = computed(() => {
+  const menu = groupContextMenu.value;
+  if (!menu) return null;
+
+  const padding = 10;
+  const menuHalfWidth = GROUP_MENU_WIDTH / 2;
+  const menuHalfHeight = 74;
+
+  return {
+    x: Math.min(
+      Math.max(menu.clientX, padding + menuHalfWidth),
+      window.innerWidth - padding - menuHalfWidth,
+    ),
+    y: Math.min(
+      Math.max(menu.clientY, padding + menuHalfHeight),
       window.innerHeight - padding - menuHalfHeight,
     ),
   };
@@ -1789,6 +1902,13 @@ function createLocalEdgeId() {
   return `edge-${Date.now()}-${Math.floor(Math.random() * 100_000)}`;
 }
 
+function createLocalGroupId() {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return `group-${crypto.randomUUID()}`;
+  }
+  return `group-${Date.now()}-${Math.floor(Math.random() * 100_000)}`;
+}
+
 function snap(value: number) {
   return Math.round(value / GRID_STEP) * GRID_STEP;
 }
@@ -1874,6 +1994,14 @@ function clearSelectedNodes() {
   selectedNodeIds.value = [];
 }
 
+function clearSelectedGroup() {
+  selectedGroupId.value = null;
+}
+
+function closeGroupContextMenu() {
+  groupContextMenu.value = null;
+}
+
 function clearLibraryActionMessageTimer() {
   if (!libraryActionMessageTimer.value) return;
   clearTimeout(libraryActionMessageTimer.value);
@@ -1939,6 +2067,169 @@ function selectNodesByIds(nodeIds: string[], options?: { additive?: boolean }) {
   selectedNodeIds.value = Array.from(next);
 }
 
+function getNodeGroupId(nodeId: string) {
+  return nodeIdToGroupId.value.get(nodeId) || null;
+}
+
+function isNodeInteractive(nodeId: string) {
+  const groupId = getNodeGroupId(nodeId);
+  if (!groupId) return true;
+  return editingGroupId.value === groupId;
+}
+
+function normalizeGroups(source: CanvasGroupProjection[]) {
+  const availableNodeIds = new Set(nodes.value.map((node) => node.id));
+  const claimedNodeIds = new Set<string>();
+
+  return source.flatMap((group) => {
+    const nodeIds = group.nodeIds.filter((nodeId) => {
+      if (!availableNodeIds.has(nodeId) || claimedNodeIds.has(nodeId)) {
+        return false;
+      }
+      claimedNodeIds.add(nodeId);
+      return true;
+    });
+
+    if (nodeIds.length < 2) {
+      return [];
+    }
+
+    return [{
+      id: group.id,
+      name: group.name || 'Группа',
+      nodeIds,
+      color: group.color || '#1058ff',
+    }];
+  });
+}
+
+function syncGroups(nextGroups: CanvasGroupProjection[], options?: { preserveSelection?: boolean }) {
+  groups.value = normalizeGroups(nextGroups);
+  const groupIds = new Set(groups.value.map((group) => group.id));
+
+  if (!options?.preserveSelection && selectedGroupId.value && !groupIds.has(selectedGroupId.value)) {
+    selectedGroupId.value = null;
+  }
+  if (editingGroupId.value && !groupIds.has(editingGroupId.value)) {
+    editingGroupId.value = null;
+  }
+}
+
+function getNextGroupName() {
+  return `Группа - ${groups.value.length + 1}`;
+}
+
+function canCreateGroupFromSelection() {
+  if (selectedNodes.value.length < 2) return false;
+  return selectedNodes.value.every((node) => !getNodeGroupId(node.id));
+}
+
+function createGroupFromSelection() {
+  if (!canCreateGroupFromSelection()) {
+    setLibraryActionMessage('Нельзя группировать вложенные узлы');
+    return false;
+  }
+
+  const nextGroup: CanvasGroupProjection = {
+    id: createLocalGroupId(),
+    name: getNextGroupName(),
+    nodeIds: selectedNodes.value.map((node) => node.id),
+    color: '#1058ff',
+  };
+
+  syncGroups([...groups.value, nextGroup], { preserveSelection: true });
+  clearSelectedNodes();
+  selectedGroupId.value = nextGroup.id;
+  editingGroupId.value = null;
+  closeGroupContextMenu();
+  closeContextMenu();
+  closeEdgeMenu();
+  queueCanvasSync();
+  return true;
+}
+
+function resolveSelectedGroupForUngroup() {
+  if (selectedGroupId.value) return selectedGroupId.value;
+  if (!selectedNodeIds.value.length) return '';
+
+  const groupIds = Array.from(
+    new Set(selectedNodeIds.value.map((nodeId) => getNodeGroupId(nodeId)).filter(Boolean)),
+  );
+  if (groupIds.length === 1) {
+    return groupIds[0] || '';
+  }
+  return '';
+}
+
+function ungroupById(groupId: string) {
+  if (!groupId) return false;
+  const targetGroup = groups.value.find((group) => group.id === groupId);
+  if (!targetGroup) return false;
+
+  syncGroups(groups.value.filter((group) => group.id !== groupId));
+  selectedGroupId.value = null;
+  editingGroupId.value = null;
+  selectNodesByIds(targetGroup.nodeIds, { additive: false });
+  closeGroupContextMenu();
+  queueCanvasSync();
+  return true;
+}
+
+function toggleGroupEditMode(groupId: string, force?: boolean) {
+  if (!groupId) return;
+  const nextValue = typeof force === 'boolean' ? force : editingGroupId.value !== groupId;
+  editingGroupId.value = nextValue ? groupId : null;
+  selectedGroupId.value = groupId;
+  if (nextValue) {
+    clearSelectedNodes();
+  }
+  closeGroupContextMenu();
+}
+
+function openSelectionGroupMenu(clientX: number, clientY: number) {
+  if (!multiSelectionBounds.value || selectedNodes.value.length < 2) return;
+  groupContextMenu.value = {
+    kind: 'selection',
+    clientX,
+    clientY,
+  };
+  closeContextMenu();
+  closeEdgeMenu();
+}
+
+function openGroupMenu(groupId: string, clientX: number, clientY: number) {
+  selectedGroupId.value = groupId;
+  clearSelectedNodes();
+  groupContextMenu.value = {
+    kind: 'group',
+    groupId,
+    clientX,
+    clientY,
+  };
+  closeContextMenu();
+  closeEdgeMenu();
+}
+
+function isWorldPointInsideBounds(worldX: number, worldY: number, bounds: CanvasGroupBounds | null) {
+  if (!bounds) return false;
+  return (
+    worldX >= bounds.left &&
+    worldX <= bounds.left + bounds.width &&
+    worldY >= bounds.top &&
+    worldY <= bounds.top + bounds.height
+  );
+}
+
+function findDisplayGroupByPoint(worldX: number, worldY: number) {
+  for (let index = displayGroups.value.length - 1; index >= 0; index -= 1) {
+    const group = displayGroups.value[index];
+    if (group && isWorldPointInsideBounds(worldX, worldY, group.bounds)) {
+      return group;
+    }
+  }
+  return null;
+}
+
 function finalizeSelectionRect() {
   const rect = selectionRect.value;
   if (!rect) return false;
@@ -1958,6 +2249,9 @@ function finalizeSelectionRect() {
 
   const withinRect = nodes.value
     .filter((node) => {
+      if (!isNodeInteractive(node.id)) {
+        return false;
+      }
       const radius = getNodeRadiusWorld(node);
       const left = node.x - radius;
       const right = node.x + radius;
@@ -3005,6 +3299,8 @@ function normalizeCanvasData(canvasData: ProjectCanvasData | undefined): Project
         }))
     : [];
 
+  const nodeIdSet = new Set(normalizedNodes.map((node) => node.id));
+
   const normalizedEdges = Array.isArray(canvasData?.edges)
     ? canvasData.edges
         .filter((edge): edge is CanvasEdgeProjection => {
@@ -3026,6 +3322,26 @@ function normalizeCanvasData(canvasData: ProjectCanvasData | undefined): Project
         }))
     : [];
 
+  const normalizedGroups = Array.isArray(canvasData?.groups)
+    ? canvasData.groups
+        .filter((group): group is CanvasGroupProjection => {
+          return !!group && typeof group.id === 'string' && Array.isArray(group.nodeIds);
+        })
+        .map((group) => ({
+          id: group.id,
+          name: typeof group.name === 'string' && group.name.trim() ? group.name.trim().slice(0, 120) : 'Группа',
+          nodeIds: Array.from(
+            new Set(
+              group.nodeIds.filter((nodeId): nodeId is string => {
+                return typeof nodeId === 'string' && nodeIdSet.has(nodeId);
+              }),
+            ),
+          ),
+          color: typeof group.color === 'string' && group.color.trim() ? group.color.trim().slice(0, 24) : '#1058ff',
+        }))
+        .filter((group) => group.nodeIds.length >= 2)
+    : [];
+
   const background =
     typeof canvasData?.background === 'string' && canvasData.background.trim()
       ? canvasData.background.trim()
@@ -3034,6 +3350,7 @@ function normalizeCanvasData(canvasData: ProjectCanvasData | undefined): Project
   return {
     nodes: normalizedNodes,
     edges: normalizedEdges,
+    groups: normalizedGroups,
     viewport: normalizeCanvasViewport(canvasData?.viewport),
     background,
   };
@@ -3057,6 +3374,12 @@ function buildCanvasHistorySnapshot(source?: Partial<ProjectCanvasData>): Projec
       arrowLeft: edge.arrowLeft,
       arrowRight: edge.arrowRight,
     })),
+    groups: (source?.groups ?? groups.value).map((group) => ({
+      id: group.id,
+      name: group.name,
+      nodeIds: [...group.nodeIds],
+      color: group.color,
+    })),
     background:
       typeof source?.background === 'string' && source.background.trim()
         ? source.background.trim()
@@ -3072,7 +3395,11 @@ function areCanvasHistorySnapshotsEqual(
   if ((left.background || DEFAULT_CANVAS_BACKGROUND) !== (right.background || DEFAULT_CANVAS_BACKGROUND)) {
     return false;
   }
-  if (left.nodes.length !== right.nodes.length || left.edges.length !== right.edges.length) {
+  if (
+    left.nodes.length !== right.nodes.length ||
+    left.edges.length !== right.edges.length ||
+    (left.groups || []).length !== (right.groups || []).length
+  ) {
     return false;
   }
 
@@ -3107,6 +3434,29 @@ function areCanvasHistorySnapshotsEqual(
       Boolean(leftEdge.arrowRight) !== Boolean(rightEdge.arrowRight)
     ) {
       return false;
+    }
+  }
+
+  const leftGroups = left.groups || [];
+  const rightGroups = right.groups || [];
+  for (let index = 0; index < leftGroups.length; index += 1) {
+    const leftGroup = leftGroups[index];
+    const rightGroup = rightGroups[index];
+    if (
+      !leftGroup ||
+      !rightGroup ||
+      leftGroup.id !== rightGroup.id ||
+      leftGroup.name !== rightGroup.name ||
+      (leftGroup.color || '#1058ff') !== (rightGroup.color || '#1058ff') ||
+      leftGroup.nodeIds.length !== rightGroup.nodeIds.length
+    ) {
+      return false;
+    }
+
+    for (let nodeIndex = 0; nodeIndex < leftGroup.nodeIds.length; nodeIndex += 1) {
+      if (leftGroup.nodeIds[nodeIndex] !== rightGroup.nodeIds[nodeIndex]) {
+        return false;
+      }
     }
   }
 
@@ -3168,6 +3518,7 @@ function applyCanvasHistorySnapshot(snapshot: ProjectCanvasData) {
   clearCanvasHistoryTimer();
   nodes.value = normalized.nodes;
   edges.value = normalized.edges;
+  groups.value = normalized.groups || [];
   canvasBackgroundId.value =
     typeof normalized.background === 'string' && normalized.background.trim()
       ? normalized.background
@@ -3885,6 +4236,12 @@ function buildCanvasDataSnapshot(): ProjectCanvasData {
       arrowLeft: edge.arrowLeft,
       arrowRight: edge.arrowRight,
     })),
+    groups: groups.value.map((group) => ({
+      id: group.id,
+      name: group.name,
+      nodeIds: [...group.nodeIds],
+      color: group.color,
+    })),
     viewport: {
       x: camera.value.x,
       y: camera.value.y,
@@ -4000,6 +4357,9 @@ async function loadProjectCanvas(projectId: string) {
   closeEdgeMenu();
   clearSelectionRect();
   clearSelectedNodes();
+  clearSelectedGroup();
+  closeGroupContextMenu();
+  editingGroupId.value = null;
   closeCanvasControlMenus();
   closeResetCanvasConfirm();
 
@@ -4029,6 +4389,7 @@ async function loadProjectCanvas(projectId: string) {
     }
     nodes.value = canvasData.nodes;
     edges.value = canvasData.edges;
+    groups.value = canvasData.groups || [];
     canvasBackgroundId.value =
       typeof canvasData.background === 'string' && canvasData.background.trim()
         ? canvasData.background
@@ -4053,6 +4414,7 @@ async function loadProjectCanvas(projectId: string) {
         },
       ];
       edges.value = [];
+      groups.value = [];
       resetCanvasHistory(buildCanvasHistorySnapshot());
       queueCanvasSync({ immediate: true });
       requestViewportCenter(0, 0);
@@ -4305,6 +4667,8 @@ function onViewportPointerDown(event: PointerEvent) {
   if (startedOnNode) return;
 
   event.preventDefault();
+  closeGroupContextMenu();
+  clearSelectedGroup();
   const world = clientToWorld(event.clientX, event.clientY);
   selectionRect.value = {
     startX: world.x,
@@ -4325,9 +4689,15 @@ function onViewportClick(event: MouseEvent) {
   const target = event.target as HTMLElement | null;
   if (
     target?.closest(
-      '.canvas-library, .canvas-node, .canvas-controls, .canvas-history-controls, .menu-backdrop, .canvas-node-search, .canvas-monitor',
+      '.canvas-library, .canvas-node, .canvas-controls, .canvas-history-controls, .menu-backdrop, .canvas-node-search, .canvas-monitor, .canvas-group-menu',
     )
   ) {
+    return;
+  }
+
+  const world = clientToWorld(event.clientX, event.clientY);
+  if (!isPlayMode.value && !selectedGroupId.value && isWorldPointInsideBounds(world.x, world.y, multiSelectionBounds.value)) {
+    openSelectionGroupMenu(event.clientX, event.clientY);
     return;
   }
 
@@ -4337,6 +4707,8 @@ function onViewportClick(event: MouseEvent) {
     return;
   }
 
+  closeGroupContextMenu();
+  clearSelectedGroup();
   const hit = findEdgeAtClientPosition(event.clientX, event.clientY);
   if (!hit) {
     closeEdgeMenu();
@@ -4346,6 +4718,104 @@ function onViewportClick(event: MouseEvent) {
   nameEditingNodeId.value = null;
   closeContextMenu();
   edgeMenu.value = { edgeId: hit.edgeId };
+}
+
+function onViewportContextMenu(event: MouseEvent) {
+  if (isLoading.value || isPanning.value || selectionRect.value) return;
+
+  const target = event.target as HTMLElement | null;
+  if (
+    target?.closest(
+      '.canvas-library, .canvas-node, .canvas-controls, .canvas-history-controls, .canvas-node-search, .canvas-monitor, .canvas-group-menu',
+    )
+  ) {
+    return;
+  }
+
+  const world = clientToWorld(event.clientX, event.clientY);
+  const hitGroup = findDisplayGroupByPoint(world.x, world.y);
+  if (hitGroup) {
+    event.preventDefault();
+    openGroupMenu(hitGroup.id, event.clientX, event.clientY);
+    return;
+  }
+
+  if (isWorldPointInsideBounds(world.x, world.y, multiSelectionBounds.value)) {
+    event.preventDefault();
+    openSelectionGroupMenu(event.clientX, event.clientY);
+  }
+}
+
+function onGroupPointerDown(groupId: string, event: PointerEvent) {
+  if (event.button !== 0) return;
+  if (editingGroupId.value === groupId) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const group = displayGroups.value.find((item) => item.id === groupId);
+  if (!group) return;
+
+  selectedGroupId.value = groupId;
+  clearSelectedNodes();
+  closeContextMenu();
+  closeEdgeMenu();
+  closeGroupContextMenu();
+  nameEditingNodeId.value = null;
+
+  const world = clientToWorld(event.clientX, event.clientY);
+  const startPositions: Record<string, { x: number; y: number }> = {};
+  for (const nodeId of group.nodeIds) {
+    const node = getNodeById(nodeId);
+    if (!node) continue;
+    startPositions[nodeId] = { x: node.x, y: node.y };
+  }
+
+  draggingGroup.value = {
+    nodeIds: group.nodeIds,
+    startPointerX: world.x,
+    startPointerY: world.y,
+    startPositions,
+    moved: false,
+  };
+}
+
+function onGroupClick(groupId: string, event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  selectedGroupId.value = groupId;
+  clearSelectedNodes();
+  closeContextMenu();
+  closeEdgeMenu();
+}
+
+function onGroupDoubleClick(groupId: string, event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  toggleGroupEditMode(groupId, true);
+}
+
+function onGroupContextMenu(groupId: string, event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  openGroupMenu(groupId, event.clientX, event.clientY);
+}
+
+function onGroupMenuCreate() {
+  createGroupFromSelection();
+}
+
+function onGroupMenuUngroup() {
+  const groupId = groupContextMenu.value?.groupId || resolveSelectedGroupForUngroup();
+  if (!groupId) return;
+  ungroupById(groupId);
+}
+
+function onGroupMenuToggleEdit() {
+  const groupId = groupContextMenu.value?.groupId;
+  if (!groupId) return;
+  toggleGroupEditMode(groupId);
 }
 
 function onWindowPointerMove(event: PointerEvent) {
@@ -4546,9 +5016,26 @@ function resetTransientStates() {
   closeNodeSearch();
   closeCanvasControlMenus();
   closeResetCanvasConfirm();
+  closeGroupContextMenu();
+  clearSelectedGroup();
+  editingGroupId.value = null;
 }
 
 function onWindowKeyDown(event: KeyboardEvent) {
+  const isGroupShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'g';
+  if (isGroupShortcut && !isEditableElement(event.target)) {
+    event.preventDefault();
+    if (event.shiftKey) {
+      const groupId = resolveSelectedGroupForUngroup();
+      if (groupId) {
+        ungroupById(groupId);
+      }
+    } else {
+      createGroupFromSelection();
+    }
+    return;
+  }
+
   if (event.code === 'Space') {
     if (isEditableElement(event.target)) return;
     if (event.repeat) return;
@@ -4756,6 +5243,8 @@ function onNodeDragStart(payload: {
   if (!shouldKeepSelection && selectedNodeIds.value.length) {
     clearSelectedNodes();
   }
+  clearSelectedGroup();
+  closeGroupContextMenu();
   nameEditingNodeId.value = null;
   closeContextMenu();
   closeEdgeMenu();
@@ -4776,6 +5265,8 @@ function onNodeOpenMenu(payload: { nodeId: string; shiftKey?: boolean }) {
   closeResetCanvasConfirm();
 
   if (payload.shiftKey) {
+    clearSelectedGroup();
+    closeGroupContextMenu();
     selectNodesByIds([payload.nodeId], { additive: true });
     closeContextMenu();
     closeEdgeMenu();
@@ -4783,6 +5274,8 @@ function onNodeOpenMenu(payload: { nodeId: string; shiftKey?: boolean }) {
   }
 
   clearSelectedNodes();
+  clearSelectedGroup();
+  closeGroupContextMenu();
   closeEdgeMenu();
 
   if (contextMenu.value?.nodeId === payload.nodeId) {
@@ -4805,6 +5298,8 @@ function onNodeOpenMenu(payload: { nodeId: string; shiftKey?: boolean }) {
 function onNodeLongPress(payload: { nodeId: string; entityId: string }) {
   if (!payload.entityId) return;
   quickVoiceEntityId.value = payload.entityId;
+  clearSelectedGroup();
+  closeGroupContextMenu();
   closeContextMenu();
   closeEdgeMenu();
   nameEditingNodeId.value = null;
@@ -4953,6 +5448,7 @@ function onMenuDeleteNode() {
 
   nodes.value = nodes.value.filter((node) => node.id !== nodeId);
   edges.value = edges.value.filter((edge) => edge.source !== nodeId && edge.target !== nodeId);
+  syncGroups(groups.value, { preserveSelection: true });
   selectedNodeIds.value = selectedNodeIds.value.filter((id) => id !== nodeId);
   queueCanvasSync();
   closeEdgeMenu();
@@ -5238,6 +5734,11 @@ watch(
     if (filtered.length !== selectedNodeIds.value.length) {
       selectedNodeIds.value = filtered;
     }
+
+    const normalizedGroups = normalizeGroups(groups.value);
+    if (JSON.stringify(normalizedGroups) !== JSON.stringify(groups.value)) {
+      syncGroups(normalizedGroups, { preserveSelection: true });
+    }
   },
 );
 
@@ -5247,6 +5748,19 @@ watch(
     if (count >= 2) return;
     isAlignMenuOpen.value = false;
     isArrangeMenuOpen.value = false;
+    if (groupContextMenu.value?.kind === 'selection') {
+      closeGroupContextMenu();
+    }
+  },
+);
+
+watch(
+  () => selectedGroupId.value,
+  (groupId) => {
+    if (groupId) return;
+    if (groupContextMenu.value?.kind === 'group') {
+      closeGroupContextMenu();
+    }
   },
 );
 
@@ -5471,6 +5985,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       }"
       @pointerdown="onViewportPointerDown"
       @click="onViewportClick"
+      @contextmenu="onViewportContextMenu"
       @wheel="onViewportWheel"
       @dblclick="onCanvasDoubleClick"
       @dragenter="onViewportDragEnter"
@@ -6017,6 +6532,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
             draggingNode?.nodeId === node.id ||
             Boolean(draggingGroup?.nodeIds.includes(node.id))
           "
+          :interaction-locked="!isNodeInteractive(node.id)"
           :is-name-editing="nameEditingNodeId === node.id"
           :preview-type="contextMenu?.nodeId === node.id ? contextMenuHoverType : null"
           :play-mode="isPlayMode"
@@ -6030,6 +6546,29 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           @node-play-leave="onNodePlayLeave"
           @node-play-tap="onNodePlayTap"
         />
+
+        <button
+          v-for="group in displayGroups"
+          :key="group.id"
+          type="button"
+          class="canvas-group-box"
+          :class="{ selected: group.isSelected, editing: group.isEditing }"
+          :style="{
+            left: `${group.bounds.left}px`,
+            top: `${group.bounds.top}px`,
+            width: `${group.bounds.width}px`,
+            height: `${group.bounds.height}px`,
+            '--group-color': group.color,
+          }"
+          :title="group.name"
+          @pointerdown="onGroupPointerDown(group.id, $event)"
+          @click="onGroupClick(group.id, $event)"
+          @dblclick="onGroupDoubleClick(group.id, $event)"
+          @contextmenu="onGroupContextMenu(group.id, $event)"
+        >
+          <span class="canvas-group-label">{{ group.name }}</span>
+          <span v-if="group.isEditing" class="canvas-group-mode">Редактирование</span>
+        </button>
       </div>
 
       <div
@@ -6456,6 +6995,31 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       @open-entity-info="onMenuOpenEntityInfo"
       @toggle-lock="onMenuToggleLock"
     />
+
+    <div
+      v-if="groupContextMenu && groupContextMenuPosition"
+      class="canvas-group-menu"
+      :style="{ left: `${groupContextMenuPosition.x}px`, top: `${groupContextMenuPosition.y}px` }"
+      @pointerdown.stop
+      @click.stop
+    >
+      <button
+        v-if="groupContextMenu.kind === 'selection'"
+        type="button"
+        class="canvas-group-menu-btn"
+        @click="onGroupMenuCreate"
+      >
+        Группировать
+      </button>
+      <template v-else>
+        <button type="button" class="canvas-group-menu-btn" @click="onGroupMenuToggleEdit">
+          {{ editingGroupId === groupContextMenu.groupId ? 'Закрыть группу' : 'Редактировать группу' }}
+        </button>
+        <button type="button" class="canvas-group-menu-btn danger" @click="onGroupMenuUngroup">
+          Разгруппировать
+        </button>
+      </template>
+    </div>
 
     <ConnectionContextMenu
       v-if="edgeMenu && activeEdge && edgeMenuPosition"
@@ -7500,6 +8064,48 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   will-change: transform;
 }
 
+.canvas-group-box {
+  position: absolute;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 26px;
+  border: 2px solid color-mix(in srgb, var(--group-color) 72%, #ffffff 28%);
+  background: color-mix(in srgb, var(--group-color) 10%, #ffffff 90%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.66);
+  color: #1e293b;
+  z-index: 34;
+  pointer-events: auto;
+  cursor: grab;
+}
+
+.canvas-group-box.selected {
+  background: color-mix(in srgb, var(--group-color) 14%, #ffffff 86%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.72),
+    0 18px 34px rgba(15, 23, 42, 0.12);
+}
+
+.canvas-group-box.editing {
+  z-index: 0;
+  border-style: dashed;
+  cursor: default;
+}
+
+.canvas-group-label {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.canvas-group-mode {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(30, 41, 59, 0.64);
+}
+
 .canvas-selection-rect {
   position: absolute;
   z-index: 42;
@@ -7549,6 +8155,46 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   border-left: 6px solid transparent;
   border-right: 6px solid transparent;
   border-top: 6px solid rgba(255, 255, 255, 0.96);
+}
+
+.canvas-group-menu {
+  position: fixed;
+  transform: translate(-50%, -50%);
+  z-index: 165;
+  min-width: 220px;
+  border: 1px solid rgba(203, 213, 225, 0.95);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 20px 44px rgba(15, 23, 42, 0.18);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.canvas-group-menu-btn {
+  border: none;
+  border-radius: 12px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font: inherit;
+  font-weight: 700;
+  padding: 11px 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.canvas-group-menu-btn:hover {
+  background: #dbeafe;
+}
+
+.canvas-group-menu-btn.danger {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.canvas-group-menu-btn.danger:hover {
+  background: #fee2e2;
 }
 
 .node-menu-hint.hint-place-bottom::after {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch, type CSSProperties } from 'vue';
 import AppIcon from '../ui/AppIcon.vue';
 import ProfileProgressRing from '../ui/ProfileProgressRing.vue';
 import { useEntitiesStore } from '../../stores/entities';
@@ -11,6 +11,7 @@ const props = defineProps<{
   active?: boolean;
   selected?: boolean;
   dragging?: boolean;
+  interactionLocked?: boolean;
   isNameEditing?: boolean;
   previewType?: EntityType | null;
   playMode?: boolean;
@@ -166,9 +167,10 @@ const nameInputSize = computed(() => {
   const length = nameDraft.value.trim().length;
   return Math.min(32, Math.max(10, length || 10));
 });
-const nodeStyle = computed(() => ({
+const nodeStyle = computed<CSSProperties>(() => ({
   left: `${props.node.x}px`,
   top: `${props.node.y}px`,
+  pointerEvents: props.interactionLocked ? 'none' : 'auto',
 }));
 const nodeCircleStyle = computed(() => ({
   background: nodeColor.value,
@@ -414,7 +416,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     class="canvas-node"
-    :class="{ active, selected, dragging, 'play-mode': playMode }"
+    :class="{ active, selected, dragging, 'play-mode': playMode, 'interaction-locked': interactionLocked }"
     :style="nodeStyle"
     @pointerdown.stop="onNodePointerDown"
     @pointerup="onNodePointerUp"
@@ -494,6 +496,10 @@ onBeforeUnmount(() => {
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+}
+
+.canvas-node.interaction-locked {
+  opacity: 0.96;
 }
 
 .node-circle-wrap {

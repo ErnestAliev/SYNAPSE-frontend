@@ -18,6 +18,13 @@ export interface CanvasNodeProjection {
   scale?: number;
 }
 
+export interface CanvasGroupProjection {
+  id: string;
+  name: string;
+  nodeIds: string[];
+  color?: string;
+}
+
 export interface CanvasEdgeProjection {
   id: string;
   source: string;
@@ -39,6 +46,7 @@ export interface ProjectCanvasViewport {
 export interface ProjectCanvasData {
   nodes: CanvasNodeProjection[];
   edges: CanvasEdgeProjection[];
+  groups?: CanvasGroupProjection[];
   viewport?: ProjectCanvasViewport;
   background?: string;
 }
