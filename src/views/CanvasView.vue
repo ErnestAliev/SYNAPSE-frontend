@@ -39,7 +39,7 @@ const NODE_CIRCLE_DIAMETER = 72;
 const GROUP_PADDING_X = 22;
 const GROUP_PADDING_Y = 18;
 const NODE_INPUT_BOTTOM_EXTENT_PX = 76;
-const GROUP_INPUT_BOTTOM_OFFSET_PX = 42;
+const GROUP_INPUT_BOTTOM_OFFSET_PX = 18;
 const AUTO_CONNECT_EDGE_GAP_PX = 20;
 const AUTO_CONNECT_LIMIT = 2;
 const EDGE_DEFAULT_COLOR = '#262626';
@@ -2174,6 +2174,10 @@ function isNodeInteractive(nodeId: string) {
     return groupId === editingGroupId.value;
   }
   return !groupId;
+}
+
+function shouldSnapNodeToGrid(nodeId: string) {
+  return !getNodeGroupId(nodeId);
 }
 
 function normalizeGroups(source: CanvasGroupProjection[]) {
@@ -5122,13 +5126,6 @@ function onWindowPointerUp(event: PointerEvent) {
   const groupDrag = draggingGroup.value;
   if (groupDrag) {
     lastCanvasTouchTap.value = null;
-    for (const nodeId of groupDrag.nodeIds) {
-      const node = getNodeById(nodeId);
-      if (!node) continue;
-      node.x = snap(node.x);
-      node.y = snap(node.y);
-    }
-
     if (groupDrag.moved) {
       for (const nodeId of groupDrag.nodeIds) {
         connectNodeToNearest(nodeId);
@@ -5147,8 +5144,10 @@ function onWindowPointerUp(event: PointerEvent) {
 
   const node = nodes.value.find((item) => item.id === dragState.nodeId);
   if (node) {
-    node.x = snap(node.x);
-    node.y = snap(node.y);
+    if (shouldSnapNodeToGrid(node.id)) {
+      node.x = snap(node.x);
+      node.y = snap(node.y);
+    }
 
     if (dragState.moved) {
       connectNodeToNearest(node.id);
