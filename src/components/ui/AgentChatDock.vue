@@ -111,11 +111,16 @@ const projectContextBuildError = ref('');
 const projectFieldDrafts = ref<Record<ProjectProfileFieldKey, string>>(buildProjectFieldDrafts());
 const projectFieldInputRefs = ref<Partial<Record<ProjectProfileFieldKey, HTMLInputElement | null>>>({});
 const projectEditingFieldValue = ref<{ fieldKey: ProjectProfileFieldKey; originalValue: string } | null>(null);
+const projectDescriptionHeightPx = ref(0);
+const isProjectDescriptionResizing = ref(false);
+const projectDescriptionResizePointerId = ref<number | null>(null);
+const projectDescriptionResizeStart = ref<{ clientY: number; height: number } | null>(null);
 
 const chatFeedRef = ref<HTMLElement | null>(null);
 const chatInputRef = ref<HTMLTextAreaElement | null>(null);
 const docInputRef = ref<HTMLInputElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
+const projectDescriptionTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const pendingComposerHeightReset = ref(false);
 const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1366);
 const viewportHeight = ref(typeof window !== 'undefined' ? window.innerHeight : 768);
@@ -878,6 +883,13 @@ const projectContextStatusLabel = computed(() => {
   return 'Контекст не собран';
 });
 
+const projectDescriptionTextareaStyle = computed(() => {
+  if (!projectDescriptionHeightPx.value) return undefined;
+  return {
+    height: `${projectDescriptionHeightPx.value}px`,
+  };
+});
+
 const projectProfileFields = computed(() => {
   const project = activeProjectEntity.value;
   const metadata = toProfile(project?.ai_metadata);
@@ -963,6 +975,100 @@ function applyProjectFieldValues(fieldKey: ProjectProfileFieldKey, values: strin
   }
 
   queueProjectMetadataUpdate(patch);
+}
+
+function getProjectDescriptionResizeBounds() {
+  const minHeight = 54;
+  const viewportHeightValue = typeof window !== 'undefined' ? window.innerHeight : 900;
+  const maxHeight = Math.max(180, Math.floor(viewportHeightValue * 0.55));
+  return { minHeight, maxHeight };
+}
+
+function applyProjectDescriptionHeight(nextHeight: number) {
+  const { minHeight, maxHeight } = getProjectDescriptionResizeBounds();
+  projectDescriptionHeightPx.value = Math.max(minHeight, Math.min(maxHeight, Math.round(nextHeight)));
+}
+
+function syncProjectDescriptionHeight(force = false) {
+  const textarea = projectDescriptionTextareaRef.value;
+  if (!textarea) return;
+  if (projectDescriptionHeightPx.value && !force) return;
+
+  const { minHeight } = getProjectDescriptionResizeBounds();
+  projectDescriptionHeightPx.value = Math.max(minHeight, Math.round(textarea.getBoundingClientRect().height || minHeight));
+}
+
+function stopProjectDescriptionResize() {
+  if (!isProjectDescriptionResizing.value && !projectDescriptionResizeStart.value) return;
+  isProjectDescriptionResizing.value = false;
+  projectDescriptionResizePointerId.value = null;
+  projectDescriptionResizeStart.value = null;
+  if (typeof window === 'undefined') return;
+  window.removeEventListener('pointermove', onProjectDescriptionResizePointerMove);
+  window.removeEventListener('pointerup', onProjectDescriptionResizePointerUp);
+  window.removeEventListener('pointercancel', onProjectDescriptionResizePointerUp);
+}
+
+function onProjectDescriptionResizePointerMove(event: PointerEvent) {
+  if (!isProjectDescriptionResizing.value || !projectDescriptionResizeStart.value) return;
+  if (
+    projectDescriptionResizePointerId.value !== null &&
+    event.pointerId !== projectDescriptionResizePointerId.value
+  ) {
+    return;
+  }
+
+  if (event.cancelable) {
+    event.preventDefault();
+  }
+
+  const deltaY = event.clientY - projectDescriptionResizeStart.value.clientY;
+  applyProjectDescriptionHeight(projectDescriptionResizeStart.value.height + deltaY);
+}
+
+function onProjectDescriptionResizePointerUp(event: PointerEvent) {
+  if (!isProjectDescriptionResizing.value) return;
+  if (
+    projectDescriptionResizePointerId.value !== null &&
+    event.pointerId !== projectDescriptionResizePointerId.value
+  ) {
+    return;
+  }
+
+  stopProjectDescriptionResize();
+}
+
+function onProjectDescriptionResizePointerDown(event: PointerEvent) {
+  if (event.pointerType === 'mouse' && event.button !== 0) return;
+  if (event.cancelable) {
+    event.preventDefault();
+  }
+  event.stopPropagation();
+
+  const textarea = projectDescriptionTextareaRef.value;
+  if (!textarea) return;
+
+  const currentHeight =
+    projectDescriptionHeightPx.value ||
+    Math.max(getProjectDescriptionResizeBounds().minHeight, Math.round(textarea.getBoundingClientRect().height));
+
+  projectDescriptionResizeStart.value = {
+    clientY: event.clientY,
+    height: currentHeight,
+  };
+  projectDescriptionResizePointerId.value = event.pointerId;
+  isProjectDescriptionResizing.value = true;
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pointermove', onProjectDescriptionResizePointerMove, { passive: false });
+    window.addEventListener('pointerup', onProjectDescriptionResizePointerUp);
+    window.addEventListener('pointercancel', onProjectDescriptionResizePointerUp);
+  }
+}
+
+function onProjectDescriptionViewportResize() {
+  if (!projectDescriptionHeightPx.value) return;
+  applyProjectDescriptionHeight(projectDescriptionHeightPx.value);
 }
 
 function onProjectDescriptionInput(event: Event) {
@@ -2000,7 +2106,12 @@ watch(
   () => {
     isBuildingProjectContext.value = false;
     projectContextBuildError.value = '';
+    projectDescriptionHeightPx.value = 0;
+    stopProjectDescriptionResize();
     resetProjectProfileLocally();
+    void nextTick(() => {
+      syncProjectDescriptionHeight(true);
+    });
   },
   { immediate: true },
 );
@@ -2029,12 +2140,19 @@ onMounted(() => {
   window.addEventListener('resize', updateViewportSize);
   window.addEventListener('orientationchange', updateViewportSize);
   window.visualViewport?.addEventListener('resize', updateViewportSize);
+  window.addEventListener('resize', onProjectDescriptionViewportResize);
+  window.addEventListener('orientationchange', onProjectDescriptionViewportResize);
+  window.visualViewport?.addEventListener('resize', onProjectDescriptionViewportResize);
+  void nextTick(() => {
+    syncProjectDescriptionHeight(true);
+  });
 });
 
 onBeforeUnmount(() => {
   stopPanelResize();
   stopHistoryPolling();
   voiceInput.cancelRecording();
+  stopProjectDescriptionResize();
   for (const timer of pendingSaveTimersByScope.values()) {
     clearTimeout(timer);
   }
@@ -2045,6 +2163,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', updateViewportSize);
   window.removeEventListener('orientationchange', updateViewportSize);
   window.visualViewport?.removeEventListener('resize', updateViewportSize);
+  window.removeEventListener('resize', onProjectDescriptionViewportResize);
+  window.removeEventListener('orientationchange', onProjectDescriptionViewportResize);
+  window.visualViewport?.removeEventListener('resize', onProjectDescriptionViewportResize);
 });
 </script>
 
@@ -2131,12 +2252,19 @@ onBeforeUnmount(() => {
 
         <div v-show="isProjectProfileExpanded" class="agent-project-profile-body">
           <textarea
+            ref="projectDescriptionTextareaRef"
             class="agent-project-description-input"
+            :style="projectDescriptionTextareaStyle"
             rows="2"
             maxlength="3000"
             :value="projectProfileDescription"
             placeholder="Описание"
             @input="onProjectDescriptionInput"
+          />
+          <div
+            class="agent-project-description-resize-handle"
+            title="Изменить высоту описания"
+            @pointerdown="onProjectDescriptionResizePointerDown"
           />
 
           <div class="agent-project-fields-list">
@@ -2699,6 +2827,7 @@ onBeforeUnmount(() => {
   width: 100%;
   min-height: 54px;
   max-height: none;
+  overflow-y: auto;
   resize: vertical;
   outline: none;
   border: 1px solid #dbe4f3;
@@ -2713,6 +2842,24 @@ onBeforeUnmount(() => {
 .agent-project-description-input:focus {
   border-color: #bfdbfe;
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.14);
+}
+
+.agent-project-description-resize-handle {
+  width: 100%;
+  height: 14px;
+  margin-top: -6px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.agent-project-description-resize-handle::before {
+  content: '';
+  display: block;
+  width: 44px;
+  height: 4px;
+  margin: 4px auto 0;
+  border-radius: 999px;
+  background: #cbd5e1;
 }
 
 .agent-project-fields-list {
