@@ -848,12 +848,11 @@ const projectContextBuiltAt = computed(() => {
 });
 
 const projectContextState = computed<ProjectContextUiState>(() => {
-  if (isBuildingProjectContext.value) return 'building';
-
   const project = activeProjectEntity.value;
   if (!project) return 'never_built';
   const metadata = toProfile(project.ai_metadata);
   const rawStatus = typeof metadata.project_context_status === 'string' ? metadata.project_context_status.trim() : '';
+  if (isBuildingProjectContext.value || rawStatus === 'building') return 'building';
   const storedHash = projectContextStoredHash.value;
   const currentHash = projectContextCurrentHash.value;
 
@@ -1997,7 +1996,7 @@ watch(
 );
 
 watch(
-  activeProjectEntity,
+  () => activeProjectEntity.value?._id || '',
   () => {
     isBuildingProjectContext.value = false;
     projectContextBuildError.value = '';
