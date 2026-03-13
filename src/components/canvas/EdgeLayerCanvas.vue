@@ -5,6 +5,7 @@ import type { CanvasEdgeProjection, CanvasNodeProjection } from '../../types/ent
 const props = withDefaults(
   defineProps<{
     nodes: CanvasNodeProjection[];
+    groups?: Array<{ id: string; x: number; y: number }>;
     edges: CanvasEdgeProjection[];
     camera: {
       x: number;
@@ -15,6 +16,7 @@ const props = withDefaults(
   }>(),
   {
     activeEdgeId: null,
+    groups: () => [],
   },
 );
 
@@ -107,6 +109,14 @@ function draw() {
   const nodeMap = new Map<string, CanvasNodeProjection>();
   for (const node of props.nodes) {
     nodeMap.set(node.id, node);
+  }
+  for (const group of props.groups) {
+    nodeMap.set(group.id, {
+      id: group.id,
+      entityId: group.id,
+      x: group.x,
+      y: group.y,
+    });
   }
 
   for (const edge of props.edges) {

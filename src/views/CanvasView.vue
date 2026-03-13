@@ -762,6 +762,14 @@ interface CanvasGroupDisplay {
   isEditing: boolean;
 }
 
+interface CanvasAnchorProjection {
+  id: string;
+  x: number;
+  y: number;
+  label: string;
+  kind: 'node' | 'group';
+}
+
 function computeGroupBounds(nodeIds: string[]): CanvasGroupBounds | null {
   const groupNodes = nodeIds
     .map((nodeId) => getNodeById(nodeId))
@@ -828,6 +836,15 @@ const focusedGroupViewportBounds = computed(() => {
     height: group.bounds.height * camera.value.zoom,
   };
 });
+const canvasGroupAnchors = computed<CanvasAnchorProjection[]>(() =>
+  displayGroups.value.map((group) => ({
+    id: group.id,
+    x: group.bounds.centerX,
+    y: group.bounds.centerY,
+    label: group.name || 'Группа',
+    kind: 'group',
+  })),
+);
 
 const activeMenuNode = computed(() => {
   if (!contextMenu.value) return null;
@@ -948,8 +965,8 @@ const activeEdgeNodes = computed(() => {
   const edge = activeEdge.value;
   if (!edge) return null;
 
-  const sourceNode = nodes.value.find((node) => node.id === edge.source);
-  const targetNode = nodes.value.find((node) => node.id === edge.target);
+  const sourceNode = getCanvasAnchorById(edge.source);
+  const targetNode = getCanvasAnchorById(edge.target);
   if (!sourceNode || !targetNode) return null;
 
   return { sourceNode, targetNode };
@@ -971,10 +988,8 @@ const activeEdgeMenuState = computed(() => {
     return fallback;
   }
 
-  const sourceEntity = entitiesStore.byId(pair.sourceNode.entityId);
-  const targetEntity = entitiesStore.byId(pair.targetNode.entityId);
-  const sourceLabel = sourceEntity?.name?.trim() || 'Начало связи';
-  const targetLabel = targetEntity?.name?.trim() || 'Конец связи';
+  const sourceLabel = pair.sourceNode.label || 'Начало связи';
+  const targetLabel = pair.targetNode.label || 'Конец связи';
   const sourceIsVisuallyLeft =
     pair.sourceNode.x < pair.targetNode.x
     || (pair.sourceNode.x === pair.targetNode.x && pair.sourceNode.y <= pair.targetNode.y);
@@ -1968,6 +1983,33 @@ function getNodeById(nodeId: string) {
   return nodes.value.find((node) => node.id === nodeId) || null;
 }
 
+function getCanvasAnchorById(anchorId: string): CanvasAnchorProjection | null {
+  const node = getNodeById(anchorId);
+  if (node) {
+    const entity = entitiesStore.byId(node.entityId);
+    return {
+      id: node.id,
+      x: node.x,
+      y: node.y,
+      label: entity?.name?.trim() || 'Без названия',
+      kind: 'node',
+    };
+  }
+
+  const group = displayGroups.value.find((item) => item.id === anchorId);
+  if (group) {
+    return {
+      id: group.id,
+      x: group.bounds.centerX,
+      y: group.bounds.centerY,
+      label: group.name || 'Группа',
+      kind: 'group',
+    };
+  }
+
+  return null;
+}
+
 function edgeExistsBetween(nodeAId: string, nodeBId: string) {
   return edges.value.some((edge) => {
     return (
@@ -1975,6 +2017,19 @@ function edgeExistsBetween(nodeAId: string, nodeBId: string) {
       (edge.source === nodeBId && edge.target === nodeAId)
     );
   });
+}
+
+function distancePointToBounds(pointX: number, pointY: number, bounds: CanvasGroupBounds) {
+  const dx = Math.max(bounds.left - pointX, 0, pointX - (bounds.left + bounds.width));
+  const dy = Math.max(bounds.top - pointY, 0, pointY - (bounds.top + bounds.height));
+  if (dx === 0 && dy === 0) {
+    const toLeft = pointX - bounds.left;
+    const toRight = bounds.left + bounds.width - pointX;
+    const toTop = pointY - bounds.top;
+    const toBottom = bounds.top + bounds.height - pointY;
+    return -Math.min(toLeft, toRight, toTop, toBottom);
+  }
+  return Math.hypot(dx, dy);
 }
 
 function createEdge(sourceNodeId: string, targetNodeId: string, patch?: Partial<CanvasEdgeProjection>) {
@@ -2125,6 +2180,13 @@ function normalizeGroups(source: CanvasGroupProjection[]) {
 function syncGroups(nextGroups: CanvasGroupProjection[], options?: { preserveSelection?: boolean }) {
   groups.value = normalizeGroups(nextGroups);
   const groupIds = new Set(groups.value.map((group) => group.id));
+  edges.value = edges.value.filter((edge) => {
+    const sourceIsGroup = groupIds.has(edge.source);
+    const targetIsGroup = groupIds.has(edge.target);
+    if (edge.source.startsWith('group-') && !sourceIsGroup) return false;
+    if (edge.target.startsWith('group-') && !targetIsGroup) return false;
+    return true;
+  });
 
   if (!options?.preserveSelection && selectedGroupId.value && !groupIds.has(selectedGroupId.value)) {
     selectedGroupId.value = null;
@@ -2480,15 +2542,25 @@ function connectNodeToNearest(nodeId: string) {
   const currentRadius = getNodeRadiusWorld(node);
   const edgeGapThresholdWorld = AUTO_CONNECT_EDGE_GAP_PX / camera.value.zoom;
 
-  const candidates = nodes.value
+  const nodeCandidates = nodes.value
     .filter((item) => item.id !== node.id)
     .map((item) => ({
-      node: item,
+      anchorId: item.id,
       centerDistance: Math.hypot(item.x - node.x, item.y - node.y),
       edgeGap:
         Math.hypot(item.x - node.x, item.y - node.y) -
         (currentRadius + getNodeRadiusWorld(item)),
-    }))
+    }));
+
+  const groupCandidates = displayGroups.value
+    .filter((group) => !group.nodeIds.includes(node.id))
+    .map((group) => ({
+      anchorId: group.id,
+      centerDistance: Math.hypot(group.bounds.centerX - node.x, group.bounds.centerY - node.y),
+      edgeGap: distancePointToBounds(node.x, node.y, group.bounds) - currentRadius,
+    }));
+
+  const candidates = [...nodeCandidates, ...groupCandidates]
     .filter((item) => item.edgeGap <= edgeGapThresholdWorld)
     .sort((left, right) => {
       if (left.edgeGap === right.edgeGap) {
@@ -2500,11 +2572,11 @@ function connectNodeToNearest(nodeId: string) {
 
   let created = false;
   for (const candidate of candidates) {
-    if (edgeExistsBetween(node.id, candidate.node.id)) {
+    if (edgeExistsBetween(node.id, candidate.anchorId)) {
       continue;
     }
 
-    edges.value.push(createEdge(node.id, candidate.node.id));
+    edges.value.push(createEdge(node.id, candidate.anchorId));
     created = true;
   }
 
@@ -2553,14 +2625,14 @@ function findEdgeAtClientPosition(clientX: number, clientY: number) {
     | null = null;
 
   for (const edge of edges.value) {
-    const sourceNode = getNodeById(edge.source);
-    const targetNode = getNodeById(edge.target);
-    if (!sourceNode || !targetNode) continue;
+    const sourceAnchor = getCanvasAnchorById(edge.source);
+    const targetAnchor = getCanvasAnchorById(edge.target);
+    if (!sourceAnchor || !targetAnchor) continue;
 
-    const sourceX = camera.value.x + sourceNode.x * camera.value.zoom;
-    const sourceY = camera.value.y + sourceNode.y * camera.value.zoom;
-    const targetX = camera.value.x + targetNode.x * camera.value.zoom;
-    const targetY = camera.value.y + targetNode.y * camera.value.zoom;
+    const sourceX = camera.value.x + sourceAnchor.x * camera.value.zoom;
+    const sourceY = camera.value.y + sourceAnchor.y * camera.value.zoom;
+    const targetX = camera.value.x + targetAnchor.x * camera.value.zoom;
+    const targetY = camera.value.y + targetAnchor.y * camera.value.zoom;
     const midpointX = (sourceX + targetX) / 2;
     const midpointY = (sourceY + targetY) / 2;
 
@@ -6019,7 +6091,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       }"
       @pointerdown="onViewportPointerDown"
       @click="onViewportClick"
-      @contextmenu="onViewportContextMenu"
+      @contextmenu.prevent="onViewportContextMenu"
       @wheel="onViewportWheel"
       @dblclick="onCanvasDoubleClick"
       @dragenter="onViewportDragEnter"
@@ -6550,6 +6622,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       <div class="canvas-grid" :style="gridStyle" />
       <EdgeLayerCanvas
         :nodes="nodes"
+        :groups="canvasGroupAnchors"
         :edges="edges"
         :camera="camera"
         :active-edge-id="edgeMenu?.edgeId || null"
@@ -6598,7 +6671,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           @pointerdown="onGroupPointerDown(group.id, $event)"
           @click="onGroupClick(group.id, $event)"
           @dblclick="onGroupDoubleClick(group.id, $event)"
-          @contextmenu="onGroupContextMenu(group.id, $event)"
+          @contextmenu.prevent="onGroupContextMenu(group.id, $event)"
         ></button>
       </div>
 
