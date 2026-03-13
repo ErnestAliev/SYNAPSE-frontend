@@ -36,10 +36,8 @@ const MIN_NODE_SCALE = 0.8;
 const MAX_NODE_SCALE = 1.2;
 const DEFAULT_NODE_SCALE = 1;
 const NODE_CIRCLE_DIAMETER = 72;
-const GROUP_PADDING_X = 84;
-const GROUP_PADDING_Y = 96;
-const GROUP_MIN_WIDTH = 240;
-const GROUP_MIN_HEIGHT = 180;
+const GROUP_PADDING_X = 22;
+const GROUP_PADDING_Y = 28;
 const AUTO_CONNECT_EDGE_GAP_PX = 20;
 const AUTO_CONNECT_LIMIT = 2;
 const EDGE_DEFAULT_COLOR = '#262626';
@@ -775,8 +773,8 @@ function computeGroupBounds(nodeIds: string[]): CanvasGroupBounds | null {
   const rawBottom = Math.max(...groupNodes.map((node) => node.y + getNodeRadiusWorld(node))) + GROUP_PADDING_Y;
   const centerX = (rawLeft + rawRight) / 2;
   const centerY = (rawTop + rawBottom) / 2;
-  const width = Math.max(GROUP_MIN_WIDTH, rawRight - rawLeft);
-  const height = Math.max(GROUP_MIN_HEIGHT, rawBottom - rawTop);
+  const width = Math.max(1, rawRight - rawLeft);
+  const height = Math.max(1, rawBottom - rawTop);
   const left = centerX - width / 2;
   const top = centerY - height / 2;
 
@@ -810,6 +808,21 @@ const displayGroups = computed<CanvasGroupDisplay[]>(() => {
 const multiSelectionBounds = computed<CanvasGroupBounds | null>(() => {
   if (selectedNodes.value.length < 2 || selectedGroupId.value) return null;
   return computeGroupBounds(selectedNodes.value.map((node) => node.id));
+});
+const focusedGroup = computed(() => {
+  if (!editingGroupId.value) return null;
+  return displayGroups.value.find((group) => group.id === editingGroupId.value) || null;
+});
+const focusedGroupViewportBounds = computed(() => {
+  const group = focusedGroup.value;
+  if (!group) return null;
+
+  return {
+    left: camera.value.x + group.bounds.left * camera.value.zoom,
+    top: camera.value.y + group.bounds.top * camera.value.zoom,
+    width: group.bounds.width * camera.value.zoom,
+    height: group.bounds.height * camera.value.zoom,
+  };
 });
 
 const activeMenuNode = computed(() => {
@@ -2073,8 +2086,10 @@ function getNodeGroupId(nodeId: string) {
 
 function isNodeInteractive(nodeId: string) {
   const groupId = getNodeGroupId(nodeId);
-  if (!groupId) return true;
-  return editingGroupId.value === groupId;
+  if (editingGroupId.value) {
+    return groupId === editingGroupId.value;
+  }
+  return !groupId;
 }
 
 function normalizeGroups(source: CanvasGroupProjection[]) {
@@ -2184,6 +2199,10 @@ function toggleGroupEditMode(groupId: string, force?: boolean) {
     clearSelectedNodes();
   }
   closeGroupContextMenu();
+}
+
+function closeFocusedGroup() {
+  editingGroupId.value = null;
 }
 
 function openSelectionGroupMenu(clientX: number, clientY: number) {
@@ -4784,10 +4803,17 @@ function onGroupClick(groupId: string, event: MouseEvent) {
   event.preventDefault();
   event.stopPropagation();
 
+  const shouldOpenMenu =
+    isMobileLikeDevice.value || selectedGroupId.value === groupId;
+
   selectedGroupId.value = groupId;
   clearSelectedNodes();
   closeContextMenu();
   closeEdgeMenu();
+
+  if (shouldOpenMenu) {
+    openGroupMenu(groupId, event.clientX, event.clientY);
+  }
 }
 
 function onGroupDoubleClick(groupId: string, event: MouseEvent) {
@@ -4810,12 +4836,6 @@ function onGroupMenuUngroup() {
   const groupId = groupContextMenu.value?.groupId || resolveSelectedGroupForUngroup();
   if (!groupId) return;
   ungroupById(groupId);
-}
-
-function onGroupMenuToggleEdit() {
-  const groupId = groupContextMenu.value?.groupId;
-  if (!groupId) return;
-  toggleGroupEditMode(groupId);
 }
 
 function onWindowPointerMove(event: PointerEvent) {
@@ -5022,6 +5042,12 @@ function resetTransientStates() {
 }
 
 function onWindowKeyDown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && editingGroupId.value) {
+    event.preventDefault();
+    closeFocusedGroup();
+    return;
+  }
+
   const isGroupShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'g';
   if (isGroupShortcut && !isEditableElement(event.target)) {
     event.preventDefault();
@@ -6565,11 +6591,55 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           @click="onGroupClick(group.id, $event)"
           @dblclick="onGroupDoubleClick(group.id, $event)"
           @contextmenu="onGroupContextMenu(group.id, $event)"
-        >
-          <span class="canvas-group-label">{{ group.name }}</span>
-          <span v-if="group.isEditing" class="canvas-group-mode">Редактирование</span>
-        </button>
+        ></button>
       </div>
+
+      <template v-if="focusedGroupViewportBounds">
+        <button
+          type="button"
+          class="canvas-focus-overlay top"
+          :style="{
+            left: '0px',
+            top: '0px',
+            width: '100%',
+            height: `${Math.max(0, focusedGroupViewportBounds.top)}px`,
+          }"
+          @click="closeFocusedGroup"
+        />
+        <button
+          type="button"
+          class="canvas-focus-overlay left"
+          :style="{
+            left: '0px',
+            top: `${focusedGroupViewportBounds.top}px`,
+            width: `${Math.max(0, focusedGroupViewportBounds.left)}px`,
+            height: `${focusedGroupViewportBounds.height}px`,
+          }"
+          @click="closeFocusedGroup"
+        />
+        <button
+          type="button"
+          class="canvas-focus-overlay right"
+          :style="{
+            left: `${focusedGroupViewportBounds.left + focusedGroupViewportBounds.width}px`,
+            top: `${focusedGroupViewportBounds.top}px`,
+            width: `${Math.max(0, viewportRef?.clientWidth ? viewportRef.clientWidth - focusedGroupViewportBounds.left - focusedGroupViewportBounds.width : 0)}px`,
+            height: `${focusedGroupViewportBounds.height}px`,
+          }"
+          @click="closeFocusedGroup"
+        />
+        <button
+          type="button"
+          class="canvas-focus-overlay bottom"
+          :style="{
+            left: '0px',
+            top: `${focusedGroupViewportBounds.top + focusedGroupViewportBounds.height}px`,
+            width: '100%',
+            height: `${Math.max(0, viewportRef?.clientHeight ? viewportRef.clientHeight - focusedGroupViewportBounds.top - focusedGroupViewportBounds.height : 0)}px`,
+          }"
+          @click="closeFocusedGroup"
+        />
+      </template>
 
       <div
         v-if="selectionRectStyle"
@@ -6996,30 +7066,27 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       @toggle-lock="onMenuToggleLock"
     />
 
-    <div
-      v-if="groupContextMenu && groupContextMenuPosition"
-      class="canvas-group-menu"
+      <div
+        v-if="groupContextMenu && groupContextMenuPosition"
+        class="canvas-group-menu"
       :style="{ left: `${groupContextMenuPosition.x}px`, top: `${groupContextMenuPosition.y}px` }"
       @pointerdown.stop
       @click.stop
-    >
-      <button
-        v-if="groupContextMenu.kind === 'selection'"
-        type="button"
-        class="canvas-group-menu-btn"
-        @click="onGroupMenuCreate"
       >
-        Группировать
-      </button>
-      <template v-else>
-        <button type="button" class="canvas-group-menu-btn" @click="onGroupMenuToggleEdit">
-          {{ editingGroupId === groupContextMenu.groupId ? 'Закрыть группу' : 'Редактировать группу' }}
+        <button
+          v-if="groupContextMenu.kind === 'selection'"
+          type="button"
+          class="canvas-group-menu-btn"
+          @click="onGroupMenuCreate"
+        >
+          Группировать
         </button>
-        <button type="button" class="canvas-group-menu-btn danger" @click="onGroupMenuUngroup">
-          Разгруппировать
-        </button>
-      </template>
-    </div>
+        <template v-else>
+          <button type="button" class="canvas-group-menu-btn danger" @click="onGroupMenuUngroup">
+            Разгруппировать
+          </button>
+        </template>
+      </div>
 
     <ConnectionContextMenu
       v-if="edgeMenu && activeEdge && edgeMenuPosition"
@@ -8066,44 +8133,28 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 
 .canvas-group-box {
   position: absolute;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
-  border-radius: 26px;
-  border: 2px solid color-mix(in srgb, var(--group-color) 72%, #ffffff 28%);
-  background: color-mix(in srgb, var(--group-color) 10%, #ffffff 90%);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.66);
-  color: #1e293b;
+  display: block;
+  padding: 0;
+  border-radius: 20px;
+  border: 2px solid rgba(16, 88, 255, 0.46);
+  background: transparent;
+  box-shadow: none;
   z-index: 34;
   pointer-events: auto;
   cursor: grab;
 }
 
 .canvas-group-box.selected {
-  background: color-mix(in srgb, var(--group-color) 14%, #ffffff 86%);
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.72),
-    0 18px 34px rgba(15, 23, 42, 0.12);
+  border-color: rgba(16, 88, 255, 0.82);
+  box-shadow: 0 0 0 1px rgba(16, 88, 255, 0.12);
 }
 
 .canvas-group-box.editing {
   z-index: 0;
-  border-style: dashed;
+  border-color: rgba(16, 88, 255, 0.92);
+  border-style: solid;
   cursor: default;
-}
-
-.canvas-group-label {
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-}
-
-.canvas-group-mode {
-  font-size: 11px;
-  font-weight: 600;
-  color: rgba(30, 41, 59, 0.64);
+  pointer-events: none;
 }
 
 .canvas-selection-rect {
@@ -8195,6 +8246,15 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 
 .canvas-group-menu-btn.danger:hover {
   background: #fee2e2;
+}
+
+.canvas-focus-overlay {
+  position: absolute;
+  z-index: 52;
+  border: none;
+  background: rgba(248, 250, 252, 0.82);
+  backdrop-filter: blur(2px);
+  cursor: default;
 }
 
 .node-menu-hint.hint-place-bottom::after {
