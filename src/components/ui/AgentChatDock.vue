@@ -2092,6 +2092,31 @@ onBeforeUnmount(() => {
       </header>
 
       <section v-if="routeScopeType === 'project-canvas'" class="agent-project-profile">
+        <div class="agent-project-context-toolbar agent-project-context-toolbar-visible">
+          <div
+            class="agent-project-context-status"
+            :class="[`state-${projectContextState}`]"
+          >
+            <span class="agent-project-context-status-dot" aria-hidden="true"></span>
+            <span>{{ projectContextStatusLabel }}</span>
+            <span v-if="projectContextBuiltAt" class="agent-project-context-built-at">
+              {{ toDisplayDateTime(projectContextBuiltAt) }}
+            </span>
+          </div>
+          <button
+            type="button"
+            class="agent-project-context-build-btn"
+            :disabled="isBuildingProjectContext"
+            @click="void buildProjectContext()"
+          >
+            {{ projectContextButtonLabel }}
+          </button>
+        </div>
+
+        <p v-if="projectContextBuildError" class="agent-project-context-error agent-project-context-error-visible">
+          {{ projectContextBuildError }}
+        </p>
+
         <button
           type="button"
           class="agent-project-profile-toggle"
@@ -2106,31 +2131,6 @@ onBeforeUnmount(() => {
         </button>
 
         <div v-show="isProjectProfileExpanded" class="agent-project-profile-body">
-          <div class="agent-project-context-toolbar">
-            <div
-              class="agent-project-context-status"
-              :class="[`state-${projectContextState}`]"
-            >
-              <span class="agent-project-context-status-dot" aria-hidden="true"></span>
-              <span>{{ projectContextStatusLabel }}</span>
-              <span v-if="projectContextBuiltAt" class="agent-project-context-built-at">
-                {{ toDisplayDateTime(projectContextBuiltAt) }}
-              </span>
-            </div>
-            <button
-              type="button"
-              class="agent-project-context-build-btn"
-              :disabled="isBuildingProjectContext"
-              @click="void buildProjectContext()"
-            >
-              {{ projectContextButtonLabel }}
-            </button>
-          </div>
-
-          <p v-if="projectContextBuildError" class="agent-project-context-error">
-            {{ projectContextBuildError }}
-          </p>
-
           <textarea
             class="agent-project-description-input"
             rows="2"
@@ -2613,6 +2613,11 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.agent-project-context-toolbar-visible {
+  padding: 8px 12px 6px;
+  border-bottom: 1px solid #eff3fb;
+}
+
 .agent-project-context-status {
   min-width: 0;
   display: inline-flex;
@@ -2685,6 +2690,10 @@ onBeforeUnmount(() => {
   color: #b91c1c;
   font-size: 11px;
   line-height: 1.35;
+}
+
+.agent-project-context-error-visible {
+  padding: 0 12px 8px;
 }
 
 .agent-project-description-input {
