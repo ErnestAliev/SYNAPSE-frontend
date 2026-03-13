@@ -39,7 +39,7 @@ const NODE_CIRCLE_DIAMETER = 72;
 const GROUP_PADDING_X = 22;
 const GROUP_PADDING_Y = 18;
 const NODE_INPUT_BOTTOM_EXTENT_PX = 76;
-const GROUP_INPUT_BOTTOM_OFFSET_PX = 30;
+const GROUP_INPUT_BOTTOM_OFFSET_PX = 42;
 const AUTO_CONNECT_EDGE_GAP_PX = 20;
 const AUTO_CONNECT_LIMIT = 2;
 const EDGE_DEFAULT_COLOR = '#262626';
@@ -779,14 +779,9 @@ function computeGroupBounds(nodeIds: string[]): CanvasGroupBounds | null {
 
   if (groupNodes.length < 2) return null;
 
-  const contentLeft = Math.min(...groupNodes.map((node) => node.x - getNodeRadiusWorld(node)));
-  const contentRight = Math.max(...groupNodes.map((node) => node.x + getNodeRadiusWorld(node)));
-  const contentTop = Math.min(...groupNodes.map((node) => node.y - getNodeRadiusWorld(node)));
-  const contentBottom = Math.max(...groupNodes.map((node) => node.y + getNodeRadiusWorld(node)));
-
-  const rawLeft = contentLeft - GROUP_PADDING_X;
-  const rawRight = contentRight + GROUP_PADDING_X;
-  const rawTop = contentTop - GROUP_PADDING_Y;
+  const rawLeft = Math.min(...groupNodes.map((node) => node.x - getNodeRadiusWorld(node))) - GROUP_PADDING_X;
+  const rawRight = Math.max(...groupNodes.map((node) => node.x + getNodeRadiusWorld(node))) + GROUP_PADDING_X;
+  const rawTop = Math.min(...groupNodes.map((node) => node.y - getNodeRadiusWorld(node))) - GROUP_PADDING_Y;
   const rawBottom = Math.max(
     ...groupNodes.map((node) => node.y + Math.max(getNodeRadiusWorld(node), NODE_INPUT_BOTTOM_EXTENT_PX)),
   ) + GROUP_INPUT_BOTTOM_OFFSET_PX;
@@ -800,8 +795,8 @@ function computeGroupBounds(nodeIds: string[]): CanvasGroupBounds | null {
     top,
     width,
     height,
-    anchorX: (contentLeft + contentRight) / 2,
-    anchorY: (contentTop + contentBottom) / 2,
+    anchorX: left + width / 2,
+    anchorY: top + height / 2,
   };
 }
 
