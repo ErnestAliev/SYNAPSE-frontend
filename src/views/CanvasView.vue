@@ -31,7 +31,7 @@ const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 3.0;
 const MENU_WIDTH = 320;
 const MENU_HEIGHT = 320;
-const GROUP_MENU_WIDTH = 220;
+const GROUP_MENU_WIDTH = 184;
 const MIN_NODE_SCALE = 0.8;
 const MAX_NODE_SCALE = 1.2;
 const DEFAULT_NODE_SCALE = 1;
@@ -4841,16 +4841,13 @@ function onViewportClick(event: MouseEvent) {
 function onViewportContextMenu(event: MouseEvent) {
   if (isLoading.value || isPanning.value || selectionRect.value) return;
 
-  const target = event.target as HTMLElement | null;
-  if (
-    target?.closest(
-      '.canvas-library, .canvas-node, .canvas-controls, .canvas-history-controls, .canvas-node-search, .canvas-monitor, .canvas-group-menu',
-    )
-  ) {
+  const world = clientToWorld(event.clientX, event.clientY);
+  if (isWorldPointInsideBounds(world.x, world.y, multiSelectionBounds.value)) {
+    event.preventDefault();
+    openSelectionGroupMenu(event.clientX, event.clientY);
     return;
   }
 
-  const world = clientToWorld(event.clientX, event.clientY);
   const hitGroup = findDisplayGroupByPoint(world.x, world.y);
   if (hitGroup) {
     event.preventDefault();
@@ -4858,9 +4855,13 @@ function onViewportContextMenu(event: MouseEvent) {
     return;
   }
 
-  if (isWorldPointInsideBounds(world.x, world.y, multiSelectionBounds.value)) {
-    event.preventDefault();
-    openSelectionGroupMenu(event.clientX, event.clientY);
+  const target = event.target as HTMLElement | null;
+  if (
+    target?.closest(
+      '.canvas-library, .canvas-node, .canvas-controls, .canvas-history-controls, .canvas-node-search, .canvas-monitor, .canvas-group-menu',
+    )
+  ) {
+    return;
   }
 }
 
@@ -8375,15 +8376,15 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   position: fixed;
   transform: translate(-50%, -50%);
   z-index: 165;
-  min-width: 220px;
+  min-width: 184px;
   border: 1px solid rgba(203, 213, 225, 0.95);
-  border-radius: 18px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 20px 44px rgba(15, 23, 42, 0.18);
-  padding: 8px;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.14);
+  padding: 6px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
@@ -8391,12 +8392,14 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 
 .canvas-group-menu-btn {
   border: none;
-  border-radius: 12px;
+  border-radius: 10px;
   background: #eff6ff;
   color: #1d4ed8;
   font: inherit;
   font-weight: 700;
-  padding: 11px 12px;
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 8px 10px;
   cursor: pointer;
   text-align: left;
 }
