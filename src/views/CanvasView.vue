@@ -768,6 +768,7 @@ interface CanvasAnchorProjection {
   y: number;
   label: string;
   kind: 'node' | 'group';
+  bounds?: CanvasGroupBounds;
 }
 
 function computeGroupBounds(nodeIds: string[]): CanvasGroupBounds | null {
@@ -843,6 +844,7 @@ const canvasGroupAnchors = computed<CanvasAnchorProjection[]>(() =>
     y: group.bounds.centerY,
     label: group.name || 'Группа',
     kind: 'group',
+    bounds: group.bounds,
   })),
 );
 
@@ -2004,6 +2006,7 @@ function getCanvasAnchorById(anchorId: string): CanvasAnchorProjection | null {
       y: group.bounds.centerY,
       label: group.name || 'Группа',
       kind: 'group',
+      bounds: group.bounds,
     };
   }
 
@@ -2030,6 +2033,29 @@ function distancePointToBounds(pointX: number, pointY: number, bounds: CanvasGro
     return -Math.min(toLeft, toRight, toTop, toBottom);
   }
   return Math.hypot(dx, dy);
+}
+
+function getAnchorEdgePoint(anchor: CanvasAnchorProjection, toward: CanvasAnchorProjection) {
+  if (anchor.kind !== 'group' || !anchor.bounds) {
+    return { x: anchor.x, y: anchor.y };
+  }
+
+  const dx = toward.x - anchor.x;
+  const dy = toward.y - anchor.y;
+  if (Math.abs(dx) < 0.0001 && Math.abs(dy) < 0.0001) {
+    return { x: anchor.x, y: anchor.y };
+  }
+
+  const halfWidth = anchor.bounds.width / 2;
+  const halfHeight = anchor.bounds.height / 2;
+  const scaleX = halfWidth / Math.abs(dx || 0.0001);
+  const scaleY = halfHeight / Math.abs(dy || 0.0001);
+  const scale = Math.min(scaleX, scaleY);
+
+  return {
+    x: anchor.x + dx * scale,
+    y: anchor.y + dy * scale,
+  };
 }
 
 function createEdge(sourceNodeId: string, targetNodeId: string, patch?: Partial<CanvasEdgeProjection>) {
@@ -2629,10 +2655,12 @@ function findEdgeAtClientPosition(clientX: number, clientY: number) {
     const targetAnchor = getCanvasAnchorById(edge.target);
     if (!sourceAnchor || !targetAnchor) continue;
 
-    const sourceX = camera.value.x + sourceAnchor.x * camera.value.zoom;
-    const sourceY = camera.value.y + sourceAnchor.y * camera.value.zoom;
-    const targetX = camera.value.x + targetAnchor.x * camera.value.zoom;
-    const targetY = camera.value.y + targetAnchor.y * camera.value.zoom;
+    const sourcePoint = getAnchorEdgePoint(sourceAnchor, targetAnchor);
+    const targetPoint = getAnchorEdgePoint(targetAnchor, sourceAnchor);
+    const sourceX = camera.value.x + sourcePoint.x * camera.value.zoom;
+    const sourceY = camera.value.y + sourcePoint.y * camera.value.zoom;
+    const targetX = camera.value.x + targetPoint.x * camera.value.zoom;
+    const targetY = camera.value.y + targetPoint.y * camera.value.zoom;
     const midpointX = (sourceX + targetX) / 2;
     const midpointY = (sourceY + targetY) / 2;
 
@@ -4844,6 +4872,16 @@ function onViewportContextMenu(event: MouseEvent) {
   }
 }
 
+function onWindowContextMenuCapture(event: MouseEvent) {
+  const viewport = viewportRef.value;
+  const target = event.target as Node | null;
+  if (!viewport || !target) return;
+  if (!viewport.contains(target)) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+}
+
 function onGroupPointerDown(groupId: string, event: PointerEvent) {
   if (event.button === 2) {
     event.preventDefault();
@@ -5929,6 +5967,7 @@ onMounted(() => {
   window.addEventListener('pointerup', onWindowPointerUp);
   window.addEventListener('pointercancel', onWindowPointerUp);
   window.addEventListener('keydown', onWindowKeyDown);
+  window.addEventListener('contextmenu', onWindowContextMenuCapture, true);
   window.addEventListener('resize', syncDeviceLayoutMetrics);
   window.addEventListener('orientationchange', syncDeviceLayoutMetrics);
   window.visualViewport?.addEventListener('resize', syncDeviceLayoutMetrics);
@@ -5952,6 +5991,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerup', onWindowPointerUp);
   window.removeEventListener('pointercancel', onWindowPointerUp);
   window.removeEventListener('keydown', onWindowKeyDown);
+  window.removeEventListener('contextmenu', onWindowContextMenuCapture, true);
   window.removeEventListener('resize', syncDeviceLayoutMetrics);
   window.removeEventListener('orientationchange', syncDeviceLayoutMetrics);
   window.visualViewport?.removeEventListener('resize', syncDeviceLayoutMetrics);

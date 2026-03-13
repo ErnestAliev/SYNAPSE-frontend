@@ -5,7 +5,7 @@ import type { CanvasEdgeProjection, CanvasNodeProjection } from '../../types/ent
 const props = withDefaults(
   defineProps<{
     nodes: CanvasNodeProjection[];
-    groups?: Array<{ id: string; x: number; y: number }>;
+    groups?: Array<{ id: string; x: number; y: number; bounds?: { width: number; height: number } }>;
     edges: CanvasEdgeProjection[];
     camera: {
       x: number;
@@ -24,6 +24,35 @@ const canvasRef = ref<HTMLCanvasElement | null>(null);
 const defaultEdgeColor = '#262626';
 let resizeObserver: ResizeObserver | null = null;
 let rafId = 0;
+
+function getAnchorEdgePoint(
+  anchor: { x: number; y: number; bounds?: { width: number; height: number } } | undefined,
+  toward: { x: number; y: number },
+) {
+  if (!anchor) {
+    return { x: 0, y: 0 };
+  }
+  if (!anchor.bounds) {
+    return { x: anchor.x, y: anchor.y };
+  }
+
+  const dx = toward.x - anchor.x;
+  const dy = toward.y - anchor.y;
+  if (Math.abs(dx) < 0.0001 && Math.abs(dy) < 0.0001) {
+    return { x: anchor.x, y: anchor.y };
+  }
+
+  const halfWidth = anchor.bounds.width / 2;
+  const halfHeight = anchor.bounds.height / 2;
+  const scaleX = halfWidth / Math.abs(dx || 0.0001);
+  const scaleY = halfHeight / Math.abs(dy || 0.0001);
+  const scale = Math.min(scaleX, scaleY);
+
+  return {
+    x: anchor.x + dx * scale,
+    y: anchor.y + dy * scale,
+  };
+}
 
 function scheduleDraw() {
   if (rafId) return;
@@ -106,7 +135,7 @@ function draw() {
   context.clearRect(0, 0, rect.width, rect.height);
   context.lineCap = 'round';
 
-  const nodeMap = new Map<string, CanvasNodeProjection>();
+  const nodeMap = new Map<string, CanvasNodeProjection & { bounds?: { width: number; height: number } }>();
   for (const node of props.nodes) {
     nodeMap.set(node.id, node);
   }
@@ -116,6 +145,7 @@ function draw() {
       entityId: group.id,
       x: group.x,
       y: group.y,
+      bounds: group.bounds,
     });
   }
 
@@ -124,10 +154,12 @@ function draw() {
     const targetNode = nodeMap.get(edge.target);
     if (!sourceNode || !targetNode) continue;
 
-    const sourceX = props.camera.x + sourceNode.x * props.camera.zoom;
-    const sourceY = props.camera.y + sourceNode.y * props.camera.zoom;
-    const targetX = props.camera.x + targetNode.x * props.camera.zoom;
-    const targetY = props.camera.y + targetNode.y * props.camera.zoom;
+    const sourcePoint = getAnchorEdgePoint(sourceNode, targetNode);
+    const targetPoint = getAnchorEdgePoint(targetNode, sourceNode);
+    const sourceX = props.camera.x + sourcePoint.x * props.camera.zoom;
+    const sourceY = props.camera.y + sourcePoint.y * props.camera.zoom;
+    const targetX = props.camera.x + targetPoint.x * props.camera.zoom;
+    const targetY = props.camera.y + targetPoint.y * props.camera.zoom;
 
     const color = edge.color || defaultEdgeColor;
     const isActive = edge.id === props.activeEdgeId;
