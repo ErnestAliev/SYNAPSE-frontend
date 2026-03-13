@@ -4783,15 +4783,6 @@ function onViewportPointerDown(event: PointerEvent) {
     return;
   }
 
-  if (event.button === 2) {
-    const world = clientToWorld(event.clientX, event.clientY);
-    if (isWorldPointInsideBounds(world.x, world.y, multiSelectionBounds.value)) {
-      event.preventDefault();
-      openSelectionGroupMenu(event.clientX, event.clientY);
-    }
-    return;
-  }
-
   if (event.button !== 0) return;
 
   const target = event.target as HTMLElement | null;
@@ -4880,8 +4871,6 @@ function onWindowContextMenuCapture(event: MouseEvent) {
   if (!viewport.contains(target)) return;
 
   event.preventDefault();
-  event.stopPropagation();
-  event.stopImmediatePropagation();
 }
 
 function onDocumentPointerDownCapture(event: PointerEvent) {
@@ -4897,14 +4886,10 @@ function onDocumentPointerDownCapture(event: PointerEvent) {
 function onViewportNativeSecondaryDown(event: MouseEvent) {
   if (event.button !== 2) return;
   event.preventDefault();
-  event.stopPropagation();
-  event.stopImmediatePropagation();
 }
 
 function onViewportNativeContextMenu(event: MouseEvent) {
   event.preventDefault();
-  event.stopPropagation();
-  event.stopImmediatePropagation();
 }
 
 function attachViewportInteractionGuards(element: HTMLDivElement | null) {
@@ -4925,13 +4910,6 @@ function detachViewportInteractionGuards() {
 }
 
 function onGroupPointerDown(groupId: string, event: PointerEvent) {
-  if (event.button === 2) {
-    event.preventDefault();
-    event.stopPropagation();
-    openGroupMenu(groupId, event.clientX, event.clientY);
-    return;
-  }
-
   if (event.button !== 0) return;
   if (editingGroupId.value === groupId) return;
 
@@ -6185,7 +6163,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       }"
       @pointerdown="onViewportPointerDown"
       @click="onViewportClick"
-      @contextmenu.prevent="onViewportContextMenu"
+      @contextmenu.prevent.stop="onViewportContextMenu"
       @wheel="onViewportWheel"
       @dblclick="onCanvasDoubleClick"
       @dragenter="onViewportDragEnter"
@@ -6765,7 +6743,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           @pointerdown="onGroupPointerDown(group.id, $event)"
           @click="onGroupClick(group.id, $event)"
           @dblclick="onGroupDoubleClick(group.id, $event)"
-          @contextmenu.prevent="onGroupContextMenu(group.id, $event)"
+          @contextmenu.prevent.stop="onGroupContextMenu(group.id, $event)"
         ></button>
       </div>
 
@@ -7244,20 +7222,27 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       <div
         v-if="groupContextMenu && groupContextMenuPosition"
         class="canvas-group-menu"
-      :style="{ left: `${groupContextMenuPosition.x}px`, top: `${groupContextMenuPosition.y}px` }"
-      @pointerdown.stop
-      @click.stop
+        :style="{ left: `${groupContextMenuPosition.x}px`, top: `${groupContextMenuPosition.y}px` }"
+        @pointerdown.stop
+        @click.stop
+        @contextmenu.prevent.stop
       >
         <button
           v-if="groupContextMenu.kind === 'selection'"
           type="button"
           class="canvas-group-menu-btn"
+          @contextmenu.prevent.stop
           @click="onGroupMenuCreate"
         >
           Группировать
         </button>
         <template v-else>
-          <button type="button" class="canvas-group-menu-btn danger" @click="onGroupMenuUngroup">
+          <button
+            type="button"
+            class="canvas-group-menu-btn danger"
+            @contextmenu.prevent.stop
+            @click="onGroupMenuUngroup"
+          >
             Разгруппировать
           </button>
         </template>
@@ -8399,6 +8384,9 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .canvas-group-menu-btn {
