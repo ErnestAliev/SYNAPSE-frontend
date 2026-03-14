@@ -101,7 +101,7 @@ const PROJECT_PROFILE_FIELD_CONFIGS = [
 type ProjectProfileFieldKey = (typeof PROJECT_PROFILE_FIELD_CONFIGS)[number]['key'];
 const PROJECT_PROFILE_FIELD_KEYS = PROJECT_PROFILE_FIELD_CONFIGS.map((item) => item.key) as ProjectProfileFieldKey[];
 const PROJECT_PROFILE_SYNC_DELAY = 420;
-const PROJECT_DESCRIPTION_MAX_LENGTH = 3000;
+const PROJECT_DESCRIPTION_MAX_LENGTH = 7000;
 const PROJECT_FIELD_DEFAULT_MAX_LENGTH = 96;
 const PROJECT_FIELD_LINK_MAX_LENGTH = 2048;
 
@@ -1043,7 +1043,7 @@ function applyProjectFieldValues(fieldKey: ProjectProfileFieldKey, values: strin
 function getProjectDescriptionResizeBounds() {
   const minHeight = 54;
   const viewportHeightValue = typeof window !== 'undefined' ? window.innerHeight : 900;
-  const maxHeight = Math.max(180, Math.floor(viewportHeightValue * 0.55));
+  const maxHeight = Math.max(260, Math.floor(viewportHeightValue * 0.8));
   return { minHeight, maxHeight };
 }
 
