@@ -2210,13 +2210,7 @@ async function downloadProjectContextBuildLog() {
     }
 
     const previewData = await requestProjectContextBuildPreview(project._id);
-    downloadJsonFile(buildProjectContextLogFileName(), {
-      exportedAt: getIsoNow(),
-      source: 'project-context.preview-fallback',
-      projectId: project._id,
-      projectName: project.name,
-      preview: previewData,
-    });
+    downloadJsonFile(buildProjectContextLogFileName(), previewData);
   } catch (error) {
     pushMessage('assistant', `Не удалось скачать лог сборки контекста. ${formatApiError(error)}`);
   } finally {
