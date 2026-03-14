@@ -123,6 +123,8 @@ const projectFieldDrafts = ref<Record<ProjectProfileFieldKey, string>>(buildProj
 const projectFieldInputRefs = ref<Partial<Record<ProjectProfileFieldKey, HTMLInputElement | null>>>({});
 const projectEditingFieldValue = ref<{ fieldKey: ProjectProfileFieldKey; originalValue: string } | null>(null);
 const projectDescriptionHeightPx = ref(0);
+const projectDescriptionDraft = ref('');
+const isProjectDescriptionDirty = ref(false);
 const isProjectDescriptionResizing = ref(false);
 const projectDescriptionResizePointerId = ref<number | null>(null);
 const projectDescriptionResizeStart = ref<{ clientY: number; height: number } | null>(null);
@@ -1175,8 +1177,12 @@ function onProjectDescriptionViewportResize() {
 function onProjectDescriptionInput(event: Event) {
   const input = event.target as HTMLTextAreaElement | null;
   if (!input) return;
+  const nextValue = input.value.slice(0, PROJECT_DESCRIPTION_MAX_LENGTH);
+  projectDescriptionDraft.value = nextValue;
+  isProjectDescriptionDirty.value = true;
   queueProjectMetadataUpdate({
-    description: input.value.slice(0, PROJECT_DESCRIPTION_MAX_LENGTH),
+    description: nextValue,
+    project_context_compiled_description: nextValue,
   });
 }
 
@@ -1867,6 +1873,8 @@ async function clearCurrentScopeHistoryOnly() {
 function resetProjectProfileLocally() {
   projectFieldDrafts.value = buildProjectFieldDrafts();
   projectEditingFieldValue.value = null;
+  projectDescriptionDraft.value = projectProfileDescription.value;
+  isProjectDescriptionDirty.value = false;
 }
 
 function clearProjectProfileMetadata() {
@@ -2363,6 +2371,21 @@ watch(
   { immediate: true },
 );
 
+watch(
+  projectProfileDescription,
+  (nextValue) => {
+    const normalized = typeof nextValue === 'string' ? nextValue : '';
+    if (!isProjectDescriptionDirty.value) {
+      projectDescriptionDraft.value = normalized;
+      return;
+    }
+    if (normalized === projectDescriptionDraft.value) {
+      isProjectDescriptionDirty.value = false;
+    }
+  },
+  { immediate: true },
+);
+
 watch(scopedMessages, () => {
   if (!isOpen.value) return;
   void nextTick(() => {
@@ -2504,7 +2527,7 @@ onBeforeUnmount(() => {
             :style="projectDescriptionTextareaStyle"
             rows="2"
             :maxlength="PROJECT_DESCRIPTION_MAX_LENGTH"
-            :value="projectProfileDescription"
+            :value="projectDescriptionDraft"
             placeholder="Описание"
             @input="onProjectDescriptionInput"
           />
