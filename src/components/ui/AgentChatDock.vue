@@ -115,6 +115,7 @@ const isSending = ref(false);
 const isPreparingLlmLog = ref(false);
 const isResizingPanel = ref(false);
 const isClearHistoryConfirmOpen = ref(false);
+const clearConfirmMode = ref<'history' | 'context'>('history');
 const isChatToolsMenuOpen = ref(false);
 const isProjectProfileExpanded = ref(false);
 const isBuildingProjectContext = ref(false);
@@ -1262,23 +1263,12 @@ void addProjectFieldValue;
 void removeProjectFieldValue;
 void openProjectFieldLink;
 
-function buildProjectMetadataResetPatch() {
-  const clearedFields = Object.fromEntries(PROJECT_PROFILE_FIELD_KEYS.map((fieldKey) => [fieldKey, []]));
+function buildProjectContextResetPatch() {
   return {
-    ...clearedFields,
     description: '',
     project_context_compiled_description: '',
     project_analysis_map: {},
     project_context_last_build_log: {},
-    text_input: '',
-    voice_input: '',
-    documents: [],
-    chat_history: [],
-    description_history: [],
-    description_meta: {},
-    importance_history: [],
-    ai_last_analysis: {},
-    importance_source: 'auto',
     project_context_status: '',
     project_context_source_hash: '',
     project_context_built_at: '',
@@ -1303,12 +1293,18 @@ const inputPlaceholder = computed(() => {
 });
 
 const clearConfirmTitle = computed(() =>
-  routeScopeType.value === 'project-canvas' ? 'Очистить чат и профиль проекта?' : 'Удалить историю чата?',
+  routeScopeType.value === 'project-canvas'
+    ? clearConfirmMode.value === 'context'
+      ? 'Очистить контекст проекта?'
+      : 'Очистить LLM-чат проекта?'
+    : 'Удалить историю чата?',
 );
 
 const clearConfirmText = computed(() =>
   routeScopeType.value === 'project-canvas'
-    ? 'Будут удалены история этого чата, описание проекта и все поля профиля. Действие необратимо.'
+    ? clearConfirmMode.value === 'context'
+      ? 'Будут удалены описание проекта, веса и данные собранного контекста. История LLM-чата останется.'
+      : 'Будут удалены вопросы и ответы LLM-чата проекта. Контекст проекта останется.'
     : 'История общего LLM-чата будет удалена безвозвратно для текущего аккаунта.',
 );
 
@@ -1793,6 +1789,7 @@ type AgentChatToolsActionKey =
   | 'export-txt'
   | 'download-project-context-log'
   | 'download-chat-llm-log'
+  | 'clear-context'
   | 'clear-history';
 
 function closeChatToolsMenu() {
@@ -1828,11 +1825,16 @@ function onChatToolsAction(actionKey: AgentChatToolsActionKey) {
     void downloadChatLlmLog();
     return;
   }
-  openClearHistoryConfirm();
+  if (actionKey === 'clear-context') {
+    openClearConfirm('context');
+    return;
+  }
+  openClearConfirm('history');
 }
 
-function openClearHistoryConfirm() {
+function openClearConfirm(mode: 'history' | 'context') {
   closeChatToolsMenu();
+  clearConfirmMode.value = mode;
   isClearHistoryConfirmOpen.value = true;
 }
 
@@ -1877,11 +1879,11 @@ function resetProjectProfileLocally() {
   isProjectDescriptionDirty.value = false;
 }
 
-function clearProjectProfileMetadata() {
+function clearProjectContextMetadata() {
   const project = activeProjectEntity.value;
   if (!project) return;
 
-  const resetPatch = buildProjectMetadataResetPatch();
+  const resetPatch = buildProjectContextResetPatch();
   entitiesStore.queueEntityUpdate(
     project._id,
     {
@@ -1933,9 +1935,11 @@ async function confirmClearAllChatHistory() {
 
   try {
     if (routeScopeType.value === 'project-canvas') {
-      await clearCurrentScopeHistoryOnly();
-      clearProjectProfileMetadata();
-      isProjectProfileExpanded.value = false;
+      if (clearConfirmMode.value === 'context') {
+        clearProjectContextMetadata();
+      } else {
+        await clearCurrentScopeHistoryOnly();
+      }
     } else {
       if (typeof window !== 'undefined') {
         try {
@@ -2696,8 +2700,16 @@ onBeforeUnmount(() => {
                 >
                   {{ isPreparingLlmLog ? 'Сборка лога...' : 'Скачать лог чата LLM' }}
                 </button>
+                <button
+                  v-if="routeScopeType === 'project-canvas'"
+                  type="button"
+                  class="agent-chat-menu-item"
+                  @click="onChatToolsAction('clear-context')"
+                >
+                  Очистить контекст
+                </button>
                 <button type="button" class="agent-chat-menu-item" @click="onChatToolsAction('clear-history')">
-                  {{ routeScopeType === 'project-canvas' ? 'Сбросить данные и чат' : 'Очистить историю' }}
+                  {{ routeScopeType === 'project-canvas' ? 'Очистить чат LLM' : 'Очистить историю' }}
                 </button>
               </div>
             </template>
