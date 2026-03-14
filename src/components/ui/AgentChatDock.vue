@@ -1241,7 +1241,6 @@ function buildProjectContextResetPatch() {
   return {
     description: '',
     project_context_compiled_description: '',
-    project_analysis_map: {},
     project_context_last_build_log: {},
     project_context_status: '',
     project_context_source_hash: '',
