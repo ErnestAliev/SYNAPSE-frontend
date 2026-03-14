@@ -104,6 +104,19 @@ const PROJECT_PROFILE_SYNC_DELAY = 420;
 const PROJECT_DESCRIPTION_MAX_LENGTH = 18000;
 const PROJECT_FIELD_DEFAULT_MAX_LENGTH = 96;
 const PROJECT_FIELD_LINK_MAX_LENGTH = 2048;
+const PROJECT_CONTEXT_BUILD_STEPS = [
+  'Изучаю проект',
+  'Ищу цель',
+  'Смотрю описание',
+  'Ищу людей',
+  'Смотрю описание',
+  'Ищу компании',
+  'Смотрю связи',
+  'Оцениваю',
+  'Считаю веса',
+  'Готовлю бриф',
+  'Почти готово',
+] as const;
 
 const route = useRoute();
 const entitiesStore = useEntitiesStore();
@@ -120,6 +133,7 @@ const isChatToolsMenuOpen = ref(false);
 const isProjectProfileExpanded = ref(false);
 const isBuildingProjectContext = ref(false);
 const projectContextBuildError = ref('');
+const projectContextBuildStepIndex = ref(0);
 const projectFieldDrafts = ref<Record<ProjectProfileFieldKey, string>>(buildProjectFieldDrafts());
 const projectFieldInputRefs = ref<Partial<Record<ProjectProfileFieldKey, HTMLInputElement | null>>>({});
 const projectEditingFieldValue = ref<{ fieldKey: ProjectProfileFieldKey; originalValue: string } | null>(null);
@@ -152,6 +166,7 @@ const resizeStart = ref<{
 } | null>(null);
 const shouldAutoScrollToBottom = ref(true);
 const historyPollingTimer = ref<ReturnType<typeof setInterval> | null>(null);
+const projectContextBuildTimer = ref<ReturnType<typeof setInterval> | null>(null);
 const activeSyncVersion = ref(0);
 const isRemoteHistoryResetting = ref(false);
 
@@ -980,7 +995,10 @@ const projectContextButtonLabel = computed(() => {
 });
 
 const projectContextStatusLabel = computed(() => {
-  if (projectContextState.value === 'building') return 'Контекст собирается';
+  if (projectContextState.value === 'building') {
+    const step = PROJECT_CONTEXT_BUILD_STEPS[projectContextBuildStepIndex.value] ?? PROJECT_CONTEXT_BUILD_STEPS[0];
+    return `Собираю контекст: ${step}`;
+  }
   if (projectContextState.value === 'fresh') return 'Контекст актуален';
   if (projectContextState.value === 'stale') return 'Контекст устарел';
   if (projectContextState.value === 'failed') return 'Сборка не удалась';
@@ -1012,6 +1030,23 @@ const projectProfileFields = computed(() => {
 function getProjectFieldPlaceholder(fieldKey: ProjectProfileFieldKey, label: string) {
   const count = getProjectFieldValues(fieldKey).length;
   return `${label}: ${count}`;
+}
+
+function stopProjectContextBuildAnimation() {
+  if (projectContextBuildTimer.value) {
+    clearInterval(projectContextBuildTimer.value);
+    projectContextBuildTimer.value = null;
+  }
+  projectContextBuildStepIndex.value = 0;
+}
+
+function startProjectContextBuildAnimation() {
+  stopProjectContextBuildAnimation();
+  projectContextBuildStepIndex.value = 0;
+  projectContextBuildTimer.value = setInterval(() => {
+    projectContextBuildStepIndex.value =
+      (projectContextBuildStepIndex.value + 1) % PROJECT_CONTEXT_BUILD_STEPS.length;
+  }, 1600);
 }
 
 const projectProfileFilledFieldCount = computed(
@@ -1905,6 +1940,7 @@ async function buildProjectContext() {
   isProjectProfileExpanded.value = true;
   isBuildingProjectContext.value = true;
   projectContextBuildError.value = '';
+  startProjectContextBuildAnimation();
 
   try {
     await entitiesStore.flushQueuedEntityUpdate(project._id);
@@ -1921,6 +1957,7 @@ async function buildProjectContext() {
     projectContextBuildError.value = formatApiError(error);
   } finally {
     isBuildingProjectContext.value = false;
+    stopProjectContextBuildAnimation();
   }
 }
 
@@ -2425,6 +2462,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   stopPanelResize();
   stopHistoryPolling();
+  stopProjectContextBuildAnimation();
   voiceInput.cancelRecording();
   stopProjectDescriptionResize();
   for (const timer of pendingSaveTimersByScope.values()) {
