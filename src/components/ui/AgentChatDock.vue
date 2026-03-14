@@ -113,7 +113,6 @@ const PROJECT_CONTEXT_BUILD_STEPS = [
   'Ищу компании',
   'Смотрю связи',
   'Оцениваю',
-  'Считаю веса',
   'Готовлю бриф',
   'Почти готово',
 ] as const;
@@ -891,66 +890,6 @@ const projectProfileDescription = computed(() => {
   return typeof metadata.description === 'string' ? metadata.description.trim() : '';
 });
 
-const projectAnalysisMap = computed(() => {
-  const project = activeProjectEntity.value;
-  if (!project) return {} as Record<string, unknown>;
-  return toProfile(toProfile(project.ai_metadata).project_analysis_map);
-});
-
-const projectAnalysisEntityCount = computed(() => {
-  const entities = Array.isArray(projectAnalysisMap.value.entities) ? projectAnalysisMap.value.entities : [];
-  return entities.length;
-});
-
-const projectAnalysisConnectionCount = computed(() => {
-  const connections = Array.isArray(projectAnalysisMap.value.connections) ? projectAnalysisMap.value.connections : [];
-  return connections.length;
-});
-
-const projectAnalysisTopEntities = computed(() => {
-  const entities = Array.isArray(projectAnalysisMap.value.entities) ? projectAnalysisMap.value.entities : [];
-  return entities
-    .map((item) => {
-      const row = toProfile(item);
-      const score = Number(row.final_score);
-      return {
-        id: typeof row.entity_id === 'string' ? row.entity_id.trim() : '',
-        name: typeof row.name === 'string' ? row.name.trim() : '',
-        score: Number.isFinite(score) ? Math.max(0, Math.min(100, Math.round(score))) : 0,
-        background: row.background === true,
-      };
-    })
-    .filter((item) => item.name)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 8);
-});
-
-const projectAnalysisTopConnections = computed(() => {
-  const entitiesById = new Map(
-    projectAnalysisTopEntities.value.map((item) => [item.id, item.name]),
-  );
-  const connections = Array.isArray(projectAnalysisMap.value.connections) ? projectAnalysisMap.value.connections : [];
-  return connections
-    .map((item) => {
-      const row = toProfile(item);
-      const score = Number(row.final_score);
-      const from = typeof row.from === 'string' ? row.from.trim() : '';
-      const to = typeof row.to === 'string' ? row.to.trim() : '';
-      const label = typeof row.label === 'string' ? row.label.trim() : '';
-      return {
-        key: `${from}|${to}|${label}`,
-        text: [entitiesById.get(from) || from, entitiesById.get(to) || to]
-          .filter(Boolean)
-          .join(' -> ')
-          + (label ? ` (${label})` : ''),
-        score: Number.isFinite(score) ? Math.max(0, Math.min(100, Math.round(score))) : 0,
-      };
-    })
-    .filter((item) => item.text)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 8);
-});
-
 const projectContextCurrentHash = computed(() => {
   const project = activeProjectEntity.value;
   if (!project) return '';
@@ -1338,7 +1277,7 @@ const clearConfirmTitle = computed(() =>
 const clearConfirmText = computed(() =>
   routeScopeType.value === 'project-canvas'
     ? clearConfirmMode.value === 'context'
-      ? 'Будут удалены описание проекта, веса и данные собранного контекста. История LLM-чата останется.'
+      ? 'Будут удалены описание проекта и данные собранного контекста. История LLM-чата останется.'
       : 'Будут удалены вопросы и ответы LLM-чата проекта. Контекст проекта останется.'
     : 'История общего LLM-чата будет удалена безвозвратно для текущего аккаунта.',
 );
@@ -2181,19 +2120,6 @@ function buildScopeStructuredText() {
     lines.push('');
     lines.push('Описание');
     lines.push(projectProfileDescription.value || '—');
-    const synthesis = toProfile(projectAnalysisMap.value.project_synthesis);
-    const synthesisLines = [
-      typeof synthesis.main_goal === 'string' ? synthesis.main_goal.trim() : '',
-      typeof synthesis.main_bottleneck === 'string' ? synthesis.main_bottleneck.trim() : '',
-      typeof synthesis.next_focus === 'string' ? synthesis.next_focus.trim() : '',
-    ].filter(Boolean);
-    if (synthesisLines.length) {
-      lines.push('');
-      lines.push('Синтез');
-      for (const line of synthesisLines) {
-        lines.push(`- ${line}`);
-      }
-    }
   } else {
     lines.push(scopeTitle.value);
     lines.push(scopeSummary.value);
@@ -2556,9 +2482,6 @@ onBeforeUnmount(() => {
           @click="isProjectProfileExpanded = !isProjectProfileExpanded"
         >
           <span class="agent-project-profile-title">Контекст проекта</span>
-          <span class="agent-project-profile-count">
-            {{ projectAnalysisEntityCount }} сущн. / {{ projectAnalysisConnectionCount }} связей
-          </span>
           <span class="agent-project-profile-chevron" aria-hidden="true"></span>
         </button>
 
@@ -2579,37 +2502,7 @@ onBeforeUnmount(() => {
             @pointerdown="onProjectDescriptionResizePointerDown"
           />
           <div class="agent-project-analysis-meta">
-            <span>{{ projectAnalysisEntityCount }} сущностей в карте</span>
-            <span>{{ projectAnalysisConnectionCount }} связей в карте</span>
             <span v-if="projectContextBuiltAt">Последняя сборка: {{ toDisplayDateTime(projectContextBuiltAt) }}</span>
-          </div>
-
-          <div v-if="projectAnalysisTopEntities.length" class="agent-project-analysis-section">
-            <div class="agent-project-analysis-title">Веса сущностей</div>
-            <div class="agent-project-analysis-list">
-              <div
-                v-for="item in projectAnalysisTopEntities"
-                :key="item.id || item.name"
-                class="agent-project-analysis-row"
-              >
-                <span class="agent-project-analysis-name">{{ item.name }}</span>
-                <span class="agent-project-analysis-score">{{ item.score }}</span>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="projectAnalysisTopConnections.length" class="agent-project-analysis-section">
-            <div class="agent-project-analysis-title">Веса связей</div>
-            <div class="agent-project-analysis-list">
-              <div
-                v-for="item in projectAnalysisTopConnections"
-                :key="item.key"
-                class="agent-project-analysis-row"
-              >
-                <span class="agent-project-analysis-name">{{ item.text }}</span>
-                <span class="agent-project-analysis-score">{{ item.score }}</span>
-              </div>
-            </div>
           </div>
         </div>
       </section>
