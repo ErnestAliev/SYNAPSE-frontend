@@ -36,6 +36,11 @@ interface AgentChatResponse {
   debug?: Record<string, unknown>;
 }
 
+interface AgentChatPreviewResponse {
+  stats?: Record<string, unknown>;
+  preview?: Record<string, unknown>;
+}
+
 interface AgentChatHistoryResponse {
   scopeKey?: string;
   messages?: unknown;
@@ -102,6 +107,7 @@ const isOpen = ref(false);
 const messageDraft = ref('');
 const pendingUploads = ref<EntityAttachment[]>([]);
 const isSending = ref(false);
+const isPreparingLlmLog = ref(false);
 const isResizingPanel = ref(false);
 const isClearHistoryConfirmOpen = ref(false);
 const isChatToolsMenuOpen = ref(false);
@@ -1571,6 +1577,24 @@ async function requestAssistantReply(args: {
   };
 }
 
+async function requestAssistantPreview(args: {
+  scope: AgentChatRequestScope;
+  message: string;
+  history: Array<{ role: ChatRole; text: string }>;
+  attachments: EntityAttachment[];
+}) {
+  const { data } = await apiClient.post<AgentChatPreviewResponse>('/ai/agent-chat-preview', {
+    scope: args.scope,
+    message: args.message,
+    history: args.history,
+    attachments: buildAttachmentsPayload(args.attachments),
+  }, {
+    timeout: AGENT_CHAT_REQUEST_TIMEOUT_MS,
+  });
+
+  return data;
+}
+
 function pushMessage(role: ChatRole, text: string, attachments: EntityAttachment[] = [], scope?: string) {
   const trimmed = text.trim();
   if (!trimmed && !attachments.length) return;
@@ -1674,14 +1698,14 @@ function toggleChat() {
   }
 }
 
-type AgentChatToolsActionKey = 'import-documents' | 'copy-structure' | 'export-txt' | 'clear-history';
+type AgentChatToolsActionKey = 'import-documents' | 'copy-structure' | 'export-txt' | 'download-llm-log' | 'clear-history';
 
 function closeChatToolsMenu() {
   isChatToolsMenuOpen.value = false;
 }
 
 function toggleChatToolsMenu() {
-  if (isSending.value) return;
+  if (isSending.value || isPreparingLlmLog.value) return;
   isChatToolsMenuOpen.value = !isChatToolsMenuOpen.value;
 }
 
@@ -1699,6 +1723,10 @@ function onChatToolsAction(actionKey: AgentChatToolsActionKey) {
   }
   if (actionKey === 'export-txt') {
     exportScopeAsTextFile();
+    return;
+  }
+  if (actionKey === 'download-llm-log') {
+    void downloadLlmLog();
     return;
   }
   openClearHistoryConfirm();
@@ -2108,6 +2136,67 @@ function exportScopeAsTextFile() {
   window.URL.revokeObjectURL(objectUrl);
 }
 
+function downloadJsonFile(fileName: string, payload: unknown) {
+  if (typeof window === 'undefined') return;
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+  const objectUrl = window.URL.createObjectURL(blob);
+  const anchor = window.document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = fileName;
+  window.document.body.appendChild(anchor);
+  anchor.click();
+  window.document.body.removeChild(anchor);
+  window.URL.revokeObjectURL(objectUrl);
+}
+
+function buildLlmLogFileName() {
+  if (routeScopeType.value === 'project-canvas') {
+    const projectName = sanitizeFileNamePart(activeProjectEntity.value?.name?.trim() || 'project');
+    return `llm-context-log-${projectName || 'project'}-${Date.now()}.json`;
+  }
+  const label = sanitizeFileNamePart(ENTITY_TYPE_LABELS[collectionType.value] || 'collection');
+  return `llm-context-log-${label || 'collection'}-${Date.now()}.json`;
+}
+
+async function downloadLlmLog() {
+  if (isPreparingLlmLog.value || isSending.value) return;
+  const activeScope = buildRequestScope();
+  if (!activeScope) {
+    pushMessage('assistant', 'Не удалось определить контекст для LLM-лога.');
+    return;
+  }
+
+  const activeScopeKey = scopeKey.value;
+  const historyPayload = buildHistoryPayload(messagesByScope.value[activeScopeKey] || []);
+  const draftMessage = messageDraft.value.trim();
+  const attachments = [...pendingUploads.value];
+
+  isPreparingLlmLog.value = true;
+  try {
+    const previewData = await requestAssistantPreview({
+      scope: activeScope,
+      message: draftMessage,
+      history: historyPayload,
+      attachments,
+    });
+
+    downloadJsonFile(buildLlmLogFileName(), {
+      exportedAt: getIsoNow(),
+      source: 'agent-chat-menu-dropdown',
+      scope: activeScope,
+      currentDraft: draftMessage,
+      history: historyPayload,
+      pendingAttachments: buildAttachmentsPayload(attachments),
+      preview: previewData,
+    });
+  } catch (error) {
+    pushMessage('assistant', `Не удалось скачать LLM лог. ${formatApiError(error)}`);
+  } finally {
+    isPreparingLlmLog.value = false;
+  }
+}
+
 watch(
   scopeKey,
   (nextScopeKey) => {
@@ -2409,6 +2498,14 @@ onBeforeUnmount(() => {
                 </button>
                 <button type="button" class="agent-chat-menu-item" @click="onChatToolsAction('export-txt')">
                   Экспорт в TXT
+                </button>
+                <button
+                  type="button"
+                  class="agent-chat-menu-item"
+                  :disabled="isPreparingLlmLog || isSending"
+                  @click="onChatToolsAction('download-llm-log')"
+                >
+                  {{ isPreparingLlmLog ? 'Сборка лога...' : 'Скачать лог LLM' }}
                 </button>
                 <button type="button" class="agent-chat-menu-item" @click="onChatToolsAction('clear-history')">
                   {{ routeScopeType === 'project-canvas' ? 'Сбросить данные и чат' : 'Очистить историю' }}
