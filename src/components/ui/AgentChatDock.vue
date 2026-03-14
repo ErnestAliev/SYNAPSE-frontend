@@ -3,7 +3,7 @@ import axios from 'axios';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useEntitiesStore } from '../../stores/entities';
-import type { Entity, EntityType, ProjectCanvasData } from '../../types/entity';
+import type { Entity, EntityType } from '../../types/entity';
 import { apiClient } from '../../services/api';
 import { useUnifiedVoiceInput } from '../../composables/useUnifiedVoiceInput';
 
@@ -176,8 +176,8 @@ function toProfile(value: unknown) {
   return value as Record<string, unknown>;
 }
 
-function buildProjectContextCanvasSignature(canvasData: ProjectCanvasData | undefined) {
-  const canvas = toProfile(canvasData);
+function buildProjectContextCanvasSignature(project: Entity | null) {
+  const canvas = toProfile(project?.canvas_data);
   const nodes = (Array.isArray(canvas.nodes) ? canvas.nodes : [])
     .map((node) => {
       const row = toProfile(node);
@@ -187,12 +187,9 @@ function buildProjectContextCanvasSignature(canvasData: ProjectCanvasData | unde
       return {
         id,
         entityId,
-        x: Number.isFinite(Number(row.x)) ? Number(row.x) : 0,
-        y: Number.isFinite(Number(row.y)) ? Number(row.y) : 0,
-        scale: Number.isFinite(Number(row.scale)) ? Number(row.scale) : 1,
       };
     })
-    .filter((row): row is { id: string; entityId: string; x: number; y: number; scale: number } => Boolean(row))
+    .filter((row): row is { id: string; entityId: string } => Boolean(row))
     .sort((left, right) => left.id.localeCompare(right.id));
   const edges = (Array.isArray(canvas.edges) ? canvas.edges : [])
     .map((edge) => {
@@ -239,11 +236,41 @@ function buildProjectContextCanvasSignature(canvasData: ProjectCanvasData | unde
     .filter((row): row is { id: string; nodeIds: string[] } => Boolean(row))
     .sort((left, right) => left.id.localeCompare(right.id));
 
-  return { nodes, edges, groups };
+  const entityIds = nodes
+    .map((node) => node.entityId)
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
+  const entities = entityIds
+    .map((entityId) => entitiesStore.byId(entityId))
+    .filter((entity): entity is Entity => Boolean(entity))
+    .map((entity) => {
+      const metadata = toProfile(entity.ai_metadata);
+      return {
+        id: typeof entity._id === 'string' ? entity._id.trim() : '',
+        type: typeof entity.type === 'string' ? entity.type.trim() : '',
+        name: typeof entity.name === 'string' ? entity.name.trim() : '',
+        description: typeof metadata.description === 'string' ? metadata.description.trim() : '',
+      };
+    })
+    .sort((left, right) => left.id.localeCompare(right.id));
+
+  return {
+    project: {
+      id: typeof project?._id === 'string' ? project._id.trim() : '',
+      name: typeof project?.name === 'string' ? project.name.trim() : '',
+      description: typeof toProfile(project?.ai_metadata).description === 'string'
+        ? String(toProfile(project?.ai_metadata).description).trim()
+        : '',
+    },
+    nodes,
+    edges,
+    groups,
+    entities,
+  };
 }
 
-function buildProjectContextSourceHash(canvasData: ProjectCanvasData | undefined) {
-  const text = JSON.stringify(buildProjectContextCanvasSignature(canvasData));
+function buildProjectContextSourceHash(project: Entity | null) {
+  const text = JSON.stringify(buildProjectContextCanvasSignature(project));
   let hash = 2166136261;
   for (let index = 0; index < text.length; index += 1) {
     hash ^= text.charCodeAt(index);
@@ -871,7 +898,7 @@ const projectAnalysisConfidence = computed(() => {
 const projectContextCurrentHash = computed(() => {
   const project = activeProjectEntity.value;
   if (!project) return '';
-  return buildProjectContextSourceHash(project.canvas_data);
+  return buildProjectContextSourceHash(project);
 });
 
 const projectContextStoredHash = computed(() => {
