@@ -36,9 +36,14 @@ interface AgentChatResponse {
   debug?: Record<string, unknown>;
 }
 
-interface AgentChatPreviewResponse {
-  stats?: Record<string, unknown>;
-  preview?: Record<string, unknown>;
+interface ProjectContextBuildPreviewResponse {
+  timestamp?: string;
+  scope?: Record<string, unknown>;
+  input?: Record<string, unknown>;
+  prompts?: Record<string, unknown>;
+  builderContext?: Record<string, unknown>;
+  fallbackPreview?: Record<string, unknown>;
+  savedProjectContext?: Record<string, unknown>;
 }
 
 interface AgentChatHistoryResponse {
@@ -1193,6 +1198,7 @@ function buildProjectMetadataResetPatch() {
     description: '',
     project_context_compiled_description: '',
     project_analysis_map: {},
+    project_context_last_build_log: {},
     text_input: '',
     voice_input: '',
     documents: [],
@@ -1577,17 +1583,29 @@ async function requestAssistantReply(args: {
   };
 }
 
-async function requestAssistantPreview(args: {
+async function requestAssistantDebugReply(args: {
   scope: AgentChatRequestScope;
   message: string;
   history: Array<{ role: ChatRole; text: string }>;
   attachments: EntityAttachment[];
 }) {
-  const { data } = await apiClient.post<AgentChatPreviewResponse>('/ai/agent-chat-preview', {
+  const { data } = await apiClient.post<AgentChatResponse>('/ai/agent-chat', {
     scope: args.scope,
     message: args.message,
     history: args.history,
     attachments: buildAttachmentsPayload(args.attachments),
+    debug: true,
+    monitorMode: true,
+  }, {
+    timeout: AGENT_CHAT_REQUEST_TIMEOUT_MS,
+  });
+
+  return data;
+}
+
+async function requestProjectContextBuildPreview(projectId: string) {
+  const { data } = await apiClient.post<ProjectContextBuildPreviewResponse>('/ai/project-context/preview', {
+    projectId,
   }, {
     timeout: AGENT_CHAT_REQUEST_TIMEOUT_MS,
   });
@@ -1698,7 +1716,13 @@ function toggleChat() {
   }
 }
 
-type AgentChatToolsActionKey = 'import-documents' | 'copy-structure' | 'export-txt' | 'download-llm-log' | 'clear-history';
+type AgentChatToolsActionKey =
+  | 'import-documents'
+  | 'copy-structure'
+  | 'export-txt'
+  | 'download-project-context-log'
+  | 'download-chat-llm-log'
+  | 'clear-history';
 
 function closeChatToolsMenu() {
   isChatToolsMenuOpen.value = false;
@@ -1725,8 +1749,12 @@ function onChatToolsAction(actionKey: AgentChatToolsActionKey) {
     exportScopeAsTextFile();
     return;
   }
-  if (actionKey === 'download-llm-log') {
-    void downloadLlmLog();
+  if (actionKey === 'download-project-context-log') {
+    void downloadProjectContextBuildLog();
+    return;
+  }
+  if (actionKey === 'download-chat-llm-log') {
+    void downloadChatLlmLog();
     return;
   }
   openClearHistoryConfirm();
@@ -2159,7 +2187,44 @@ function buildLlmLogFileName() {
   return `llm-context-log-${label || 'collection'}-${Date.now()}.json`;
 }
 
-async function downloadLlmLog() {
+function buildProjectContextLogFileName() {
+  const projectName = sanitizeFileNamePart(activeProjectEntity.value?.name?.trim() || 'project');
+  return `project-context-build-log-${projectName || 'project'}-${Date.now()}.json`;
+}
+
+async function downloadProjectContextBuildLog() {
+  const project = activeProjectEntity.value;
+  if (!project || isPreparingLlmLog.value || isSending.value) return;
+
+  isPreparingLlmLog.value = true;
+  try {
+    await entitiesStore.flushQueuedEntityUpdate(project._id);
+    const latestProject = entitiesStore.byId(project._id);
+    const metadata = toProfile(latestProject?.ai_metadata);
+    const savedBuildLog = toProfile(metadata.project_context_last_build_log);
+    const hasSavedBuildLog = Object.keys(savedBuildLog).length > 0;
+
+    if (hasSavedBuildLog) {
+      downloadJsonFile(buildProjectContextLogFileName(), savedBuildLog);
+      return;
+    }
+
+    const previewData = await requestProjectContextBuildPreview(project._id);
+    downloadJsonFile(buildProjectContextLogFileName(), {
+      exportedAt: getIsoNow(),
+      source: 'project-context.preview-fallback',
+      projectId: project._id,
+      projectName: project.name,
+      preview: previewData,
+    });
+  } catch (error) {
+    pushMessage('assistant', `Не удалось скачать лог сборки контекста. ${formatApiError(error)}`);
+  } finally {
+    isPreparingLlmLog.value = false;
+  }
+}
+
+async function downloadChatLlmLog() {
   if (isPreparingLlmLog.value || isSending.value) return;
   const activeScope = buildRequestScope();
   if (!activeScope) {
@@ -2171,10 +2236,14 @@ async function downloadLlmLog() {
   const historyPayload = buildHistoryPayload(messagesByScope.value[activeScopeKey] || []);
   const draftMessage = messageDraft.value.trim();
   const attachments = [...pendingUploads.value];
+  if (!draftMessage) {
+    pushMessage('assistant', 'Введите вопрос в поле чата, чтобы скачать лог чата с полным запросом и ответом.');
+    return;
+  }
 
   isPreparingLlmLog.value = true;
   try {
-    const previewData = await requestAssistantPreview({
+    const debugData = await requestAssistantDebugReply({
       scope: activeScope,
       message: draftMessage,
       history: historyPayload,
@@ -2183,12 +2252,12 @@ async function downloadLlmLog() {
 
     downloadJsonFile(buildLlmLogFileName(), {
       exportedAt: getIsoNow(),
-      source: 'agent-chat-menu-dropdown',
+      source: 'agent-chat-menu-dropdown.chat-debug',
       scope: activeScope,
       currentDraft: draftMessage,
       history: historyPayload,
       pendingAttachments: buildAttachmentsPayload(attachments),
-      preview: previewData,
+      response: debugData,
     });
   } catch (error) {
     pushMessage('assistant', `Не удалось скачать LLM лог. ${formatApiError(error)}`);
@@ -2500,12 +2569,21 @@ onBeforeUnmount(() => {
                   Экспорт в TXT
                 </button>
                 <button
+                  v-if="routeScopeType === 'project-canvas'"
                   type="button"
                   class="agent-chat-menu-item"
                   :disabled="isPreparingLlmLog || isSending"
-                  @click="onChatToolsAction('download-llm-log')"
+                  @click="onChatToolsAction('download-project-context-log')"
                 >
-                  {{ isPreparingLlmLog ? 'Сборка лога...' : 'Скачать лог LLM' }}
+                  {{ isPreparingLlmLog ? 'Сборка лога...' : 'Скачать лог сборки контекста' }}
+                </button>
+                <button
+                  type="button"
+                  class="agent-chat-menu-item"
+                  :disabled="isPreparingLlmLog || isSending"
+                  @click="onChatToolsAction('download-chat-llm-log')"
+                >
+                  {{ isPreparingLlmLog ? 'Сборка лога...' : 'Скачать лог чата LLM' }}
                 </button>
                 <button type="button" class="agent-chat-menu-item" @click="onChatToolsAction('clear-history')">
                   {{ routeScopeType === 'project-canvas' ? 'Сбросить данные и чат' : 'Очистить историю' }}
