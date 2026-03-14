@@ -889,10 +889,48 @@ const projectAnalysisConnectionCount = computed(() => {
   return connections.length;
 });
 
-const projectAnalysisConfidence = computed(() => {
-  const synthesis = toProfile(projectAnalysisMap.value.project_synthesis);
-  const value = Number(synthesis.confidence);
-  return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : 0;
+const projectAnalysisTopEntities = computed(() => {
+  const entities = Array.isArray(projectAnalysisMap.value.entities) ? projectAnalysisMap.value.entities : [];
+  return entities
+    .map((item) => {
+      const row = toProfile(item);
+      const score = Number(row.final_score);
+      return {
+        id: typeof row.entity_id === 'string' ? row.entity_id.trim() : '',
+        name: typeof row.name === 'string' ? row.name.trim() : '',
+        score: Number.isFinite(score) ? Math.max(0, Math.min(100, Math.round(score))) : 0,
+        background: row.background === true,
+      };
+    })
+    .filter((item) => item.name)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 8);
+});
+
+const projectAnalysisTopConnections = computed(() => {
+  const entitiesById = new Map(
+    projectAnalysisTopEntities.value.map((item) => [item.id, item.name]),
+  );
+  const connections = Array.isArray(projectAnalysisMap.value.connections) ? projectAnalysisMap.value.connections : [];
+  return connections
+    .map((item) => {
+      const row = toProfile(item);
+      const score = Number(row.final_score);
+      const from = typeof row.from === 'string' ? row.from.trim() : '';
+      const to = typeof row.to === 'string' ? row.to.trim() : '';
+      const label = typeof row.label === 'string' ? row.label.trim() : '';
+      return {
+        key: `${from}|${to}|${label}`,
+        text: [entitiesById.get(from) || from, entitiesById.get(to) || to]
+          .filter(Boolean)
+          .join(' -> ')
+          + (label ? ` (${label})` : ''),
+        score: Number.isFinite(score) ? Math.max(0, Math.min(100, Math.round(score))) : 0,
+      };
+    })
+    .filter((item) => item.text)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 8);
 });
 
 const projectContextCurrentHash = computed(() => {
@@ -1043,7 +1081,7 @@ function applyProjectFieldValues(fieldKey: ProjectProfileFieldKey, values: strin
 function getProjectDescriptionResizeBounds() {
   const minHeight = 54;
   const viewportHeightValue = typeof window !== 'undefined' ? window.innerHeight : 900;
-  const maxHeight = Math.max(260, Math.floor(viewportHeightValue * 0.8));
+  const maxHeight = Math.max(320, Math.floor(viewportHeightValue * 0.92));
   return { minHeight, maxHeight };
 }
 
@@ -2465,7 +2503,7 @@ onBeforeUnmount(() => {
             class="agent-project-description-input"
             :style="projectDescriptionTextareaStyle"
             rows="2"
-            maxlength="3000"
+            :maxlength="PROJECT_DESCRIPTION_MAX_LENGTH"
             :value="projectProfileDescription"
             placeholder="Описание"
             @input="onProjectDescriptionInput"
@@ -2476,8 +2514,37 @@ onBeforeUnmount(() => {
             @pointerdown="onProjectDescriptionResizePointerDown"
           />
           <div class="agent-project-analysis-meta">
-            <span v-if="projectAnalysisConfidence > 0">Уверенность синтеза: {{ projectAnalysisConfidence }}%</span>
+            <span>{{ projectAnalysisEntityCount }} сущностей в карте</span>
+            <span>{{ projectAnalysisConnectionCount }} связей в карте</span>
             <span v-if="projectContextBuiltAt">Последняя сборка: {{ toDisplayDateTime(projectContextBuiltAt) }}</span>
+          </div>
+
+          <div v-if="projectAnalysisTopEntities.length" class="agent-project-analysis-section">
+            <div class="agent-project-analysis-title">Веса сущностей</div>
+            <div class="agent-project-analysis-list">
+              <div
+                v-for="item in projectAnalysisTopEntities"
+                :key="item.id || item.name"
+                class="agent-project-analysis-row"
+              >
+                <span class="agent-project-analysis-name">{{ item.name }}</span>
+                <span class="agent-project-analysis-score">{{ item.score }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="projectAnalysisTopConnections.length" class="agent-project-analysis-section">
+            <div class="agent-project-analysis-title">Веса связей</div>
+            <div class="agent-project-analysis-list">
+              <div
+                v-for="item in projectAnalysisTopConnections"
+                :key="item.key"
+                class="agent-project-analysis-row"
+              >
+                <span class="agent-project-analysis-name">{{ item.text }}</span>
+                <span class="agent-project-analysis-score">{{ item.score }}</span>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -3050,6 +3117,51 @@ onBeforeUnmount(() => {
   color: #64748b;
   font-size: 11px;
   line-height: 1.35;
+}
+
+.agent-project-analysis-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.agent-project-analysis-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.agent-project-analysis-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-project-analysis-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  justify-content: space-between;
+  border: 1px solid #e5ebf5;
+  border-radius: 8px;
+  background: #f8fbff;
+  padding: 6px 8px;
+}
+
+.agent-project-analysis-name {
+  min-width: 0;
+  color: #334155;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.agent-project-analysis-score {
+  flex: 0 0 auto;
+  color: #1058ff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .agent-project-fields-list {
