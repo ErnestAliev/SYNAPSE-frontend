@@ -641,6 +641,7 @@ const canvasRedoStack = ref<ProjectCanvasData[]>([]);
 const lastCommittedCanvasHistory = ref<ProjectCanvasData | null>(null);
 const isApplyingCanvasHistory = ref(false);
 let guardedViewportElement: HTMLDivElement | null = null;
+const selectedMarqueeGroupIds = ref<string[]>([]);
 
 const legacyVoiceInput = useUnifiedVoiceInput({
   language: 'ru',
@@ -685,6 +686,20 @@ const zoomPercent = computed(() => Math.round(camera.value.zoom * 100));
 const canUndoCanvas = computed(() => canvasUndoStack.value.length > 0);
 const canRedoCanvas = computed(() => canvasRedoStack.value.length > 0);
 const selectedNodeIdSet = computed(() => new Set(selectedNodeIds.value));
+const selectedMarqueeGroupIdSet = computed(() => new Set(selectedMarqueeGroupIds.value));
+const selectedMarqueeGroupNodeIdSet = computed(() => {
+  const groupIdSet = selectedMarqueeGroupIdSet.value;
+  if (!groupIdSet.size) return new Set<string>();
+
+  const nodeIds = new Set<string>();
+  for (const group of groups.value) {
+    if (!groupIdSet.has(group.id)) continue;
+    for (const nodeId of group.nodeIds) {
+      nodeIds.add(nodeId);
+    }
+  }
+  return nodeIds;
+});
 const selectedNodes = computed(() => {
   if (!selectedNodeIds.value.length) return [] as CanvasNodeProjection[];
 
@@ -811,7 +826,8 @@ const displayGroups = computed<CanvasGroupDisplay[]>(() => {
       color: group.color || '#1058ff',
       nodeIds: group.nodeIds,
       bounds,
-      isSelected: selectedGroupId.value === group.id,
+      isSelected:
+        selectedGroupId.value === group.id || selectedMarqueeGroupIdSet.value.has(group.id),
       isEditing: editingGroupId.value === group.id,
     }];
   });
@@ -2091,6 +2107,10 @@ function clearSelectedNodes() {
   selectedNodeIds.value = [];
 }
 
+function clearSelectedMarqueeGroups() {
+  selectedMarqueeGroupIds.value = [];
+}
+
 function clearSelectedGroup() {
   selectedGroupId.value = null;
 }
@@ -2120,7 +2140,7 @@ function isEntityAlreadyOnCanvas(entityId: string) {
 }
 
 function isNodeSelected(nodeId: string) {
-  return selectedNodeIdSet.value.has(nodeId);
+  return selectedNodeIdSet.value.has(nodeId) || selectedMarqueeGroupNodeIdSet.value.has(nodeId);
 }
 
 function snapUp(value: number) {
@@ -2249,6 +2269,7 @@ function createGroupFromSelection() {
 
   syncGroups([...groups.value, nextGroup], { preserveSelection: true });
   clearSelectedNodes();
+  clearSelectedMarqueeGroups();
   selectedGroupId.value = nextGroup.id;
   editingGroupId.value = null;
   closeGroupContextMenu();
@@ -2277,6 +2298,7 @@ function ungroupById(groupId: string) {
   if (!targetGroup) return false;
 
   syncGroups(groups.value.filter((group) => group.id !== groupId));
+  clearSelectedMarqueeGroups();
   selectedGroupId.value = null;
   editingGroupId.value = null;
   selectNodesByIds(targetGroup.nodeIds, { additive: false });
@@ -2290,6 +2312,7 @@ function toggleGroupEditMode(groupId: string, force?: boolean) {
   const nextValue = typeof force === 'boolean' ? force : editingGroupId.value !== groupId;
   editingGroupId.value = nextValue ? groupId : null;
   selectedGroupId.value = groupId;
+  clearSelectedMarqueeGroups();
   if (nextValue) {
     clearSelectedNodes();
   }
@@ -2314,6 +2337,7 @@ function openSelectionGroupMenu(clientX: number, clientY: number) {
 function openGroupMenu(groupId: string, clientX: number, clientY: number) {
   selectedGroupId.value = groupId;
   clearSelectedNodes();
+  clearSelectedMarqueeGroups();
   groupContextMenu.value = {
     kind: 'group',
     groupId,
@@ -2344,6 +2368,21 @@ function findDisplayGroupByPoint(worldX: number, worldY: number) {
   return null;
 }
 
+function selectMarqueeGroupsByIds(groupIds: string[], options?: { additive?: boolean }) {
+  const additive = options?.additive ?? false;
+  const uniqueIds = Array.from(new Set(groupIds.filter(Boolean)));
+  if (!additive) {
+    selectedMarqueeGroupIds.value = uniqueIds;
+    return;
+  }
+
+  const next = new Set(selectedMarqueeGroupIds.value);
+  for (const groupId of uniqueIds) {
+    next.add(groupId);
+  }
+  selectedMarqueeGroupIds.value = Array.from(next);
+}
+
 function finalizeSelectionRect() {
   const rect = selectionRect.value;
   if (!rect) return false;
@@ -2351,6 +2390,7 @@ function finalizeSelectionRect() {
   if (!rect.moved) {
     if (!rect.additive) {
       clearSelectedNodes();
+      clearSelectedMarqueeGroups();
     }
     clearSelectionRect();
     return false;
@@ -2377,7 +2417,26 @@ function finalizeSelectionRect() {
     })
     .map((node) => node.id);
 
+  const intersectingGroupIds = editingGroupId.value
+    ? []
+    : displayGroups.value
+        .filter((group) => {
+          const groupLeft = group.bounds.left;
+          const groupRight = group.bounds.left + group.bounds.width;
+          const groupTop = group.bounds.top;
+          const groupBottom = group.bounds.top + group.bounds.height;
+
+          return (
+            groupRight >= minX &&
+            groupLeft <= maxX &&
+            groupBottom >= minY &&
+            groupTop <= maxY
+          );
+        })
+        .map((group) => group.id);
+
   selectNodesByIds(withinRect, { additive: rect.additive });
+  selectMarqueeGroupsByIds(intersectingGroupIds, { additive: rect.additive });
   clearSelectionRect();
   return true;
 }
@@ -4483,6 +4542,7 @@ async function loadProjectCanvas(projectId: string) {
   closeEdgeMenu();
   clearSelectionRect();
   clearSelectedNodes();
+  clearSelectedMarqueeGroups();
   clearSelectedGroup();
   closeGroupContextMenu();
   editingGroupId.value = null;
@@ -4924,6 +4984,7 @@ function onGroupPointerDown(groupId: string, event: PointerEvent) {
 
   selectedGroupId.value = groupId;
   clearSelectedNodes();
+  clearSelectedMarqueeGroups();
   closeContextMenu();
   closeEdgeMenu();
   closeGroupContextMenu();
@@ -4952,6 +5013,7 @@ function onGroupClick(groupId: string, event: MouseEvent) {
 
   selectedGroupId.value = groupId;
   clearSelectedNodes();
+  clearSelectedMarqueeGroups();
   closeContextMenu();
   closeEdgeMenu();
   closeGroupContextMenu();
@@ -5373,8 +5435,17 @@ function onNodeDragStart(payload: {
     const selectedNode = getNodeById(id);
     return Boolean(selectedNode && !isNodeLocked(selectedNode));
   });
+  const draggableMarqueeGroupIds = Array.from(selectedMarqueeGroupNodeIdSet.value).filter((id) => {
+    const selectedNode = getNodeById(id);
+    return Boolean(selectedNode && !isNodeLocked(selectedNode));
+  });
+  const draggableSelectionIds = Array.from(
+    new Set([...draggableSelectedIds, ...draggableMarqueeGroupIds]),
+  );
   const canGroupDrag =
-    draggableSelectedIds.length > 1 && selectedNodeIdSet.value.has(payload.nodeId);
+    draggableSelectionIds.length > 1 &&
+    (selectedNodeIdSet.value.has(payload.nodeId) ||
+      selectedMarqueeGroupNodeIdSet.value.has(payload.nodeId));
 
   if (canGroupDrag) {
     draggingNode.value = null;
@@ -5384,14 +5455,14 @@ function onNodeDragStart(payload: {
 
     const world = clientToWorld(payload.pointerEvent.clientX, payload.pointerEvent.clientY);
     const startPositions: Record<string, { x: number; y: number }> = {};
-    for (const nodeId of draggableSelectedIds) {
+    for (const nodeId of draggableSelectionIds) {
       const selectedNode = getNodeById(nodeId);
       if (!selectedNode) continue;
       startPositions[nodeId] = { x: selectedNode.x, y: selectedNode.y };
     }
 
     draggingGroup.value = {
-      nodeIds: draggableSelectedIds,
+      nodeIds: draggableSelectionIds,
       startPointerX: world.x,
       startPointerY: world.y,
       startPositions,
@@ -5401,9 +5472,15 @@ function onNodeDragStart(payload: {
   }
 
   const shouldKeepSelection =
-    selectedNodeIdSet.value.has(payload.nodeId) && selectedNodeIds.value.length > 1;
-  if (!shouldKeepSelection && selectedNodeIds.value.length) {
+    (selectedNodeIdSet.value.has(payload.nodeId) ||
+      selectedMarqueeGroupNodeIdSet.value.has(payload.nodeId)) &&
+    draggableSelectionIds.length > 1;
+  if (
+    !shouldKeepSelection &&
+    (selectedNodeIds.value.length || selectedMarqueeGroupIds.value.length)
+  ) {
     clearSelectedNodes();
+    clearSelectedMarqueeGroups();
   }
   clearSelectedGroup();
   closeGroupContextMenu();
@@ -5436,6 +5513,7 @@ function onNodeOpenMenu(payload: { nodeId: string; shiftKey?: boolean }) {
   }
 
   clearSelectedNodes();
+  clearSelectedMarqueeGroups();
   clearSelectedGroup();
   closeGroupContextMenu();
   closeEdgeMenu();
@@ -5460,6 +5538,7 @@ function onNodeOpenMenu(payload: { nodeId: string; shiftKey?: boolean }) {
 function onNodeLongPress(payload: { nodeId: string; entityId: string }) {
   if (!payload.entityId) return;
   quickVoiceEntityId.value = payload.entityId;
+  clearSelectedMarqueeGroups();
   clearSelectedGroup();
   closeGroupContextMenu();
   closeContextMenu();
@@ -5900,6 +5979,17 @@ watch(
     const normalizedGroups = normalizeGroups(groups.value);
     if (JSON.stringify(normalizedGroups) !== JSON.stringify(groups.value)) {
       syncGroups(normalizedGroups, { preserveSelection: true });
+    }
+  },
+);
+
+watch(
+  () => groups.value.map((group) => group.id),
+  (nextGroupIds) => {
+    const availableIds = new Set(nextGroupIds);
+    const filtered = selectedMarqueeGroupIds.value.filter((id) => availableIds.has(id));
+    if (filtered.length !== selectedMarqueeGroupIds.value.length) {
+      selectedMarqueeGroupIds.value = filtered;
     }
   },
 );
