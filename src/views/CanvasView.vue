@@ -744,6 +744,13 @@ const nodeIdToGroupId = computed(() => {
   }
   return map;
 });
+const groupIdToNodeIds = computed(() => {
+  const map = new Map<string, string[]>();
+  for (const group of groups.value) {
+    map.set(group.id, [...group.nodeIds]);
+  }
+  return map;
+});
 const tensionNodeMap = computed(() => {
   const map = new Map<string, CanvasNodeProjection>();
   for (const node of nodes.value) {
@@ -751,19 +758,59 @@ const tensionNodeMap = computed(() => {
   }
   return map;
 });
+const tensionAnchorMap = computed(() => {
+  const map = new Map<
+    string,
+    {
+      id: string;
+      x: number;
+      y: number;
+      kind: 'node' | 'group';
+      nodeIds?: string[];
+    }
+  >();
+
+  for (const node of nodes.value) {
+    map.set(node.id, {
+      id: node.id,
+      x: node.x,
+      y: node.y,
+      kind: 'node',
+    });
+  }
+
+  for (const group of tensionGroupAnchors.value) {
+    map.set(group.id, {
+      id: group.id,
+      x: group.x,
+      y: group.y,
+      kind: 'group',
+      nodeIds: groupIdToNodeIds.value.get(group.id) || [],
+    });
+  }
+
+  return map;
+});
+function resolveTensionAnchorId(anchorId: string) {
+  const groupId = getNodeGroupId(anchorId);
+  return groupId || anchorId;
+}
 const tensionAdjacencyMap = computed(() => {
   const map = new Map<string, Array<{ neighborId: string; edgeId: string }>>();
 
   for (const edge of edges.value) {
-    if (!tensionNodeMap.value.has(edge.source) || !tensionNodeMap.value.has(edge.target)) continue;
+    const sourceId = resolveTensionAnchorId(edge.source);
+    const targetId = resolveTensionAnchorId(edge.target);
+    if (sourceId === targetId) continue;
+    if (!tensionAnchorMap.value.has(sourceId) || !tensionAnchorMap.value.has(targetId)) continue;
 
-    const sourceNeighbors = map.get(edge.source) || [];
-    sourceNeighbors.push({ neighborId: edge.target, edgeId: edge.id });
-    map.set(edge.source, sourceNeighbors);
+    const sourceNeighbors = map.get(sourceId) || [];
+    sourceNeighbors.push({ neighborId: targetId, edgeId: edge.id });
+    map.set(sourceId, sourceNeighbors);
 
-    const targetNeighbors = map.get(edge.target) || [];
-    targetNeighbors.push({ neighborId: edge.source, edgeId: edge.id });
-    map.set(edge.target, targetNeighbors);
+    const targetNeighbors = map.get(targetId) || [];
+    targetNeighbors.push({ neighborId: sourceId, edgeId: edge.id });
+    map.set(targetId, targetNeighbors);
   }
 
   return map;
@@ -859,9 +906,12 @@ interface CanvasAnchorProjection {
   bounds?: CanvasGroupBounds;
 }
 
-function computeGroupBounds(nodeIds: string[]): CanvasGroupBounds | null {
+function computeGroupBoundsFromNodeMap(
+  sourceNodeMap: Map<string, CanvasNodeProjection>,
+  nodeIds: string[],
+): CanvasGroupBounds | null {
   const groupNodes = nodeIds
-    .map((nodeId) => renderNodeMap.value.get(nodeId) || null)
+    .map((nodeId) => sourceNodeMap.get(nodeId) || null)
     .filter((node): node is CanvasNodeProjection => Boolean(node));
 
   if (groupNodes.length < 2) return null;
@@ -886,6 +936,26 @@ function computeGroupBounds(nodeIds: string[]): CanvasGroupBounds | null {
     anchorY: top + height / 2,
   };
 }
+
+function computeGroupBounds(nodeIds: string[]): CanvasGroupBounds | null {
+  return computeGroupBoundsFromNodeMap(renderNodeMap.value, nodeIds);
+}
+
+const tensionGroupAnchors = computed<CanvasAnchorProjection[]>(() =>
+  groups.value.flatMap((group) => {
+    const bounds = computeGroupBoundsFromNodeMap(tensionNodeMap.value, group.nodeIds);
+    if (!bounds) return [];
+
+    return [{
+      id: group.id,
+      x: bounds.anchorX,
+      y: bounds.anchorY,
+      label: group.name || 'Группа',
+      kind: 'group' as const,
+      bounds,
+    }];
+  }),
+);
 
 const displayGroups = computed<CanvasGroupDisplay[]>(() => {
   return groups.value.flatMap((group) => {
@@ -2320,6 +2390,17 @@ function clearTensionState() {
   tensionOffsetsByNodeId.value = {};
 }
 
+function getGroupedTensionNodeIds(nodeId: string) {
+  const anchor = tensionAnchorMap.value.get(nodeId);
+  if (anchor?.kind === 'group') {
+    return anchor.nodeIds && anchor.nodeIds.length ? anchor.nodeIds : [];
+  }
+
+  const groupId = getNodeGroupId(nodeId);
+  if (!groupId) return [nodeId];
+  return groupIdToNodeIds.value.get(groupId) || [nodeId];
+}
+
 function recomputeTensionOffsets() {
   const drag = tensionDrag.value;
   if (!drag) {
@@ -2327,37 +2408,45 @@ function recomputeTensionOffsets() {
     return;
   }
 
-  const activeNode = tensionNodeMap.value.get(drag.nodeId);
-  if (!activeNode) {
+  const activeAnchorId = resolveTensionAnchorId(drag.nodeId);
+  const activeAnchor = tensionAnchorMap.value.get(activeAnchorId);
+  if (!activeAnchor) {
     tensionOffsetsByNodeId.value = {};
     return;
   }
 
   const activeOffset = clampVector(drag.dragDx, drag.dragDy, TENSION_ACTIVE_MAX_OFFSET);
-  const offsets: Record<string, TensionOffset> = {
-    [drag.nodeId]: activeOffset,
-  };
-  const queue: Array<{ nodeId: string; sourceVector: TensionOffset; depth: number }> = [
-    { nodeId: drag.nodeId, sourceVector: activeOffset, depth: 0 },
-  ];
-  const visited = new Set<string>([drag.nodeId]);
+  const offsets: Record<string, TensionOffset> = {};
+  const queue: Array<{ nodeId: string; sourceVector: TensionOffset; depth: number }> = [];
+  const visited = new Set<string>();
+
+  for (const groupedNodeId of getGroupedTensionNodeIds(activeAnchorId)) {
+    offsets[groupedNodeId] = activeOffset;
+  }
+
+  visited.add(activeAnchorId);
+  queue.push({
+    nodeId: activeAnchorId,
+    sourceVector: activeOffset,
+    depth: 0,
+  });
 
   while (queue.length) {
     const current = queue.shift();
     if (!current) continue;
     if (current.depth >= TENSION_MAX_DEPTH) continue;
 
-    const fromNode = tensionNodeMap.value.get(current.nodeId);
-    if (!fromNode) continue;
+    const fromAnchor = tensionAnchorMap.value.get(current.nodeId);
+    if (!fromAnchor) continue;
 
     const neighbors = tensionAdjacencyMap.value.get(current.nodeId) || [];
     for (const neighbor of neighbors) {
       if (visited.has(neighbor.neighborId)) continue;
 
-      const toNode = tensionNodeMap.value.get(neighbor.neighborId);
-      if (!toNode) continue;
+      const toAnchor = tensionAnchorMap.value.get(neighbor.neighborId);
+      if (!toAnchor) continue;
 
-      const axis = normalizeVector(toNode.x - fromNode.x, toNode.y - fromNode.y);
+      const axis = normalizeVector(toAnchor.x - fromAnchor.x, toAnchor.y - fromAnchor.y);
       const projected = projectVectorOntoAxis(
         current.sourceVector.x,
         current.sourceVector.y,
@@ -2372,7 +2461,10 @@ function recomputeTensionOffsets() {
 
       if (Math.hypot(decayed.x, decayed.y) < TENSION_RETURN_STOP_EPSILON) continue;
 
-      offsets[neighbor.neighborId] = decayed;
+      for (const groupedNeighborId of getGroupedTensionNodeIds(neighbor.neighborId)) {
+        offsets[groupedNeighborId] = decayed;
+      }
+
       visited.add(neighbor.neighborId);
       queue.push({
         nodeId: neighbor.neighborId,
