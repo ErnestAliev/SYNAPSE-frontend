@@ -63,6 +63,13 @@ const MOBILE_NODE_ADD_PADDING_PX = 24;
 const MOBILE_NODE_ADD_EXTRA_GAP_PX = 18;
 const TOUCH_DOUBLE_TAP_DELAY_MS = 320;
 const TOUCH_DOUBLE_TAP_DISTANCE_PX = 28;
+const TENSION_START_THRESHOLD_PX = 10;
+const TENSION_MAX_DEPTH = 2;
+const TENSION_DECAY = 0.45;
+const TENSION_ACTIVE_MAX_OFFSET = 220;
+const TENSION_NEIGHBOR_MAX_OFFSET = 140;
+const TENSION_RETURN_EASE = 0.82;
+const TENSION_RETURN_STOP_EPSILON = 0.5;
 const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   project: 'Проект',
   connection: 'Подключение',
@@ -537,6 +544,26 @@ const draggingGroup = ref<{
   startPositions: Record<string, { x: number; y: number }>;
   moved: boolean;
 } | null>(null);
+interface TensionOffset {
+  x: number;
+  y: number;
+}
+
+interface TensionDragState {
+  nodeId: string;
+  pointerId: number;
+  startPointerWorldX: number;
+  startPointerWorldY: number;
+  currentPointerWorldX: number;
+  currentPointerWorldY: number;
+  dragDx: number;
+  dragDy: number;
+  moved: boolean;
+}
+
+const tensionDrag = ref<TensionDragState | null>(null);
+const tensionOffsetsByNodeId = ref<Record<string, TensionOffset>>({});
+const tensionReturnRafId = ref(0);
 const nameEditingNodeId = ref<string | null>(null);
 const selectedGroupId = ref<string | null>(null);
 const editingGroupId = ref<string | null>(null);
@@ -685,6 +712,8 @@ const activeLibraryLabel = computed(() => {
 const zoomPercent = computed(() => Math.round(camera.value.zoom * 100));
 const canUndoCanvas = computed(() => canvasUndoStack.value.length > 0);
 const canRedoCanvas = computed(() => canvasRedoStack.value.length > 0);
+const isTensionActive = computed(() => Boolean(tensionDrag.value));
+const hasTensionOffsets = computed(() => Object.keys(tensionOffsetsByNodeId.value).length > 0);
 const selectedNodeIdSet = computed(() => new Set(selectedNodeIds.value));
 const selectedMarqueeGroupIdSet = computed(() => new Set(selectedMarqueeGroupIds.value));
 const selectedMarqueeGroupNodeIdSet = computed(() => {
@@ -715,6 +744,42 @@ const nodeIdToGroupId = computed(() => {
   }
   return map;
 });
+const tensionNodeMap = computed(() => {
+  const map = new Map<string, CanvasNodeProjection>();
+  for (const node of nodes.value) {
+    map.set(node.id, node);
+  }
+  return map;
+});
+const tensionAdjacencyMap = computed(() => {
+  const map = new Map<string, Array<{ neighborId: string; edgeId: string }>>();
+
+  for (const edge of edges.value) {
+    if (!tensionNodeMap.value.has(edge.source) || !tensionNodeMap.value.has(edge.target)) continue;
+
+    const sourceNeighbors = map.get(edge.source) || [];
+    sourceNeighbors.push({ neighborId: edge.target, edgeId: edge.id });
+    map.set(edge.source, sourceNeighbors);
+
+    const targetNeighbors = map.get(edge.target) || [];
+    targetNeighbors.push({ neighborId: edge.source, edgeId: edge.id });
+    map.set(edge.target, targetNeighbors);
+  }
+
+  return map;
+});
+const renderNodes = computed<CanvasNodeProjection[]>(() =>
+  nodes.value.map((node) => {
+    const offset = tensionOffsetsByNodeId.value[node.id];
+    if (!offset) return node;
+
+    return {
+      ...node,
+      x: node.x + offset.x,
+      y: node.y + offset.y,
+    };
+  }),
+);
 const activeCanvasBackground = computed<CanvasBackgroundPreset>(() => {
   return (
     CANVAS_BACKGROUND_PRESETS.find((item) => item.id === canvasBackgroundId.value) ||
@@ -2000,6 +2065,42 @@ function getNodeById(nodeId: string) {
   return nodes.value.find((node) => node.id === nodeId) || null;
 }
 
+function normalizeVector(x: number, y: number) {
+  const length = Math.hypot(x, y) || 1;
+  return {
+    x: x / length,
+    y: y / length,
+    length,
+  };
+}
+
+function projectVectorOntoAxis(
+  vectorX: number,
+  vectorY: number,
+  axisX: number,
+  axisY: number,
+) {
+  const dot = vectorX * axisX + vectorY * axisY;
+  return {
+    x: axisX * dot,
+    y: axisY * dot,
+    scalar: dot,
+  };
+}
+
+function clampVector(x: number, y: number, maxLength: number) {
+  const length = Math.hypot(x, y);
+  if (!length || length <= maxLength) {
+    return { x, y };
+  }
+
+  const scale = maxLength / length;
+  return {
+    x: x * scale,
+    y: y * scale,
+  };
+}
+
 function getCanvasAnchorById(anchorId: string): CanvasAnchorProjection | null {
   const node = getNodeById(anchorId);
   if (node) {
@@ -2198,6 +2299,173 @@ function isNodeInteractive(nodeId: string) {
 
 function shouldSnapNodeToGrid(nodeId: string) {
   return !getNodeGroupId(nodeId);
+}
+
+function stopTensionReturnAnimation() {
+  if (!tensionReturnRafId.value) return;
+  window.cancelAnimationFrame(tensionReturnRafId.value);
+  tensionReturnRafId.value = 0;
+}
+
+function clearTensionState() {
+  stopTensionReturnAnimation();
+  tensionDrag.value = null;
+  tensionOffsetsByNodeId.value = {};
+}
+
+function recomputeTensionOffsets() {
+  const drag = tensionDrag.value;
+  if (!drag) {
+    tensionOffsetsByNodeId.value = {};
+    return;
+  }
+
+  const activeNode = tensionNodeMap.value.get(drag.nodeId);
+  if (!activeNode) {
+    tensionOffsetsByNodeId.value = {};
+    return;
+  }
+
+  const activeOffset = clampVector(drag.dragDx, drag.dragDy, TENSION_ACTIVE_MAX_OFFSET);
+  const offsets: Record<string, TensionOffset> = {
+    [drag.nodeId]: activeOffset,
+  };
+  const queue: Array<{ nodeId: string; sourceVector: TensionOffset; depth: number }> = [
+    { nodeId: drag.nodeId, sourceVector: activeOffset, depth: 0 },
+  ];
+  const visited = new Set<string>([drag.nodeId]);
+
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current) continue;
+    if (current.depth >= TENSION_MAX_DEPTH) continue;
+
+    const fromNode = tensionNodeMap.value.get(current.nodeId);
+    if (!fromNode) continue;
+
+    const neighbors = tensionAdjacencyMap.value.get(current.nodeId) || [];
+    for (const neighbor of neighbors) {
+      if (visited.has(neighbor.neighborId)) continue;
+      if (getNodeGroupId(neighbor.neighborId)) continue;
+
+      const toNode = tensionNodeMap.value.get(neighbor.neighborId);
+      if (!toNode) continue;
+
+      const axis = normalizeVector(toNode.x - fromNode.x, toNode.y - fromNode.y);
+      const projected = projectVectorOntoAxis(
+        current.sourceVector.x,
+        current.sourceVector.y,
+        axis.x,
+        axis.y,
+      );
+      const decayed = clampVector(
+        projected.x * TENSION_DECAY,
+        projected.y * TENSION_DECAY,
+        TENSION_NEIGHBOR_MAX_OFFSET,
+      );
+
+      if (Math.hypot(decayed.x, decayed.y) < TENSION_RETURN_STOP_EPSILON) continue;
+
+      offsets[neighbor.neighborId] = decayed;
+      visited.add(neighbor.neighborId);
+      queue.push({
+        nodeId: neighbor.neighborId,
+        sourceVector: decayed,
+        depth: current.depth + 1,
+      });
+    }
+  }
+
+  tensionOffsetsByNodeId.value = offsets;
+}
+
+function startTensionReturnAnimation() {
+  stopTensionReturnAnimation();
+
+  const step = () => {
+    const nextOffsets: Record<string, TensionOffset> = {};
+
+    for (const [nodeId, offset] of Object.entries(tensionOffsetsByNodeId.value)) {
+      const nextX = offset.x * TENSION_RETURN_EASE;
+      const nextY = offset.y * TENSION_RETURN_EASE;
+      if (Math.hypot(nextX, nextY) < TENSION_RETURN_STOP_EPSILON) continue;
+
+      nextOffsets[nodeId] = { x: nextX, y: nextY };
+    }
+
+    tensionOffsetsByNodeId.value = nextOffsets;
+
+    if (!Object.keys(nextOffsets).length) {
+      tensionReturnRafId.value = 0;
+      return;
+    }
+
+    tensionReturnRafId.value = window.requestAnimationFrame(step);
+  };
+
+  tensionReturnRafId.value = window.requestAnimationFrame(step);
+}
+
+function onNodeTensionStart(payload: { nodeId: string; pointerEvent: PointerEvent }) {
+  if (!isPlayMode.value) return;
+  if (payload.pointerEvent.button !== 0) return;
+  if (getNodeGroupId(payload.nodeId)) return;
+
+  const node = getNodeById(payload.nodeId);
+  if (!node || isNodeLocked(node)) return;
+
+  stopTensionReturnAnimation();
+  canvasTooltip.value = null;
+
+  const world = clientToWorld(payload.pointerEvent.clientX, payload.pointerEvent.clientY);
+  tensionDrag.value = {
+    nodeId: payload.nodeId,
+    pointerId: payload.pointerEvent.pointerId,
+    startPointerWorldX: world.x,
+    startPointerWorldY: world.y,
+    currentPointerWorldX: world.x,
+    currentPointerWorldY: world.y,
+    dragDx: 0,
+    dragDy: 0,
+    moved: false,
+  };
+  tensionOffsetsByNodeId.value = {};
+}
+
+function onWindowTensionMove(event: PointerEvent) {
+  const drag = tensionDrag.value;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+
+  const world = clientToWorld(event.clientX, event.clientY);
+  drag.currentPointerWorldX = world.x;
+  drag.currentPointerWorldY = world.y;
+  drag.dragDx = world.x - drag.startPointerWorldX;
+  drag.dragDy = world.y - drag.startPointerWorldY;
+
+  const moveThresholdWorld = TENSION_START_THRESHOLD_PX / Math.max(camera.value.zoom, 0.0001);
+  if (!drag.moved && Math.hypot(drag.dragDx, drag.dragDy) >= moveThresholdWorld) {
+    drag.moved = true;
+    canvasTooltip.value = null;
+  }
+
+  if (!drag.moved) return;
+
+  recomputeTensionOffsets();
+}
+
+function onWindowTensionEnd(event: PointerEvent) {
+  const drag = tensionDrag.value;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+
+  const shouldReturn = drag.moved && Object.keys(tensionOffsetsByNodeId.value).length > 0;
+  tensionDrag.value = null;
+
+  if (shouldReturn) {
+    startTensionReturnAnimation();
+    return;
+  }
+
+  tensionOffsetsByNodeId.value = {};
 }
 
 function normalizeGroups(source: CanvasGroupProjection[]) {
@@ -3753,7 +4021,9 @@ function isCanvasInteractionActive() {
       selectionRect.value ||
       draggingNode.value ||
       draggingGroup.value ||
-      touchGesture.value,
+      touchGesture.value ||
+      tensionDrag.value ||
+      hasTensionOffsets.value,
   );
 }
 
@@ -5057,6 +5327,11 @@ function onGroupMenuUngroup() {
 }
 
 function onWindowPointerMove(event: PointerEvent) {
+  if (tensionDrag.value) {
+    onWindowTensionMove(event);
+    return;
+  }
+
   if (event.pointerType === 'touch' && touchPointers.value.has(event.pointerId)) {
     touchPointers.value.set(event.pointerId, {
       clientX: event.clientX,
@@ -5136,6 +5411,11 @@ function onWindowPointerMove(event: PointerEvent) {
 }
 
 function onWindowPointerUp(event: PointerEvent) {
+  if (tensionDrag.value) {
+    onWindowTensionEnd(event);
+    return;
+  }
+
   if (event.pointerType === 'touch') {
     const hadTouchGesture = Boolean(touchGesture.value);
     touchPointers.value.delete(event.pointerId);
@@ -5241,6 +5521,7 @@ function resetTransientStates() {
   isPanning.value = false;
   draggingNode.value = null;
   draggingGroup.value = null;
+  clearTensionState();
   touchPointers.value.clear();
   clearTouchGesture();
   isCanvasDropActive.value = false;
@@ -5976,6 +6257,8 @@ watch(
     Boolean(draggingNode.value),
     Boolean(draggingGroup.value),
     Boolean(touchGesture.value),
+    Boolean(tensionDrag.value),
+    hasTensionOffsets.value,
     routeProjectId.value ? entitiesStore.hasPendingEntityUpdate(routeProjectId.value) : false,
   ],
   () => {
@@ -6180,6 +6463,7 @@ const CANVAS_NODE_TOOLTIP_FIELDS: Partial<Record<EntityType, Array<{ key: string
 };
 
 function togglePlayMode() {
+  clearTensionState();
   isPlayMode.value = !isPlayMode.value;
 
   if (isPlayMode.value) {
@@ -6268,6 +6552,7 @@ const canvasTooltipStyle = computed<Partial<Record<string, string>>>(() => {
 });
 
 function onNodePlayEnter(payload: { nodeId: string; rect: DOMRect }) {
+  if (isTensionActive.value || hasTensionOffsets.value) return;
   const node = nodes.value.find((n) => n.id === payload.nodeId);
   const entity = node ? entitiesStore.byId(node.entityId) : null;
   if (!entity) return;
@@ -6275,6 +6560,7 @@ function onNodePlayEnter(payload: { nodeId: string; rect: DOMRect }) {
 }
 
 function onNodePlayLeave() {
+  if (isTensionActive.value || hasTensionOffsets.value) return;
   // Don't close a tooltip that was opened by a touch tap —
   // mobile browsers fire synthetic mouseleave after pointerup and would
   // close the tooltip immediately on the first tap.
@@ -6842,7 +7128,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 
       <div class="canvas-grid" :style="gridStyle" />
       <EdgeLayerCanvas
-        :nodes="nodes"
+        :nodes="renderNodes"
         :groups="canvasGroupAnchors"
         :edges="edges"
         :camera="camera"
@@ -6851,20 +7137,22 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 
       <div class="canvas-world" :style="worldStyle">
         <CanvasNode
-          v-for="node in nodes"
+          v-for="node in renderNodes"
           :key="node.id"
           :node="node"
           :active="contextMenu?.nodeId === node.id"
           :selected="isNodeSelected(node.id)"
           :dragging="
             draggingNode?.nodeId === node.id ||
-            Boolean(draggingGroup?.nodeIds.includes(node.id))
+            Boolean(draggingGroup?.nodeIds.includes(node.id)) ||
+            tensionDrag?.nodeId === node.id
           "
           :interaction-locked="!isNodeInteractive(node.id)"
           :is-name-editing="nameEditingNodeId === node.id"
           :preview-type="contextMenu?.nodeId === node.id ? contextMenuHoverType : null"
           :play-mode="isPlayMode"
           @start-drag="onNodeDragStart"
+          @node-tension-start="onNodeTensionStart"
           @open-menu="onNodeOpenMenu"
           @node-long-press="onNodeLongPress"
           @open-portal="onNodeOpenPortal"

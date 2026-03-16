@@ -72,6 +72,13 @@ const emit = defineEmits<{
     },
   ): void;
   (
+    event: 'node-tension-start',
+    payload: {
+      nodeId: string;
+      pointerEvent: PointerEvent;
+    },
+  ): void;
+  (
     event: 'node-long-press',
     payload: {
       nodeId: string;
@@ -245,6 +252,7 @@ function onNodePointerDown(event: PointerEvent) {
   if (props.playMode) {
     // Record start position — tap is detected on pointerup (more reliable on mobile)
     playModePointerDown.value = { x: event.clientX, y: event.clientY, id: event.pointerId };
+    emit('node-tension-start', { nodeId: props.node.id, pointerEvent: event });
     return;
   }
 
