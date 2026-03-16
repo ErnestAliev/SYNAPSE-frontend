@@ -48,7 +48,7 @@ a {
 .entity-card-tooltip {
   position: fixed;
   z-index: 9999;
-  pointer-events: none;
+  pointer-events: auto;
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
@@ -64,7 +64,6 @@ a {
 /* On touch devices make the tooltip scrollable */
 @media (pointer: coarse) {
   .entity-card-tooltip {
-    pointer-events: auto;
     -webkit-overflow-scrolling: touch;
     /* Slightly wider to be easier to tap */
     max-width: 288px;

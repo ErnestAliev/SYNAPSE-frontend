@@ -5304,7 +5304,7 @@ function onViewportClick(event: MouseEvent) {
   const target = event.target as HTMLElement | null;
   if (
     target?.closest(
-      '.canvas-library, .canvas-node, .canvas-controls, .canvas-history-controls, .menu-backdrop, .canvas-node-search, .canvas-monitor, .canvas-group-menu',
+      '.canvas-library, .canvas-node, .canvas-controls, .canvas-history-controls, .menu-backdrop, .canvas-node-search, .canvas-monitor, .canvas-group-menu, .entity-card-tooltip',
     )
   ) {
     return;
@@ -6721,7 +6721,7 @@ const canvasTooltipStyle = computed<Partial<Record<string, string>>>(() => {
   const state = canvasTooltip.value;
   if (!state) return {};
   const rect = state.rect;
-  const GAP = 10;
+  const GAP = 6;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
 
