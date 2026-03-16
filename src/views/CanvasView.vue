@@ -2600,6 +2600,7 @@ function onArrangeSelected(preset: CanvasArrangePreset) {
 }
 
 function onBackgroundChange(backgroundId: string) {
+  if (isPlayMode.value) return;
   const preset = CANVAS_BACKGROUND_PRESETS.find((item) => item.id === backgroundId);
   if (!preset) return;
 
@@ -2609,10 +2610,12 @@ function onBackgroundChange(backgroundId: string) {
 }
 
 function openResetCanvasConfirm() {
+  if (isPlayMode.value) return;
   isResetCanvasConfirmOpen.value = true;
 }
 
 function onConfirmResetCanvas() {
+  if (isPlayMode.value) return;
   nodes.value = [];
   edges.value = [];
   clearSelectedNodes();
@@ -3718,6 +3721,7 @@ function applyCanvasHistorySnapshot(snapshot: ProjectCanvasData) {
 }
 
 function undoCanvasChange() {
+  if (isPlayMode.value) return;
   flushCanvasHistoryStep();
   const previousSnapshot = canvasUndoStack.value[canvasUndoStack.value.length - 1];
   if (!previousSnapshot) return;
@@ -3730,6 +3734,7 @@ function undoCanvasChange() {
 }
 
 function redoCanvasChange() {
+  if (isPlayMode.value) return;
   flushCanvasHistoryStep();
   const nextSnapshot = canvasRedoStack.value[canvasRedoStack.value.length - 1];
   if (!nextSnapshot) return;
@@ -4096,6 +4101,7 @@ function addEntityNodeToCanvas(
 }
 
 function onLibraryItemAddToCanvas(item: MenuSearchItem) {
+  if (isPlayMode.value) return;
   if (isEntityAlreadyOnCanvas(item.id)) {
     setLibraryActionMessage('Уже на холсте');
     return;
@@ -4128,6 +4134,7 @@ function onLibraryItemMainClick(item: MenuSearchItem) {
 }
 
 function onMobileLibraryAddSelected() {
+  if (isPlayMode.value) return;
   const selected = selectedMobileLibraryItem.value;
   if (!selected) {
     setLibraryActionMessage('Выберите запись');
@@ -4255,18 +4262,21 @@ function onZoomResetClick() {
 }
 
 function toggleBackgroundMenu() {
+  if (isPlayMode.value) return;
   const next = !isBackgroundMenuOpen.value;
   closeCanvasControlMenus();
   isBackgroundMenuOpen.value = next;
 }
 
 function toggleAlignMenu() {
+  if (isPlayMode.value) return;
   const next = !isAlignMenuOpen.value;
   closeCanvasControlMenus();
   isAlignMenuOpen.value = next;
 }
 
 function toggleArrangeMenu() {
+  if (isPlayMode.value) return;
   const next = !isArrangeMenuOpen.value;
   closeCanvasControlMenus();
   isArrangeMenuOpen.value = next;
@@ -4853,6 +4863,7 @@ function onViewportPointerDown(event: PointerEvent) {
   if (startedOnNode) return;
 
   event.preventDefault();
+  if (isPlayMode.value) return;
   closeGroupContextMenu();
   clearSelectedGroup();
   const world = clientToWorld(event.clientX, event.clientY);
@@ -4881,8 +4892,7 @@ function onViewportClick(event: MouseEvent) {
     return;
   }
 
-  // In play mode, tapping empty canvas closes the active node tooltip
-  if (isPlayMode.value && canvasTooltip.value) {
+  if (isPlayMode.value) {
     canvasTooltip.value = null;
     return;
   }
@@ -4901,6 +4911,7 @@ function onViewportClick(event: MouseEvent) {
 }
 
 function onViewportContextMenu(event: MouseEvent) {
+  if (isPlayMode.value) return;
   if (isLoading.value || isPanning.value || selectionRect.value) return;
 
   const world = clientToWorld(event.clientX, event.clientY);
@@ -4973,6 +4984,7 @@ function detachViewportInteractionGuards() {
 }
 
 function onGroupPointerDown(groupId: string, event: PointerEvent) {
+  if (isPlayMode.value) return;
   if (event.button !== 0) return;
   if (editingGroupId.value === groupId) return;
 
@@ -5008,6 +5020,7 @@ function onGroupPointerDown(groupId: string, event: PointerEvent) {
 }
 
 function onGroupClick(groupId: string, event: MouseEvent) {
+  if (isPlayMode.value) return;
   event.preventDefault();
   event.stopPropagation();
 
@@ -5020,12 +5033,14 @@ function onGroupClick(groupId: string, event: MouseEvent) {
 }
 
 function onGroupDoubleClick(groupId: string, event: MouseEvent) {
+  if (isPlayMode.value) return;
   event.preventDefault();
   event.stopPropagation();
   toggleGroupEditMode(groupId, true);
 }
 
 function onGroupContextMenu(groupId: string, event: MouseEvent) {
+  if (isPlayMode.value) return;
   event.preventDefault();
   event.stopPropagation();
   openGroupMenu(groupId, event.clientX, event.clientY);
@@ -5247,6 +5262,12 @@ function onWindowKeyDown(event: KeyboardEvent) {
   }
 
   const isGroupShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'g';
+  const isUndoShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'z';
+  if (isPlayMode.value && (isGroupShortcut || isUndoShortcut)) {
+    event.preventDefault();
+    return;
+  }
+
   if (isGroupShortcut && !isEditableElement(event.target)) {
     event.preventDefault();
     if (event.shiftKey) {
@@ -5275,7 +5296,6 @@ function onWindowKeyDown(event: KeyboardEvent) {
     return;
   }
 
-  const isUndoShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'z';
   if (isUndoShortcut && !isEditableElement(event.target)) {
     event.preventDefault();
     if (event.shiftKey) {
@@ -5297,6 +5317,7 @@ function onWindowKeyDown(event: KeyboardEvent) {
 
 async function onCanvasDoubleClick(event: MouseEvent) {
   if (event.defaultPrevented) return;
+  if (isPlayMode.value) return;
   if (Date.now() < suppressCanvasDoubleClickUntil.value) return;
 
   closeEdgeMenu();
@@ -5309,6 +5330,7 @@ function onLibraryCategoryHover(type: EntityType | null) {
 }
 
 function onLibraryCategoryClick(type: EntityType) {
+  if (isPlayMode.value) return;
   if (isMobileLikeDevice.value && !mobileLibraryExpanded.value) {
     mobileLibraryExpanded.value = true;
   }
@@ -5353,6 +5375,7 @@ function isEntityDragPayload(dataTransfer: DataTransfer | null) {
 }
 
 function onViewportDragEnter(event: DragEvent) {
+  if (isPlayMode.value) return;
   if (!isEntityDragPayload(event.dataTransfer)) return;
   event.preventDefault();
   viewportDragDepth.value += 1;
@@ -5360,6 +5383,7 @@ function onViewportDragEnter(event: DragEvent) {
 }
 
 function onViewportDragOver(event: DragEvent) {
+  if (isPlayMode.value) return;
   if (!isEntityDragPayload(event.dataTransfer)) return;
 
   event.preventDefault();
@@ -5370,6 +5394,11 @@ function onViewportDragOver(event: DragEvent) {
 }
 
 function onViewportDragLeave(event: DragEvent) {
+  if (isPlayMode.value) {
+    viewportDragDepth.value = 0;
+    isCanvasDropActive.value = false;
+    return;
+  }
   if (!isEntityDragPayload(event.dataTransfer)) return;
 
   event.preventDefault();
@@ -5380,6 +5409,12 @@ function onViewportDragLeave(event: DragEvent) {
 }
 
 function onViewportDrop(event: DragEvent) {
+  if (isPlayMode.value) {
+    event.preventDefault();
+    viewportDragDepth.value = 0;
+    isCanvasDropActive.value = false;
+    return;
+  }
   if (!isEntityDragPayload(event.dataTransfer)) return;
 
   event.preventDefault();
@@ -5408,6 +5443,7 @@ function onNodeDragStart(payload: {
   nodeId: string;
   pointerEvent: PointerEvent;
 }) {
+  if (isPlayMode.value) return;
   if (payload.pointerEvent.pointerType === 'touch') {
     touchPointers.value.set(payload.pointerEvent.pointerId, {
       clientX: payload.pointerEvent.clientX,
@@ -5536,6 +5572,7 @@ function onNodeOpenMenu(payload: { nodeId: string; shiftKey?: boolean }) {
 }
 
 function onNodeLongPress(payload: { nodeId: string; entityId: string }) {
+  if (isPlayMode.value) return;
   if (!payload.entityId) return;
   quickVoiceEntityId.value = payload.entityId;
   clearSelectedMarqueeGroups();
@@ -6144,7 +6181,30 @@ const CANVAS_NODE_TOOLTIP_FIELDS: Partial<Record<EntityType, Array<{ key: string
 
 function togglePlayMode() {
   isPlayMode.value = !isPlayMode.value;
-  if (!isPlayMode.value) canvasTooltip.value = null;
+
+  if (isPlayMode.value) {
+    canvasTooltip.value = null;
+    closeContextMenu();
+    closeEdgeMenu();
+    closeGroupContextMenu();
+    closeCanvasControlMenus();
+    closeResetCanvasConfirm();
+    closeLibraryPanel();
+    closeNodeSearch();
+    clearSelectionRect();
+    clearSelectedNodes();
+    clearSelectedMarqueeGroups();
+    clearSelectedGroup();
+    nameEditingNodeId.value = null;
+    editingGroupId.value = null;
+    draggingNode.value = null;
+    draggingGroup.value = null;
+    isCanvasDropActive.value = false;
+    viewportDragDepth.value = 0;
+    return;
+  }
+
+  canvasTooltip.value = null;
 }
 
 function getCanvasTooltipDescription(entity: Entity): string {
@@ -6260,6 +6320,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       @drop="onViewportDrop"
     >
       <aside
+        v-if="!isPlayMode"
         class="canvas-library"
         :class="{
           'mobile-device': isMobileLikeDevice,
@@ -6371,7 +6432,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
         </div>
       </aside>
 
-      <div class="canvas-history-controls" @pointerdown.stop @click.stop @dblclick.stop @wheel.stop>
+      <div v-if="!isPlayMode" class="canvas-history-controls" @pointerdown.stop @click.stop @dblclick.stop @wheel.stop>
         <button
           type="button"
           class="canvas-history-btn"
@@ -6819,7 +6880,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           :key="group.id"
           type="button"
           class="canvas-group-box"
-          :class="{ selected: group.isSelected, editing: group.isEditing }"
+          :class="{ selected: group.isSelected, editing: group.isEditing, 'play-mode': isPlayMode }"
           :style="{
             left: `${group.bounds.left}px`,
             top: `${group.bounds.top}px`,
@@ -6984,193 +7045,195 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       />
 
       <div class="canvas-controls" @pointerdown.stop @wheel.stop>
-        <div class="canvas-control-menu-wrap">
-          <button
-            type="button"
-            class="canvas-control-btn canvas-icon-btn"
-            aria-label="Фон холста"
-            title="Фон холста"
-            @click="toggleBackgroundMenu"
-          >
-            <svg class="canvas-control-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <rect x="3.5" y="4.5" width="17" height="13" rx="2.5" />
-              <path d="M7 14.5 10.5 11l2.5 2.5 3.5-3.5 3 3" />
-              <circle cx="8.5" cy="8.5" r="1.25" />
-            </svg>
-          </button>
-          <div v-if="isBackgroundMenuOpen" class="canvas-control-dropdown">
+        <template v-if="!isPlayMode">
+          <div class="canvas-control-menu-wrap">
             <button
-              v-for="preset in CANVAS_BACKGROUND_PRESETS"
-              :key="preset.id"
               type="button"
-              class="canvas-control-dropdown-btn"
-              :class="{ active: canvasBackgroundId === preset.id }"
-              @click="onBackgroundChange(preset.id)"
+              class="canvas-control-btn canvas-icon-btn"
+              aria-label="Фон холста"
+              title="Фон холста"
+              @click="toggleBackgroundMenu"
             >
-              <span
-                class="canvas-bg-dot"
-                :style="{ background: preset.appBackground, borderColor: preset.gridColor }"
-              />
-              {{ preset.label }}
+              <svg class="canvas-control-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="3.5" y="4.5" width="17" height="13" rx="2.5" />
+                <path d="M7 14.5 10.5 11l2.5 2.5 3.5-3.5 3 3" />
+                <circle cx="8.5" cy="8.5" r="1.25" />
+              </svg>
             </button>
+            <div v-if="isBackgroundMenuOpen" class="canvas-control-dropdown">
+              <button
+                v-for="preset in CANVAS_BACKGROUND_PRESETS"
+                :key="preset.id"
+                type="button"
+                class="canvas-control-dropdown-btn"
+                :class="{ active: canvasBackgroundId === preset.id }"
+                @click="onBackgroundChange(preset.id)"
+              >
+                <span
+                  class="canvas-bg-dot"
+                  :style="{ background: preset.appBackground, borderColor: preset.gridColor }"
+                />
+                {{ preset.label }}
+              </button>
+            </div>
           </div>
-        </div>
 
-        <div class="canvas-control-menu-wrap">
-          <button
-            type="button"
-            class="canvas-control-btn canvas-icon-btn"
-            :disabled="selectedNodes.length < 2"
-            aria-label="Выравнивание"
-            title="Выравнивание"
-            @click="toggleAlignMenu"
-          >
-            <svg class="canvas-control-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 6h16" />
-              <rect x="6" y="8" width="4" height="3" rx="0.8" />
-              <rect x="14" y="8" width="4" height="3" rx="0.8" />
-              <path d="M4 18h16" />
-              <rect x="9" y="13" width="6" height="3" rx="0.8" />
-            </svg>
-          </button>
-          <div v-if="isAlignMenuOpen" class="canvas-control-dropdown">
-            <div v-if="isMobileLikeDevice" class="canvas-align-mobile">
-              <select class="canvas-control-select" @change="onMobileAlignSelect">
-                <option value="">Выравнивание</option>
-                <option
-                  v-for="option in MOBILE_ALIGN_OPTIONS"
-                  :key="option.value"
-                  :value="option.value"
+          <div class="canvas-control-menu-wrap">
+            <button
+              type="button"
+              class="canvas-control-btn canvas-icon-btn"
+              :disabled="selectedNodes.length < 2"
+              aria-label="Выравнивание"
+              title="Выравнивание"
+              @click="toggleAlignMenu"
+            >
+              <svg class="canvas-control-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 6h16" />
+                <rect x="6" y="8" width="4" height="3" rx="0.8" />
+                <rect x="14" y="8" width="4" height="3" rx="0.8" />
+                <path d="M4 18h16" />
+                <rect x="9" y="13" width="6" height="3" rx="0.8" />
+              </svg>
+            </button>
+            <div v-if="isAlignMenuOpen" class="canvas-control-dropdown">
+              <div v-if="isMobileLikeDevice" class="canvas-align-mobile">
+                <select class="canvas-control-select" @change="onMobileAlignSelect">
+                  <option value="">Выравнивание</option>
+                  <option
+                    v-for="option in MOBILE_ALIGN_OPTIONS"
+                    :key="option.value"
+                    :value="option.value"
+                  >
+                    {{ option.label }}
+                  </option>
+                </select>
+              </div>
+              <div v-else class="canvas-align-grid">
+                <button
+                  type="button"
+                  class="canvas-control-dropdown-btn compact"
+                  title="Выровнять по левому краю"
+                  aria-label="Выровнять по левому краю"
+                  @click="onAlignSelected('left')"
                 >
-                  {{ option.label }}
-                </option>
-              </select>
-            </div>
-            <div v-else class="canvas-align-grid">
-              <button
-                type="button"
-                class="canvas-control-dropdown-btn compact"
-                title="Выровнять по левому краю"
-                aria-label="Выровнять по левому краю"
-                @click="onAlignSelected('left')"
-              >
-                <svg class="canvas-align-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M6 5v14" />
-                  <rect x="8" y="7" width="10" height="3" rx="0.8" />
-                  <rect x="8" y="13" width="7" height="3" rx="0.8" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                class="canvas-control-dropdown-btn compact"
-                title="Выровнять по центру по горизонтали"
-                aria-label="Выровнять по центру по горизонтали"
-                @click="onAlignSelected('center')"
-              >
-                <svg class="canvas-align-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 5v14" />
-                  <rect x="6" y="7" width="12" height="3" rx="0.8" />
-                  <rect x="8" y="13" width="8" height="3" rx="0.8" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                class="canvas-control-dropdown-btn compact"
-                title="Выровнять по правому краю"
-                aria-label="Выровнять по правому краю"
-                @click="onAlignSelected('right')"
-              >
-                <svg class="canvas-align-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M18 5v14" />
-                  <rect x="8" y="7" width="10" height="3" rx="0.8" />
-                  <rect x="11" y="13" width="7" height="3" rx="0.8" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                class="canvas-control-dropdown-btn compact"
-                title="Выровнять по верхнему краю"
-                aria-label="Выровнять по верхнему краю"
-                @click="onAlignSelected('top')"
-              >
-                <svg class="canvas-align-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M5 6h14" />
-                  <rect x="7" y="8" width="3" height="10" rx="0.8" />
-                  <rect x="13" y="8" width="3" height="7" rx="0.8" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                class="canvas-control-dropdown-btn compact"
-                title="Выровнять по центру по вертикали"
-                aria-label="Выровнять по центру по вертикали"
-                @click="onAlignSelected('middle')"
-              >
-                <svg class="canvas-align-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M5 12h14" />
-                  <rect x="7" y="6" width="3" height="12" rx="0.8" />
-                  <rect x="13" y="8" width="3" height="8" rx="0.8" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                class="canvas-control-dropdown-btn compact"
-                title="Выровнять по нижнему краю"
-                aria-label="Выровнять по нижнему краю"
-                @click="onAlignSelected('bottom')"
-              >
-                <svg class="canvas-align-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M5 18h14" />
-                  <rect x="7" y="8" width="3" height="10" rx="0.8" />
-                  <rect x="13" y="11" width="3" height="7" rx="0.8" />
-                </svg>
-              </button>
+                  <svg class="canvas-align-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M6 5v14" />
+                    <rect x="8" y="7" width="10" height="3" rx="0.8" />
+                    <rect x="8" y="13" width="7" height="3" rx="0.8" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="canvas-control-dropdown-btn compact"
+                  title="Выровнять по центру по горизонтали"
+                  aria-label="Выровнять по центру по горизонтали"
+                  @click="onAlignSelected('center')"
+                >
+                  <svg class="canvas-align-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 5v14" />
+                    <rect x="6" y="7" width="12" height="3" rx="0.8" />
+                    <rect x="8" y="13" width="8" height="3" rx="0.8" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="canvas-control-dropdown-btn compact"
+                  title="Выровнять по правому краю"
+                  aria-label="Выровнять по правому краю"
+                  @click="onAlignSelected('right')"
+                >
+                  <svg class="canvas-align-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M18 5v14" />
+                    <rect x="8" y="7" width="10" height="3" rx="0.8" />
+                    <rect x="11" y="13" width="7" height="3" rx="0.8" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="canvas-control-dropdown-btn compact"
+                  title="Выровнять по верхнему краю"
+                  aria-label="Выровнять по верхнему краю"
+                  @click="onAlignSelected('top')"
+                >
+                  <svg class="canvas-align-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M5 6h14" />
+                    <rect x="7" y="8" width="3" height="10" rx="0.8" />
+                    <rect x="13" y="8" width="3" height="7" rx="0.8" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="canvas-control-dropdown-btn compact"
+                  title="Выровнять по центру по вертикали"
+                  aria-label="Выровнять по центру по вертикали"
+                  @click="onAlignSelected('middle')"
+                >
+                  <svg class="canvas-align-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M5 12h14" />
+                    <rect x="7" y="6" width="3" height="12" rx="0.8" />
+                    <rect x="13" y="8" width="3" height="8" rx="0.8" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="canvas-control-dropdown-btn compact"
+                  title="Выровнять по нижнему краю"
+                  aria-label="Выровнять по нижнему краю"
+                  @click="onAlignSelected('bottom')"
+                >
+                  <svg class="canvas-align-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M5 18h14" />
+                    <rect x="7" y="8" width="3" height="10" rx="0.8" />
+                    <rect x="13" y="11" width="3" height="7" rx="0.8" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div class="canvas-control-menu-wrap">
+          <div class="canvas-control-menu-wrap">
+            <button
+              type="button"
+              class="canvas-control-btn canvas-icon-btn"
+              :disabled="selectedNodes.length < 2"
+              aria-label="Траектория объектов"
+              title="Траектория объектов"
+              @click="toggleArrangeMenu"
+            >
+              <svg class="canvas-control-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="6.5" cy="6.5" r="2.2" />
+                <circle cx="17.5" cy="6.5" r="2.2" />
+                <circle cx="6.5" cy="17.5" r="2.2" />
+                <circle cx="17.5" cy="17.5" r="2.2" />
+                <path d="M8.7 6.5h6.6" />
+                <path d="M6.5 8.7v6.6" />
+                <path d="M8.7 17.5h6.6" />
+                <path d="M17.5 8.7v6.6" />
+              </svg>
+            </button>
+            <div v-if="isArrangeMenuOpen" class="canvas-control-dropdown">
+              <button type="button" class="canvas-control-dropdown-btn" @click="onArrangeSelected('line')">Линия</button>
+              <button type="button" class="canvas-control-dropdown-btn" @click="onArrangeSelected('circle')">Круг</button>
+              <button type="button" class="canvas-control-dropdown-btn" @click="onArrangeSelected('square')">Квадрат</button>
+              <button type="button" class="canvas-control-dropdown-btn" @click="onArrangeSelected('rectangle')">Прямоугольник</button>
+            </div>
+          </div>
+
           <button
             type="button"
-            class="canvas-control-btn canvas-icon-btn"
-            :disabled="selectedNodes.length < 2"
-            aria-label="Траектория объектов"
-            title="Траектория объектов"
-            @click="toggleArrangeMenu"
+            class="canvas-control-btn canvas-reset-btn canvas-icon-btn"
+            aria-label="Очистить холст"
+            title="Очистить холст"
+            @click="openResetCanvasConfirm"
           >
             <svg class="canvas-control-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="6.5" cy="6.5" r="2.2" />
-              <circle cx="17.5" cy="6.5" r="2.2" />
-              <circle cx="6.5" cy="17.5" r="2.2" />
-              <circle cx="17.5" cy="17.5" r="2.2" />
-              <path d="M8.7 6.5h6.6" />
-              <path d="M6.5 8.7v6.6" />
-              <path d="M8.7 17.5h6.6" />
-              <path d="M17.5 8.7v6.6" />
+              <path d="M4 12a8 8 0 1 0 2.7-5.9" />
+              <path d="M4 5v4h4" />
             </svg>
           </button>
-          <div v-if="isArrangeMenuOpen" class="canvas-control-dropdown">
-            <button type="button" class="canvas-control-dropdown-btn" @click="onArrangeSelected('line')">Линия</button>
-            <button type="button" class="canvas-control-dropdown-btn" @click="onArrangeSelected('circle')">Круг</button>
-            <button type="button" class="canvas-control-dropdown-btn" @click="onArrangeSelected('square')">Квадрат</button>
-            <button type="button" class="canvas-control-dropdown-btn" @click="onArrangeSelected('rectangle')">Прямоугольник</button>
-          </div>
-        </div>
+        </template>
 
-        <button
-          type="button"
-          class="canvas-control-btn canvas-reset-btn canvas-icon-btn"
-          aria-label="Очистить холст"
-          title="Очистить холст"
-          @click="openResetCanvasConfirm"
-        >
-          <svg class="canvas-control-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 12a8 8 0 1 0 2.7-5.9" />
-            <path d="M4 5v4h4" />
-          </svg>
-        </button>
-
-        <span v-if="!isMobileLikeDevice" class="canvas-controls-divider" />
+        <span v-if="!isMobileLikeDevice && !isPlayMode" class="canvas-controls-divider" />
 
         <button
           v-if="!isMobileLikeDevice"
@@ -8393,6 +8456,11 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   z-index: 34;
   pointer-events: auto;
   cursor: grab;
+}
+
+.canvas-group-box.play-mode {
+  pointer-events: none;
+  cursor: default;
 }
 
 .canvas-group-box.selected {

@@ -319,6 +319,10 @@ function onNodeMouseLeave() {
 function onNodeDoubleClick(event: MouseEvent) {
   event.stopPropagation();
 
+  if (props.playMode) {
+    return;
+  }
+
   if (entityType.value !== 'project' || !entity.value?._id) {
     return;
   }
