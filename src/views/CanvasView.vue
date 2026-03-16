@@ -2558,7 +2558,7 @@ function onNodeTensionStart(payload: { nodeId: string; pointerEvent: PointerEven
   if (!node || isNodeLocked(node)) return;
 
   stopTensionReturnAnimation();
-  canvasTooltip.value = null;
+  closeCanvasTooltip();
 
   const world = clientToWorld(payload.pointerEvent.clientX, payload.pointerEvent.clientY);
   tensionDrag.value = {
@@ -2588,7 +2588,7 @@ function onWindowTensionMove(event: PointerEvent) {
   const moveThresholdWorld = TENSION_START_THRESHOLD_PX / Math.max(camera.value.zoom, 0.0001);
   if (!drag.moved && Math.hypot(drag.dragDx, drag.dragDy) >= moveThresholdWorld) {
     drag.moved = true;
-    canvasTooltip.value = null;
+    closeCanvasTooltip();
   }
 
   if (!drag.moved) return;
@@ -5310,7 +5310,7 @@ function onViewportClick(event: MouseEvent) {
   }
 
   if (isPlayMode.value) {
-    canvasTooltip.value = null;
+    closeCanvasTooltip();
     return;
   }
 
@@ -6564,6 +6564,7 @@ onBeforeUnmount(() => {
   clearViewportSyncTimer();
   clearCanvasHistoryTimer();
   clearPendingRemoteCanvasApplyTimer();
+  clearCanvasTooltipCloseTimer();
   pendingRemoteCanvasSnapshot.value = null;
   clearMonitorRefreshTimer();
   clearMonitorNoticeTimer();
@@ -6596,6 +6597,7 @@ interface CanvasNodeTooltipState {
   fromTap?: boolean; // true = opened by touch tap; mouseleave must not close it
 }
 const canvasTooltip = ref<CanvasNodeTooltipState | null>(null);
+const canvasTooltipCloseTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 
 const CANVAS_NODE_TOOLTIP_FIELDS: Partial<Record<EntityType, Array<{ key: string; label: string }>>> = {
   goal:       [{ key: 'priority', label: 'Приоритет' }, { key: 'metrics', label: 'Метрики' }, { key: 'owners', label: 'Ответственные' }, { key: 'status', label: 'Статус' }, { key: 'tags', label: 'Теги' }, { key: 'markers', label: 'Маркеры' }],
@@ -6615,7 +6617,7 @@ function togglePlayMode() {
   isPlayMode.value = !isPlayMode.value;
 
   if (isPlayMode.value) {
-    canvasTooltip.value = null;
+    closeCanvasTooltip();
     closeContextMenu();
     closeEdgeMenu();
     closeGroupContextMenu();
@@ -6636,7 +6638,7 @@ function togglePlayMode() {
     return;
   }
 
-  canvasTooltip.value = null;
+  closeCanvasTooltip();
 }
 
 function getCanvasTooltipDescription(entity: Entity): string {
@@ -6661,6 +6663,35 @@ function getCanvasTooltipFields(entity: Entity): Array<{ label: string; values: 
   return result.slice(0, 5);
 }
 
+function clearCanvasTooltipCloseTimer() {
+  if (!canvasTooltipCloseTimer.value) return;
+  clearTimeout(canvasTooltipCloseTimer.value);
+  canvasTooltipCloseTimer.value = null;
+}
+
+function closeCanvasTooltip() {
+  clearCanvasTooltipCloseTimer();
+  canvasTooltip.value = null;
+}
+
+function scheduleCanvasTooltipClose(delayMs = 140) {
+  clearCanvasTooltipCloseTimer();
+  if (!canvasTooltip.value) return;
+
+  canvasTooltipCloseTimer.value = setTimeout(() => {
+    canvasTooltipCloseTimer.value = null;
+    canvasTooltip.value = null;
+  }, delayMs);
+}
+
+function onCanvasTooltipPointerEnter() {
+  clearCanvasTooltipCloseTimer();
+}
+
+function onCanvasTooltipPointerLeave() {
+  closeCanvasTooltip();
+}
+
 const canvasTooltipMass = computed(() => {
   const nodeId = canvasTooltip.value?.nodeId;
   if (!nodeId) return DEFAULT_NODE_MASS;
@@ -6670,6 +6701,7 @@ const canvasTooltipMass = computed(() => {
 });
 
 function onCanvasTooltipMassInput(event: Event) {
+  clearCanvasTooltipCloseTimer();
   const nodeId = canvasTooltip.value?.nodeId;
   if (!nodeId) return;
 
@@ -6724,6 +6756,7 @@ const canvasTooltipStyle = computed<Partial<Record<string, string>>>(() => {
 
 function onNodePlayEnter(payload: { nodeId: string; rect: DOMRect }) {
   if (isTensionActive.value || hasTensionOffsets.value) return;
+  clearCanvasTooltipCloseTimer();
   const node = nodes.value.find((n) => n.id === payload.nodeId);
   const entity = node ? entitiesStore.byId(node.entityId) : null;
   if (!entity) return;
@@ -6736,16 +6769,17 @@ function onNodePlayLeave() {
   // mobile browsers fire synthetic mouseleave after pointerup and would
   // close the tooltip immediately on the first tap.
   if (canvasTooltip.value?.fromTap) return;
-  canvasTooltip.value = null;
+  scheduleCanvasTooltipClose();
 }
 
 function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
+  clearCanvasTooltipCloseTimer();
   const node = nodes.value.find((n) => n.id === payload.nodeId);
   const entity = node ? entitiesStore.byId(node.entityId) : null;
   if (!entity) return;
   // Toggle: tap same node again closes tooltip
   if (canvasTooltip.value?.nodeId === payload.nodeId) {
-    canvasTooltip.value = null;
+    closeCanvasTooltip();
   } else {
     canvasTooltip.value = { entity, nodeId: payload.nodeId, rect: payload.rect, fromTap: true };
   }
@@ -7751,6 +7785,10 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
         v-if="canvasTooltip && isPlayMode"
         class="entity-card-tooltip"
         :style="canvasTooltipStyle"
+        @pointerenter="onCanvasTooltipPointerEnter"
+        @pointerleave="onCanvasTooltipPointerLeave"
+        @pointerdown.stop
+        @click.stop
       >
         <div class="entity-card-tooltip-name">{{ canvasTooltip.entity.name || 'Без названия' }}</div>
         <p v-if="getCanvasTooltipDescription(canvasTooltip.entity)" class="entity-card-tooltip-desc">
