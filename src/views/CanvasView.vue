@@ -780,6 +780,13 @@ const renderNodes = computed<CanvasNodeProjection[]>(() =>
     };
   }),
 );
+const renderNodeMap = computed(() => {
+  const map = new Map<string, CanvasNodeProjection>();
+  for (const node of renderNodes.value) {
+    map.set(node.id, node);
+  }
+  return map;
+});
 const activeCanvasBackground = computed<CanvasBackgroundPreset>(() => {
   return (
     CANVAS_BACKGROUND_PRESETS.find((item) => item.id === canvasBackgroundId.value) ||
@@ -854,7 +861,7 @@ interface CanvasAnchorProjection {
 
 function computeGroupBounds(nodeIds: string[]): CanvasGroupBounds | null {
   const groupNodes = nodeIds
-    .map((nodeId) => getNodeById(nodeId))
+    .map((nodeId) => renderNodeMap.value.get(nodeId) || null)
     .filter((node): node is CanvasNodeProjection => Boolean(node));
 
   if (groupNodes.length < 2) return null;
@@ -2346,7 +2353,6 @@ function recomputeTensionOffsets() {
     const neighbors = tensionAdjacencyMap.value.get(current.nodeId) || [];
     for (const neighbor of neighbors) {
       if (visited.has(neighbor.neighborId)) continue;
-      if (getNodeGroupId(neighbor.neighborId)) continue;
 
       const toNode = tensionNodeMap.value.get(neighbor.neighborId);
       if (!toNode) continue;
@@ -2409,7 +2415,6 @@ function startTensionReturnAnimation() {
 function onNodeTensionStart(payload: { nodeId: string; pointerEvent: PointerEvent }) {
   if (!isPlayMode.value) return;
   if (payload.pointerEvent.button !== 0) return;
-  if (getNodeGroupId(payload.nodeId)) return;
 
   const node = getNodeById(payload.nodeId);
   if (!node || isNodeLocked(node)) return;
@@ -7147,7 +7152,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
             Boolean(draggingGroup?.nodeIds.includes(node.id)) ||
             tensionDrag?.nodeId === node.id
           "
-          :interaction-locked="!isNodeInteractive(node.id)"
+          :interaction-locked="isPlayMode ? false : !isNodeInteractive(node.id)"
           :is-name-editing="nameEditingNodeId === node.id"
           :preview-type="contextMenu?.nodeId === node.id ? contextMenuHoverType : null"
           :play-mode="isPlayMode"
