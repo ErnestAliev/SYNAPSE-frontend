@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router';
 import ruEmojiData from 'emojibase-data/ru/data.json';
 import AppIcon from '../ui/AppIcon.vue';
 import ProfileProgressRing from '../ui/ProfileProgressRing.vue';
+import EntityVoicePromptTooltip from './EntityVoicePromptTooltip.vue';
 import { useEntitiesStore } from '../../stores/entities';
 import { useAuthStore } from '../../stores/auth';
 import { calculateEntityProfileProgress } from '../../utils/profileProgress';
@@ -2186,6 +2187,7 @@ function exportEntityAsTextFile() {
 }
 
 const currentEntity = computed(() => entitiesStore.byId(props.entityId) || null);
+const voicePromptEntityType = computed<EntityType>(() => currentEntity.value?.type || draft.value?.type || 'shape');
 const mineToggleLabel = computed(() => {
   const entityType = currentEntity.value?.type || draft.value?.type || 'shape';
   return ENTITY_MINE_TOGGLE_LABELS[entityType] || 'Моё';
@@ -3365,25 +3367,28 @@ onBeforeUnmount(() => {
             </template>
           </div>
 
-          <button
-            type="button"
-            class="entity-info-chat-icon-btn mic"
-            :class="{ active: isVoiceRecording }"
-            :title="isVoiceRecording ? 'Остановить запись' : 'Голосовой ввод'"
-            :disabled="isAiRequestInFlight || isVoiceTranscribing || !voiceInput.isSupported"
-            @click="onVoiceToggle"
-          >
-            <svg v-if="!isVoiceRecording" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 4a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3Z" />
-              <path d="M19 11a7 7 0 0 1-14 0" />
-              <path d="M12 18v3" />
-              <path d="M8 21h8" />
-            </svg>
-            <svg v-else viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M7 7l10 10" />
-              <path d="M17 7 7 17" />
-            </svg>
-          </button>
+          <div class="entity-info-chat-mic-anchor">
+            <EntityVoicePromptTooltip :entity-type="voicePromptEntityType" :visible="isVoiceRecording" />
+            <button
+              type="button"
+              class="entity-info-chat-icon-btn mic"
+              :class="{ active: isVoiceRecording }"
+              :title="isVoiceRecording ? 'Остановить запись' : 'Голосовой ввод'"
+              :disabled="isAiRequestInFlight || isVoiceTranscribing || !voiceInput.isSupported"
+              @click="onVoiceToggle"
+            >
+              <svg v-if="!isVoiceRecording" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 4a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3Z" />
+                <path d="M19 11a7 7 0 0 1-14 0" />
+                <path d="M12 18v3" />
+                <path d="M8 21h8" />
+              </svg>
+              <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 7l10 10" />
+                <path d="M17 7 7 17" />
+              </svg>
+            </button>
+          </div>
 
           <div v-if="isVoiceBusy" class="entity-info-voice-state">
             <div v-if="isVoiceRecording" class="entity-info-voice-wave">
@@ -4783,6 +4788,14 @@ onBeforeUnmount(() => {
   border-color: #1058ff;
 }
 
+.entity-info-chat-mic-anchor {
+  position: relative;
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .entity-info-chat-icon-btn.mic.active {
   background: #d92d20;
   border-color: #d92d20;
@@ -4983,6 +4996,30 @@ onBeforeUnmount(() => {
 
   .entity-info-chat-input {
     max-height: 42vh;
+  }
+
+  .entity-info-chat-tools {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'left mic send'
+      'state state state';
+  }
+
+  .entity-info-chat-tools-left {
+    grid-area: left;
+  }
+
+  .entity-info-chat-mic-anchor {
+    grid-area: mic;
+  }
+
+  .entity-info-voice-state {
+    grid-area: state;
+    justify-self: start;
+  }
+
+  .entity-info-chat-tools-send {
+    grid-area: send;
   }
 
   .entity-info-field-scroll {

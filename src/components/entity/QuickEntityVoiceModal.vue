@@ -3,6 +3,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../../services/entityAi';
 import { useEntitiesStore } from '../../stores/entities';
 import { useUnifiedVoiceInput } from '../../composables/useUnifiedVoiceInput';
+import EntityVoicePromptTooltip from './EntityVoicePromptTooltip.vue';
+import type { EntityType } from '../../types/entity';
 
 type ChatRole = 'user' | 'assistant';
 
@@ -42,6 +44,7 @@ const isToolsMenuOpen = ref(false);
 
 const entity = computed(() => entitiesStore.byId(props.entityId) || null);
 const entityName = computed(() => entity.value?.name?.trim() || 'Без названия');
+const entityType = computed<EntityType>(() => entity.value?.type || 'shape');
 const isAiRequestInFlight = computed(() => {
   const current = entity.value;
   const pending = Boolean((toRecord(current?.ai_metadata) as Record<string, unknown>).analysis_pending);
@@ -415,30 +418,33 @@ onBeforeUnmount(() => {
             </div>
           </template>
         </div>
-        <button
-          type="button"
-          class="quick-voice-btn quick-voice-tap-target mic"
-          :class="{ active: voiceState === 'recording' }"
-          :title="voiceState === 'recording' ? 'Остановить запись' : 'Голосовой ввод'"
-          :aria-label="voiceState === 'recording' ? 'Остановить запись' : 'Голосовой ввод'"
-          :disabled="
-            isAiRequestInFlight ||
-            voiceState === 'transcribing' ||
-            !voiceInput.isSupported
-          "
-          @pointerup.stop.prevent="void onVoiceToggle()"
-        >
-          <svg v-if="voiceState !== 'recording'" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 4a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3Z" />
-            <path d="M19 11a7 7 0 0 1-14 0" />
-            <path d="M12 18v3" />
-            <path d="M8 21h8" />
-          </svg>
-          <svg v-else viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M7 7l10 10" />
-            <path d="M17 7 7 17" />
-          </svg>
-        </button>
+        <div class="quick-voice-mic-anchor">
+          <EntityVoicePromptTooltip :entity-type="entityType" :visible="voiceState === 'recording'" />
+          <button
+            type="button"
+            class="quick-voice-btn quick-voice-tap-target mic"
+            :class="{ active: voiceState === 'recording' }"
+            :title="voiceState === 'recording' ? 'Остановить запись' : 'Голосовой ввод'"
+            :aria-label="voiceState === 'recording' ? 'Остановить запись' : 'Голосовой ввод'"
+            :disabled="
+              isAiRequestInFlight ||
+              voiceState === 'transcribing' ||
+              !voiceInput.isSupported
+            "
+            @pointerup.stop.prevent="void onVoiceToggle()"
+          >
+            <svg v-if="voiceState !== 'recording'" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 4a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3Z" />
+              <path d="M19 11a7 7 0 0 1-14 0" />
+              <path d="M12 18v3" />
+              <path d="M8 21h8" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 7l10 10" />
+              <path d="M17 7 7 17" />
+            </svg>
+          </button>
+        </div>
         <div
           v-if="voiceState === 'recording' || voiceState === 'transcribing'"
           class="quick-voice-state"
@@ -827,6 +833,14 @@ onBeforeUnmount(() => {
   border-color: #1058ff;
 }
 
+.quick-voice-mic-anchor {
+  position: relative;
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .quick-voice-btn.mic.active {
   background: #d92d20;
   border-color: #d92d20;
@@ -939,6 +953,32 @@ onBeforeUnmount(() => {
   }
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 720px) {
+  .quick-voice-actions {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'left mic send'
+      'state state state';
+  }
+
+  .quick-voice-actions-left {
+    grid-area: left;
+  }
+
+  .quick-voice-mic-anchor {
+    grid-area: mic;
+  }
+
+  .quick-voice-state {
+    grid-area: state;
+    justify-self: start;
+  }
+
+  .quick-voice-btn.send {
+    grid-area: send;
   }
 }
 </style>
