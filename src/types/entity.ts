@@ -16,6 +16,7 @@ export interface CanvasNodeProjection {
   x: number;
   y: number;
   scale?: number;
+  mass?: number;
 }
 
 export interface CanvasGroupProjection {

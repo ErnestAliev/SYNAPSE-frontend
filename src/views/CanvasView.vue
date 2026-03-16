@@ -70,6 +70,7 @@ const TENSION_ACTIVE_MAX_OFFSET = 420;
 const TENSION_NEIGHBOR_MAX_OFFSET = 260;
 const TENSION_RETURN_EASE = 0.82;
 const TENSION_RETURN_STOP_EPSILON = 0.5;
+const DEFAULT_NODE_MASS = 5;
 const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   project: 'Проект',
   connection: 'Подключение',
@@ -767,6 +768,7 @@ const tensionAnchorMap = computed(() => {
       y: number;
       kind: 'node' | 'group';
       nodeIds?: string[];
+      mass: number;
     }
   >();
 
@@ -776,16 +778,27 @@ const tensionAnchorMap = computed(() => {
       x: node.x,
       y: node.y,
       kind: 'node',
+      mass: normalizeNodeMass(node.mass),
     });
   }
 
   for (const group of tensionGroupAnchors.value) {
+    const nodeIds = groupIdToNodeIds.value.get(group.id) || [];
+    const groupMass =
+      nodeIds.length > 0
+        ? nodeIds.reduce((sum, nodeId) => {
+            const node = tensionNodeMap.value.get(nodeId);
+            return sum + normalizeNodeMass(node?.mass);
+          }, 0) / nodeIds.length
+        : DEFAULT_NODE_MASS;
+
     map.set(group.id, {
       id: group.id,
       x: group.x,
       y: group.y,
       kind: 'group',
-      nodeIds: groupIdToNodeIds.value.get(group.id) || [],
+      nodeIds,
+      mass: groupMass,
     });
   }
 
@@ -2138,6 +2151,21 @@ function normalizeNodeScale(raw: unknown) {
   return DEFAULT_NODE_SCALE;
 }
 
+function normalizeNodeMass(raw: unknown) {
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return Math.max(0, Math.min(10, Math.round(raw)));
+  }
+
+  if (typeof raw === 'string') {
+    const parsed = Number.parseFloat(raw);
+    if (Number.isFinite(parsed)) {
+      return Math.max(0, Math.min(10, Math.round(parsed)));
+    }
+  }
+
+  return 5;
+}
+
 function getNodeById(nodeId: string) {
   return nodes.value.find((node) => node.id === nodeId) || null;
 }
@@ -2176,6 +2204,14 @@ function clampVector(x: number, y: number, maxLength: number) {
     x: x * scale,
     y: y * scale,
   };
+}
+
+function getMobilityFromMass(mass: number) {
+  return 1 - (normalizeNodeMass(mass) / 10) * 0.75;
+}
+
+function getDriveFromMass(mass: number) {
+  return normalizeNodeMass(mass) / 10;
 }
 
 function getCanvasAnchorById(anchorId: string): CanvasAnchorProjection | null {
@@ -2415,7 +2451,11 @@ function recomputeTensionOffsets() {
     return;
   }
 
-  const activeOffset = clampVector(drag.dragDx, drag.dragDy, TENSION_ACTIVE_MAX_OFFSET);
+  const activeOffset = clampVector(
+    drag.dragDx * getMobilityFromMass(activeAnchor.mass),
+    drag.dragDy * getMobilityFromMass(activeAnchor.mass),
+    TENSION_ACTIVE_MAX_OFFSET,
+  );
   const offsets: Record<string, TensionOffset> = {};
   const queue: Array<{ nodeId: string; sourceVector: TensionOffset; depth: number }> = [];
   const visited = new Set<string>();
@@ -2454,8 +2494,14 @@ function recomputeTensionOffsets() {
         axis.y,
       );
       const decayed = clampVector(
-        projected.x * TENSION_DECAY,
-        projected.y * TENSION_DECAY,
+        projected.x *
+          TENSION_DECAY *
+          getDriveFromMass(fromAnchor.mass) *
+          getMobilityFromMass(toAnchor.mass),
+        projected.y *
+          TENSION_DECAY *
+          getDriveFromMass(fromAnchor.mass) *
+          getMobilityFromMass(toAnchor.mass),
         TENSION_NEIGHBOR_MAX_OFFSET,
       );
 
@@ -3849,6 +3895,7 @@ function normalizeCanvasData(canvasData: ProjectCanvasData | undefined): Project
           x: node.x,
           y: node.y,
           scale: normalizeNodeScale(node.scale),
+          mass: normalizeNodeMass(node.mass),
         }))
     : [];
 
@@ -3917,6 +3964,7 @@ function buildCanvasHistorySnapshot(source?: Partial<ProjectCanvasData>): Projec
       x: node.x,
       y: node.y,
       scale: normalizeNodeScale(node.scale),
+      mass: normalizeNodeMass(node.mass),
     })),
     edges: (source?.edges ?? edges.value).map((edge) => ({
       id: edge.id,
@@ -3966,7 +4014,8 @@ function areCanvasHistorySnapshotsEqual(
       leftNode.entityId !== rightNode.entityId ||
       leftNode.x !== rightNode.x ||
       leftNode.y !== rightNode.y ||
-      normalizeNodeScale(leftNode.scale) !== normalizeNodeScale(rightNode.scale)
+      normalizeNodeScale(leftNode.scale) !== normalizeNodeScale(rightNode.scale) ||
+      normalizeNodeMass(leftNode.mass) !== normalizeNodeMass(rightNode.mass)
     ) {
       return false;
     }
@@ -4788,6 +4837,7 @@ function buildCanvasDataSnapshot(): ProjectCanvasData {
       x: node.x,
       y: node.y,
       scale: normalizeNodeScale(node.scale),
+      mass: normalizeNodeMass(node.mass),
     })),
     edges: edges.value.map((edge) => ({
       id: edge.id,
@@ -6541,6 +6591,7 @@ const isPlayMode = ref(false);
 
 interface CanvasNodeTooltipState {
   entity: Entity;
+  nodeId: string;
   rect: DOMRect;
   fromTap?: boolean; // true = opened by touch tap; mouseleave must not close it
 }
@@ -6610,6 +6661,29 @@ function getCanvasTooltipFields(entity: Entity): Array<{ label: string; values: 
   return result.slice(0, 5);
 }
 
+const canvasTooltipMass = computed(() => {
+  const nodeId = canvasTooltip.value?.nodeId;
+  if (!nodeId) return DEFAULT_NODE_MASS;
+
+  const node = getNodeById(nodeId);
+  return normalizeNodeMass(node?.mass);
+});
+
+function onCanvasTooltipMassInput(event: Event) {
+  const nodeId = canvasTooltip.value?.nodeId;
+  if (!nodeId) return;
+
+  const target = event.target as HTMLInputElement | null;
+  const node = getNodeById(nodeId);
+  if (!target || !node) return;
+
+  const nextMass = normalizeNodeMass(target.value);
+  if (normalizeNodeMass(node.mass) === nextMass) return;
+
+  node.mass = nextMass;
+  queueCanvasSync();
+}
+
 const canvasTooltipStyle = computed<Partial<Record<string, string>>>(() => {
   const state = canvasTooltip.value;
   if (!state) return {};
@@ -6653,7 +6727,7 @@ function onNodePlayEnter(payload: { nodeId: string; rect: DOMRect }) {
   const node = nodes.value.find((n) => n.id === payload.nodeId);
   const entity = node ? entitiesStore.byId(node.entityId) : null;
   if (!entity) return;
-  canvasTooltip.value = { entity, rect: payload.rect };
+  canvasTooltip.value = { entity, nodeId: payload.nodeId, rect: payload.rect };
 }
 
 function onNodePlayLeave() {
@@ -6670,10 +6744,10 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   const entity = node ? entitiesStore.byId(node.entityId) : null;
   if (!entity) return;
   // Toggle: tap same node again closes tooltip
-  if (canvasTooltip.value?.entity._id === entity._id) {
+  if (canvasTooltip.value?.nodeId === payload.nodeId) {
     canvasTooltip.value = null;
   } else {
-    canvasTooltip.value = { entity, rect: payload.rect, fromTap: true };
+    canvasTooltip.value = { entity, nodeId: payload.nodeId, rect: payload.rect, fromTap: true };
   }
 }
 </script>
@@ -7682,6 +7756,21 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
         <p v-if="getCanvasTooltipDescription(canvasTooltip.entity)" class="entity-card-tooltip-desc">
           {{ getCanvasTooltipDescription(canvasTooltip.entity) }}
         </p>
+        <div class="entity-card-tooltip-mass">
+          <div class="entity-card-tooltip-mass-head">
+            <span class="entity-card-tooltip-field-label">Mass</span>
+            <span class="entity-card-tooltip-mass-value">{{ canvasTooltipMass }}</span>
+          </div>
+          <input
+            class="entity-card-tooltip-mass-slider"
+            type="range"
+            min="0"
+            max="10"
+            step="1"
+            :value="canvasTooltipMass"
+            @input="onCanvasTooltipMassInput"
+          />
+        </div>
         <template v-if="getCanvasTooltipFields(canvasTooltip.entity).length">
           <div class="entity-card-tooltip-fields">
             <div
@@ -9577,6 +9666,33 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 .entity-info-progress-track {
   fill: none;
   stroke: #dbe4f3;
+}
+
+.entity-card-tooltip-mass {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.entity-card-tooltip-mass-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.entity-card-tooltip-mass-value {
+  font-size: 12px;
+  font-weight: 700;
+  color: #1058ff;
+}
+
+.entity-card-tooltip-mass-slider {
+  width: 100%;
+  accent-color: #1058ff;
 }
 
 .entity-info-progress-value {
