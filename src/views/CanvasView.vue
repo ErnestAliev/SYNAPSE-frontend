@@ -64,8 +64,8 @@ const MOBILE_NODE_ADD_EXTRA_GAP_PX = 18;
 const TOUCH_DOUBLE_TAP_DELAY_MS = 320;
 const TOUCH_DOUBLE_TAP_DISTANCE_PX = 28;
 const TENSION_START_THRESHOLD_PX = 10;
-const TENSION_MAX_DEPTH = 4;
-const TENSION_DECAY = 0.68;
+const TENSION_MAX_DEPTH = 64;
+const TENSION_DECAY = 0.92;
 const TENSION_ACTIVE_MAX_OFFSET = 420;
 const TENSION_NEIGHBOR_MAX_OFFSET = 260;
 const TENSION_RETURN_EASE = 0.82;
@@ -2212,7 +2212,9 @@ function getMobilityFromMass(mass: number) {
 }
 
 function getDriveFromMass(mass: number) {
-  return normalizeNodeMass(mass) / 10;
+  const normalized = normalizeNodeMass(mass) / 10;
+  if (normalized <= 0) return 0;
+  return normalized * (0.35 + normalized * 0.65);
 }
 
 function getCanvasAnchorById(anchorId: string): CanvasAnchorProjection | null {
@@ -2457,8 +2459,18 @@ function recomputeTensionOffsets() {
     drag.dragDy * getMobilityFromMass(activeAnchor.mass),
     TENSION_ACTIVE_MAX_OFFSET,
   );
+  const activeForce = clampVector(
+    drag.dragDx,
+    drag.dragDy,
+    TENSION_ACTIVE_MAX_OFFSET,
+  );
   const offsets: Record<string, TensionOffset> = {};
-  const queue: Array<{ nodeId: string; sourceVector: TensionOffset; depth: number }> = [];
+  const queue: Array<{
+    nodeId: string;
+    sourceVector: TensionOffset;
+    depth: number;
+    driverMass: number;
+  }> = [];
   const visited = new Set<string>();
 
   for (const groupedNodeId of getGroupedTensionNodeIds(activeAnchorId)) {
@@ -2468,8 +2480,9 @@ function recomputeTensionOffsets() {
   visited.add(activeAnchorId);
   queue.push({
     nodeId: activeAnchorId,
-    sourceVector: activeOffset,
+    sourceVector: activeForce,
     depth: 0,
+    driverMass: activeAnchor.mass,
   });
 
   while (queue.length) {
@@ -2494,15 +2507,19 @@ function recomputeTensionOffsets() {
         axis.x,
         axis.y,
       );
-      const decayed = clampVector(
+      const chainDriverMass = Math.max(current.driverMass, fromAnchor.mass);
+      const transmitted = clampVector(
         projected.x *
           TENSION_DECAY *
-          getDriveFromMass(fromAnchor.mass) *
-          getMobilityFromMass(toAnchor.mass),
+          getDriveFromMass(chainDriverMass),
         projected.y *
           TENSION_DECAY *
-          getDriveFromMass(fromAnchor.mass) *
-          getMobilityFromMass(toAnchor.mass),
+          getDriveFromMass(chainDriverMass),
+        TENSION_ACTIVE_MAX_OFFSET,
+      );
+      const decayed = clampVector(
+        transmitted.x * getMobilityFromMass(toAnchor.mass),
+        transmitted.y * getMobilityFromMass(toAnchor.mass),
         TENSION_NEIGHBOR_MAX_OFFSET,
       );
 
@@ -2515,8 +2532,9 @@ function recomputeTensionOffsets() {
       visited.add(neighbor.neighborId);
       queue.push({
         nodeId: neighbor.neighborId,
-        sourceVector: decayed,
+        sourceVector: transmitted,
         depth: current.depth + 1,
+        driverMass: Math.max(chainDriverMass, toAnchor.mass),
       });
     }
   }
