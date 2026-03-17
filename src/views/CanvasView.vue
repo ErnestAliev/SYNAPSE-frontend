@@ -616,7 +616,6 @@ const isMonitorPanelOpen = ref(false);
 const isMonitorLoading = ref(false);
 const monitorErrorMessage = ref('');
 const monitorNotice = ref('');
-const monitorMessageDraft = ref('');
 const monitorProjectChatLogs = ref<ProjectChatMonitorEntry[]>([]);
 const monitorRefreshTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const monitorNoticeTimer = ref<ReturnType<typeof setTimeout> | null>(null);
@@ -1672,6 +1671,28 @@ const monitorProjectChatFullInputs = computed(() => {
   }));
 });
 
+const monitorLatestChatFullInput = computed(() => monitorProjectChatFullInputs.value[0] || null);
+
+function measureMonitorPayloadBytes(payload: unknown) {
+  try {
+    return new TextEncoder().encode(JSON.stringify(payload ?? {})).length;
+  } catch {
+    return 0;
+  }
+}
+
+const monitorContextBuilderRequestBytes = computed(() =>
+  monitorContextBuilderFullInput.value
+    ? measureMonitorPayloadBytes(toProfile(monitorContextBuilderFullInput.value.llm_input).requestBody)
+    : 0,
+);
+
+const monitorLatestChatRequestBytes = computed(() =>
+  monitorLatestChatFullInput.value
+    ? measureMonitorPayloadBytes(toProfile(monitorLatestChatFullInput.value.llm_input).requestBody)
+    : 0,
+);
+
 function clearMonitorRefreshTimer() {
   if (!monitorRefreshTimer.value) return;
   clearTimeout(monitorRefreshTimer.value);
@@ -1803,14 +1824,14 @@ function downloadMonitorEntitiesAndConnections() {
 }
 
 function downloadMonitorContextBuilder() {
-  const payload = monitorContextBuilderLog.value;
-  if (!Object.keys(payload).length) return;
+  const payload = monitorContextBuilderFullInput.value;
+  if (!payload) return;
   downloadMonitorPayload(buildMonitorDownloadFileName('context-builder'), payload);
   setMonitorNotice('Экспорт context builder готов.');
 }
 
 function downloadMonitorChatRequests() {
-  if (!monitorProjectChatLogs.value.length) {
+  if (!monitorProjectChatFullInputs.value.length) {
     return;
   }
   downloadMonitorPayload(buildMonitorDownloadFileName('chat-requests'), {
@@ -1818,7 +1839,7 @@ function downloadMonitorChatRequests() {
     source: 'canvas-monitor.project-chat-requests',
     projectId: routeProjectId.value,
     projectName: currentProjectEntity.value?.name || '',
-    entries: monitorProjectChatLogs.value,
+    entries: monitorProjectChatFullInputs.value,
   });
   setMonitorNotice('Экспорт запросов чата готов.');
 }
@@ -1831,12 +1852,27 @@ function sanitizeFileName(value: string) {
     .slice(0, 80);
 }
 
+function formatMonitorBytes(value: unknown) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(2)} MB`;
+}
+
 function stringifyMonitorValue(value: unknown) {
   try {
     return JSON.stringify(value, null, 2);
   } catch {
     return '';
   }
+}
+
+function getMonitorEntityTypeLabel(type: string) {
+  const normalized = (type || '').trim() as EntityType;
+  return ENTITY_TYPE_LABELS[normalized] || type || 'Сущность';
 }
 
 function getCurrentProjectSnapshotFromStore() {
@@ -6361,14 +6397,6 @@ watch(
 );
 
 watch(
-  () => monitorMessageDraft.value,
-  () => {
-    if (!isMonitorPanelOpen.value) return;
-    scheduleMonitorRefresh(700);
-  },
-);
-
-watch(
   routeProjectId,
   () => {
     syncMonitorProjectChatLogs();
@@ -6867,7 +6895,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
               :disabled="!monitorCanvasEntitiesSummary.length && !monitorCanvasConnections.length"
               @click="downloadMonitorEntitiesAndConnections"
             >
-              Скачать сущности + связи
+              Скачать описание + связи
             </button>
             <button
               type="button"
@@ -6875,7 +6903,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
               :disabled="!Object.keys(monitorContextBuilderLog).length"
               @click="downloadMonitorContextBuilder"
             >
-              Скачать контекст билдер
+              Скачать запрос в ЛЛМ на сборку брифа
             </button>
             <button
               type="button"
@@ -6883,13 +6911,72 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
               :disabled="!monitorProjectChatLogs.length"
               @click="downloadMonitorChatRequests"
             >
-              Скачать запросы чата
+              Скачать запрос в ЛЛМ на ответ в чате
             </button>
           </div>
 
           <p v-if="isMonitorLoading" class="canvas-monitor-status">Обновляю снимок LLM-контекста...</p>
           <p v-if="monitorErrorMessage" class="canvas-monitor-status error">{{ monitorErrorMessage }}</p>
           <p v-else-if="monitorNotice" class="canvas-monitor-status">{{ monitorNotice }}</p>
+
+          <div class="canvas-monitor-stats">
+            <article class="canvas-monitor-stat">
+              <span class="canvas-monitor-stat-label">Сущности</span>
+              <strong>{{ monitorCanvasEntitiesSummary.length }}</strong>
+            </article>
+            <article class="canvas-monitor-stat">
+              <span class="canvas-monitor-stat-label">Связи</span>
+              <strong>{{ monitorCanvasConnections.length }}</strong>
+            </article>
+            <article class="canvas-monitor-stat">
+              <span class="canvas-monitor-stat-label">Объем сборки брифа</span>
+              <strong>{{ formatMonitorBytes(monitorContextBuilderRequestBytes) }}</strong>
+            </article>
+            <article class="canvas-monitor-stat">
+              <span class="canvas-monitor-stat-label">Объем запроса чата</span>
+              <strong>{{ formatMonitorBytes(monitorLatestChatRequestBytes) }}</strong>
+            </article>
+          </div>
+
+          <section class="canvas-monitor-section">
+            <h4>Сущности и описания</h4>
+            <div v-if="!monitorCanvasEntitiesSummary.length" class="canvas-monitor-empty">
+              Сущности не найдены на текущей канве.
+            </div>
+            <div v-else class="canvas-monitor-entities">
+              <article
+                v-for="entity in monitorCanvasEntitiesSummary"
+                :key="entity.id || `${entity.type}:${entity.name}`"
+                class="canvas-monitor-entity"
+              >
+                <div class="canvas-monitor-entity-head">
+                  <strong>{{ entity.name }}</strong>
+                  <span>{{ getMonitorEntityTypeLabel(entity.type) }}</span>
+                </div>
+                <p class="canvas-monitor-entity-desc">{{ entity.description || 'Описание отсутствует.' }}</p>
+                <div class="canvas-monitor-entity-fields">
+                  <span v-if="!Object.keys(entity.fieldCounts).length" class="canvas-monitor-field-chip muted">
+                    Поля не заполнены
+                  </span>
+                  <span
+                    v-for="(count, fieldName) in entity.fieldCounts"
+                    :key="`${entity.id}:${fieldName}`"
+                    class="canvas-monitor-field-chip"
+                  >
+                    {{ fieldName }}: {{ count }}
+                  </span>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section class="canvas-monitor-section">
+            <h4>Описание связей</h4>
+            <div v-if="!monitorCanvasConnections.length" class="canvas-monitor-empty">
+              Связи на канве не найдены.
+            </div>
+            <pre v-else class="canvas-monitor-json">{{ stringifyMonitorValue(monitorCanvasConnections) }}</pre>
+          </section>
 
           <section class="canvas-monitor-section">
             <h4>Что получит ЛЛМ при "Собрать контекст"</h4>
