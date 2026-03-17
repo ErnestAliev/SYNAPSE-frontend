@@ -1,7 +1,7 @@
 export const PROJECT_CHAT_MONITOR_UPDATED_EVENT = 'synapse12:project-chat-monitor-updated';
 
 const PROJECT_CHAT_MONITOR_STORAGE_PREFIX = 'synapse12.project-chat-monitor.v1:';
-const PROJECT_CHAT_MONITOR_MAX_ENTRIES = 6;
+const PROJECT_CHAT_MONITOR_MAX_ENTRIES = 40;
 
 export interface ProjectChatMonitorEntry {
   id: string;
@@ -16,6 +16,15 @@ export interface ProjectChatMonitorEntry {
   response: {
     reply: string;
     model: string;
+  };
+  llmInput: {
+    brief: string;
+    systemPrompt: string;
+    userPrompt: string;
+    requestBody: Record<string, unknown>;
+    requestBodyBeforeRoleInjection: Record<string, unknown>;
+    history: Array<{ role: string; text: string }>;
+    attachments: Array<Record<string, unknown>>;
   };
   debug: {
     scope: Record<string, unknown>;

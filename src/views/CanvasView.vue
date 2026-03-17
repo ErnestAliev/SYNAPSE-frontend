@@ -1673,6 +1673,8 @@ const monitorContextBuilderLog = computed(() => {
   return toProfile(metadata.project_context_last_build_log);
 });
 const monitorContextBuilderInput = computed(() => toProfile(monitorContextBuilderLog.value.llm_input));
+const monitorContextBuilderContextData = computed(() => toProfile(monitorContextBuilderInput.value.contextData));
+const monitorContextBuilderRequestBody = computed(() => toProfile(monitorContextBuilderInput.value.requestBody));
 const monitorProjectContextDescription = computed(() => {
   const previewProjectContext = toProfile(monitorPreviewContext.value.projectContext);
   if (typeof previewProjectContext.description === 'string' && previewProjectContext.description.trim()) {
@@ -7085,7 +7087,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           </section>
 
           <section class="canvas-monitor-section">
-            <h4>Последний context builder</h4>
+            <h4>Что получает LLM при "Собрать контекст"</h4>
             <div v-if="!Object.keys(monitorContextBuilderInput).length" class="canvas-monitor-empty">
               Контекст билдер еще не запускался из окна чата проекта.
             </div>
@@ -7094,12 +7096,24 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
                 Модель: {{ monitorContextBuilderInput.model || 'n/a' }}
               </p>
               <div class="canvas-monitor-prompt-block">
+                <span>Context data: сущности, связи, группы</span>
+                <pre>{{ stringifyMonitorValue(monitorContextBuilderContextData) }}</pre>
+              </div>
+              <div class="canvas-monitor-prompt-block">
                 <span>System prompt</span>
                 <pre>{{ stringifyMonitorValue(monitorContextBuilderInput.systemPrompt) }}</pre>
               </div>
               <div class="canvas-monitor-prompt-block">
                 <span>User payload</span>
                 <pre>{{ stringifyMonitorValue(monitorContextBuilderInput.userPayload) }}</pre>
+              </div>
+              <div class="canvas-monitor-prompt-block">
+                <span>User prompt</span>
+                <pre>{{ stringifyMonitorValue(monitorContextBuilderInput.userPrompt) }}</pre>
+              </div>
+              <div class="canvas-monitor-prompt-block">
+                <span>Полный requestBody в OpenAI</span>
+                <pre>{{ stringifyMonitorValue(monitorContextBuilderRequestBody) }}</pre>
               </div>
             </template>
           </section>
@@ -7121,12 +7135,35 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
                 </div>
                 <p>{{ entry.createdAt }}</p>
                 <div class="canvas-monitor-prompt-block">
-                  <span>Main Reply requestBody</span>
-                  <pre>{{ stringifyMonitorValue(toProfile(entry.debug.prompts).requestBody) }}</pre>
+                  <span>Бриф проекта</span>
+                  <pre>{{ entry.llmInput.brief || 'Бриф не извлечен.' }}</pre>
                 </div>
                 <div class="canvas-monitor-prompt-block">
-                  <span>Ответ модели</span>
-                  <pre>{{ entry.response.reply || 'Пустой ответ' }}</pre>
+                  <span>История чата</span>
+                  <pre>{{ stringifyMonitorValue(entry.llmInput.history) }}</pre>
+                </div>
+                <div v-if="entry.llmInput.attachments.length" class="canvas-monitor-prompt-block">
+                  <span>Вложения</span>
+                  <pre>{{ stringifyMonitorValue(entry.llmInput.attachments) }}</pre>
+                </div>
+                <div class="canvas-monitor-prompt-block">
+                  <span>System prompt</span>
+                  <pre>{{ entry.llmInput.systemPrompt || 'Пусто' }}</pre>
+                </div>
+                <div class="canvas-monitor-prompt-block">
+                  <span>User prompt</span>
+                  <pre>{{ entry.llmInput.userPrompt || 'Пусто' }}</pre>
+                </div>
+                <div
+                  v-if="Object.keys(entry.llmInput.requestBodyBeforeRoleInjection || {}).length"
+                  class="canvas-monitor-prompt-block"
+                >
+                  <span>Request body до role injection</span>
+                  <pre>{{ stringifyMonitorValue(entry.llmInput.requestBodyBeforeRoleInjection) }}</pre>
+                </div>
+                <div class="canvas-monitor-prompt-block">
+                  <span>Полный requestBody в OpenAI</span>
+                  <pre>{{ stringifyMonitorValue(entry.llmInput.requestBody) }}</pre>
                 </div>
               </article>
             </div>

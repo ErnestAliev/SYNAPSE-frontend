@@ -1654,10 +1654,36 @@ function persistProjectChatMonitorLog(args: {
     debug?: Record<string, unknown>;
   };
 }) {
+  function extractBriefFromUserPrompt(userPrompt: string) {
+    const source = String(userPrompt || '');
+    if (!source.trim()) return '';
+
+    const startMarker = 'Контекст проекта:';
+    const endMarker = 'Диалоговый контекст:';
+    const startIndex = source.indexOf(startMarker);
+    if (startIndex < 0) return '';
+
+    const contentStart = startIndex + startMarker.length;
+    const endIndex = source.indexOf(endMarker, contentStart);
+    const brief = (endIndex >= 0 ? source.slice(contentStart, endIndex) : source.slice(contentStart)).trim();
+    return brief;
+  }
+
   const projectId = String(args.scope.projectId || '').trim();
   if (!projectId) return;
 
   const debug = toProfile(args.response.debug);
+  const prompts = toProfile(debug.prompts);
+  const systemPrompt = typeof prompts.systemPrompt === 'string' ? prompts.systemPrompt : '';
+  const userPrompt = typeof prompts.userPrompt === 'string' ? prompts.userPrompt : '';
+  const requestBody = toProfile(prompts.requestBody);
+  const requestBodyBeforeRoleInjection = toProfile(prompts.requestBodyBeforeRoleInjection);
+  const attachmentsPayload = buildAttachmentsPayload(args.attachments);
+  const historyPayload = args.history.map((item) => ({
+    role: item.role,
+    text: item.text,
+  }));
+
   appendProjectChatMonitorEntry(projectId, {
     id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     createdAt: getIsoNow(),
@@ -1669,15 +1695,21 @@ function persistProjectChatMonitorLog(args: {
     },
     request: {
       message: args.message,
-      history: args.history.map((item) => ({
-        role: item.role,
-        text: item.text,
-      })),
-      attachments: buildAttachmentsPayload(args.attachments),
+      history: historyPayload,
+      attachments: attachmentsPayload,
     },
     response: {
       reply: args.response.reply,
       model: typeof args.response.model === 'string' ? args.response.model : '',
+    },
+    llmInput: {
+      brief: extractBriefFromUserPrompt(userPrompt),
+      systemPrompt,
+      userPrompt,
+      requestBody,
+      requestBodyBeforeRoleInjection,
+      history: historyPayload,
+      attachments: attachmentsPayload,
     },
     debug: {
       scope: toProfile(debug.scope),
