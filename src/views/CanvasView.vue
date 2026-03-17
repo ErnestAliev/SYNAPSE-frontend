@@ -13,7 +13,6 @@ import { useUnifiedVoiceInput } from '../composables/useUnifiedVoiceInput';
 import { useEntitiesStore } from '../stores/entities';
 import { useAuthStore } from '../stores/auth';
 import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../services/entityAi';
-import { apiClient } from '../services/api';
 import { calculateEntityProfileProgress } from '../utils/profileProgress';
 import {
   PROJECT_CHAT_MONITOR_UPDATED_EVENT,
@@ -211,33 +210,6 @@ interface EntityChatMessage {
   text: string;
   createdAt: string;
   attachments: EntityAttachment[];
-}
-
-interface AgentChatPreviewStats {
-  totalEntitiesInProject: number;
-  entitiesInContext: number;
-  connectionsInContext: number;
-  sourceNodesInScope: number;
-  sourceEdgesInScope: number;
-  historyMessages: number;
-  historyTextChars: number;
-  attachmentsCount: number;
-  contextChars: number;
-  contextBytes: number;
-  routerPromptChars: number;
-  routerPromptBytes: number;
-  requestBodyBeforeRoleInjectionChars: number;
-  requestBodyBeforeRoleInjectionBytes: number;
-  requestBodyAfterRoleInjectionChars: number;
-  requestBodyAfterRoleInjectionBytes: number;
-  llmPromptChars: number;
-  llmPromptBytes: number;
-  previewJsonBytes: number;
-}
-
-interface AgentChatPreviewResponse {
-  stats: AgentChatPreviewStats;
-  preview: Record<string, unknown>;
 }
 
 interface AgentChatPreviewEntitySummary {
@@ -645,7 +617,6 @@ const isMonitorLoading = ref(false);
 const monitorErrorMessage = ref('');
 const monitorNotice = ref('');
 const monitorMessageDraft = ref('');
-const monitorPayload = ref<AgentChatPreviewResponse | null>(null);
 const monitorProjectChatLogs = ref<ProjectChatMonitorEntry[]>([]);
 const monitorRefreshTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const monitorNoticeTimer = ref<ReturnType<typeof setTimeout> | null>(null);
@@ -1673,52 +1644,32 @@ const monitorContextBuilderLog = computed(() => {
   return toProfile(metadata.project_context_last_build_log);
 });
 const monitorContextBuilderInput = computed(() => toProfile(monitorContextBuilderLog.value.llm_input));
-const monitorContextBuilderContextData = computed(() => toProfile(monitorContextBuilderInput.value.contextData));
-const monitorContextBuilderRequestBody = computed(() => toProfile(monitorContextBuilderInput.value.requestBody));
-const monitorProjectContextDescription = computed(() => {
-  const previewProjectContext = toProfile(monitorPreviewContext.value.projectContext);
-  if (typeof previewProjectContext.description === 'string' && previewProjectContext.description.trim()) {
-    return previewProjectContext.description.trim();
-  }
-  const metadata = toProfile(currentProjectEntity.value?.ai_metadata);
-  const compiled = typeof metadata.project_context_compiled_description === 'string'
-    ? metadata.project_context_compiled_description.trim()
-    : '';
-  if (compiled) return compiled;
-  return typeof metadata.description === 'string' ? metadata.description.trim() : '';
+const monitorContextBuilderFullInput = computed(() => {
+  const llmInput = monitorContextBuilderInput.value;
+  if (!Object.keys(llmInput).length) return null;
+
+  return {
+    exportedAt: typeof monitorContextBuilderLog.value.exportedAt === 'string'
+      ? monitorContextBuilderLog.value.exportedAt
+      : '',
+    source: typeof monitorContextBuilderLog.value.source === 'string'
+      ? monitorContextBuilderLog.value.source
+      : 'project-context.build',
+    projectId: routeProjectId.value,
+    projectName: currentProjectEntity.value?.name || '',
+    llm_input: llmInput,
+  };
 });
 
-const monitorPreview = computed(() => toProfile(monitorPayload.value?.preview));
-const monitorStats = computed(() => {
-  const source = monitorPayload.value?.stats;
-  if (!source) return null;
-  return source;
-});
-const monitorPreviewScope = computed(() => toProfile(monitorPreview.value.scope));
-const monitorPreviewInput = computed(() => toProfile(monitorPreview.value.input));
-const monitorPreviewRouter = computed(() => toProfile(monitorPreview.value.semanticRouter));
-const monitorPreviewPrompts = computed(() => toProfile(monitorPreview.value.prompts));
-const monitorPreviewContext = computed(() => toProfile(monitorPreview.value.contextData));
-const monitorPreviewHistory = computed(() => {
-  const input = monitorPreviewInput.value;
-  const source = Array.isArray(input.history) ? input.history : [];
-  return source
-    .map((item) => {
-      const message = toProfile(item);
-      return {
-        role: message.role === 'assistant' ? 'assistant' : 'user',
-        text: typeof message.text === 'string' ? message.text : '',
-      };
-    })
-    .filter((item) => item.text.trim().length > 0);
-});
-const monitorRouterRequestBody = computed(() => {
-  const source = toProfile(monitorPreviewRouter.value.requestBody);
-  return Object.keys(source).length ? source : null;
-});
-const monitorMainRequestBody = computed(() => {
-  const source = toProfile(monitorPreviewPrompts.value.requestBody);
-  return Object.keys(source).length ? source : null;
+const monitorProjectChatFullInputs = computed(() => {
+  return monitorProjectChatLogs.value.map((entry) => ({
+    id: entry.id,
+    createdAt: entry.createdAt,
+    projectId: entry.projectId,
+    projectName: currentProjectEntity.value?.name || '',
+    message: entry.request.message,
+    llm_input: entry.llmInput,
+  }));
 });
 
 function clearMonitorRefreshTimer() {
@@ -1782,8 +1733,7 @@ function downloadMonitorPayload(fileName: string, payload: unknown) {
 }
 
 async function fetchMonitorSnapshot() {
-  const scope = buildMonitorScopePayload();
-  if (!scope) {
+  if (!buildMonitorScopePayload()) {
     monitorErrorMessage.value = 'Проект не определен.';
     return;
   }
@@ -1791,23 +1741,12 @@ async function fetchMonitorSnapshot() {
   isMonitorLoading.value = true;
   monitorErrorMessage.value = '';
   try {
-    const { data } = await apiClient.post<AgentChatPreviewResponse>(
-      '/ai/agent-chat-preview',
-      {
-        scope,
-        message: monitorMessageDraft.value.trim(),
-        includeStoredHistory: true,
-      },
-      {
-        timeout: 120_000,
-      },
-    );
-    monitorPayload.value = data;
+    syncMonitorProjectChatLogs();
   } catch (error: unknown) {
     const message =
       error instanceof Error && typeof error.message === 'string'
         ? error.message
-        : 'Не удалось собрать мониторинг контекста.';
+        : 'Не удалось обновить мониторинг.';
     monitorErrorMessage.value = message;
   } finally {
     isMonitorLoading.value = false;
@@ -1842,7 +1781,6 @@ async function restartMonitorBuild() {
   }
 
   clearMonitorRefreshTimer();
-  monitorPayload.value = null;
   monitorErrorMessage.value = '';
   await fetchMonitorSnapshot();
   syncMonitorProjectChatLogs();
@@ -1885,16 +1823,6 @@ function downloadMonitorChatRequests() {
   setMonitorNotice('Экспорт запросов чата готов.');
 }
 
-function formatMonitorBytes(value: unknown) {
-  const bytes = Number(value);
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  if (bytes < 1024) return `${Math.round(bytes)} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${kb.toFixed(1)} KB`;
-  const mb = kb / 1024;
-  return `${mb.toFixed(2)} MB`;
-}
-
 function sanitizeFileName(value: string) {
   return value
     .trim()
@@ -1909,11 +1837,6 @@ function stringifyMonitorValue(value: unknown) {
   } catch {
     return '';
   }
-}
-
-function getMonitorEntityTypeLabel(type: string) {
-  const normalized = (type || '').trim() as EntityType;
-  return ENTITY_TYPE_LABELS[normalized] || type || 'Сущность';
 }
 
 function getCurrentProjectSnapshotFromStore() {
@@ -6964,207 +6887,34 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
             </button>
           </div>
 
-          <div class="canvas-monitor-message">
-            <label class="canvas-monitor-message-label" for="monitor-prompt-input">Черновик для превью запроса чата</label>
-            <textarea
-              id="monitor-prompt-input"
-              v-model="monitorMessageDraft"
-              class="canvas-monitor-message-input"
-              rows="2"
-              placeholder="Необязательно: добавьте сообщение, чтобы увидеть текущий payload чата проекта"
-            />
-          </div>
-
           <p v-if="isMonitorLoading" class="canvas-monitor-status">Обновляю снимок LLM-контекста...</p>
           <p v-if="monitorErrorMessage" class="canvas-monitor-status error">{{ monitorErrorMessage }}</p>
           <p v-else-if="monitorNotice" class="canvas-monitor-status">{{ monitorNotice }}</p>
 
-          <div class="canvas-monitor-stats">
-            <article class="canvas-monitor-stat">
-              <span class="canvas-monitor-stat-label">Сущности на канве</span>
-              <strong>{{ monitorCanvasEntitiesSummary.length }}</strong>
-            </article>
-            <article class="canvas-monitor-stat">
-              <span class="canvas-monitor-stat-label">Связи на канве</span>
-              <strong>{{ monitorCanvasConnections.length }}</strong>
-            </article>
-            <article class="canvas-monitor-stat">
-              <span class="canvas-monitor-stat-label">Сущности в LLM</span>
-              <strong>{{ monitorStats?.entitiesInContext ?? 0 }}</strong>
-            </article>
-            <article class="canvas-monitor-stat">
-              <span class="canvas-monitor-stat-label">Связи в LLM</span>
-              <strong>{{ monitorStats?.connectionsInContext ?? 0 }}</strong>
-            </article>
-            <article class="canvas-monitor-stat">
-              <span class="canvas-monitor-stat-label">Контекст чата</span>
-              <strong>{{ formatMonitorBytes(monitorStats?.contextBytes || 0) }}</strong>
-            </article>
-            <article class="canvas-monitor-stat">
-              <span class="canvas-monitor-stat-label">Запрос чата</span>
-              <strong>{{ formatMonitorBytes(monitorStats?.requestBodyAfterRoleInjectionBytes || 0) }}</strong>
-            </article>
-          </div>
-          <p class="canvas-monitor-scope">
-            Проект: {{ currentProjectEntity?.name || routeProjectId || 'n/a' }} | Scope:
-            {{ monitorPreviewScope.scopeKey || `project-canvas:${routeProjectId || 'n/a'}` }} | История чата:
-            {{ monitorStats?.historyMessages ?? monitorPreviewHistory.length }}
-          </p>
-
           <section class="canvas-monitor-section">
-            <h4>Сущности на канве</h4>
-            <div v-if="!monitorCanvasEntitiesSummary.length" class="canvas-monitor-empty">
-              Сущности не найдены на текущей канве.
-            </div>
-            <div v-else class="canvas-monitor-entities">
-              <article
-                v-for="entity in monitorCanvasEntitiesSummary"
-                :key="entity.id || `${entity.type}:${entity.name}`"
-                class="canvas-monitor-entity"
-              >
-                <div class="canvas-monitor-entity-head">
-                  <strong>{{ entity.name }}</strong>
-                  <span>{{ getMonitorEntityTypeLabel(entity.type) }}</span>
-                </div>
-                <p class="canvas-monitor-entity-desc">{{ entity.description || 'Описание отсутствует.' }}</p>
-                <div class="canvas-monitor-entity-fields">
-                  <span v-if="!Object.keys(entity.fieldCounts).length" class="canvas-monitor-field-chip muted">
-                    Поля не заполнены
-                  </span>
-                  <span
-                    v-for="(count, fieldName) in entity.fieldCounts"
-                    :key="`${entity.id}:${fieldName}`"
-                    class="canvas-monitor-field-chip"
-                  >
-                    {{ fieldName }}: {{ count }}
-                  </span>
-                </div>
-              </article>
-            </div>
-          </section>
-
-          <section class="canvas-monitor-section">
-            <h4>Связи на канве</h4>
-            <div v-if="!monitorCanvasConnections.length" class="canvas-monitor-empty">
-              Связи на канве не найдены.
-            </div>
-            <div v-else class="canvas-monitor-connections">
-              <pre v-for="connection in monitorCanvasConnections" :key="connection.id">{{
-                stringifyMonitorValue(connection)
-              }}</pre>
-            </div>
-          </section>
-
-          <section class="canvas-monitor-section">
-            <h4>Контекст проекта для чата LLM</h4>
-            <div v-if="!monitorProjectContextDescription" class="canvas-monitor-empty">
-              Скомпилированный контекст проекта пока отсутствует.
-            </div>
-            <template v-else>
-              <p class="canvas-monitor-hint">
-                Статус: {{ toProfile(monitorPreviewContext.projectContext).contextStatus || 'n/a' }} |
-                Собран: {{ toProfile(monitorPreviewContext.projectContext).builtAt || 'n/a' }}
-              </p>
-              <pre class="canvas-monitor-json">{{ monitorProjectContextDescription }}</pre>
-            </template>
-          </section>
-
-          <section class="canvas-monitor-section">
-            <h4>Что сейчас улетит в LLM из чата проекта</h4>
-            <div v-if="!monitorRouterRequestBody && !monitorMainRequestBody" class="canvas-monitor-empty">
-              Добавьте черновик сообщения или откройте историю проекта, чтобы сформировать preview запроса.
-            </div>
-            <template v-else>
-              <div v-if="monitorRouterRequestBody" class="canvas-monitor-prompt-block">
-                <span>Semantic Router requestBody</span>
-                <pre>{{ stringifyMonitorValue(monitorRouterRequestBody) }}</pre>
-              </div>
-              <div v-if="monitorMainRequestBody" class="canvas-monitor-prompt-block">
-                <span>Main Reply requestBody</span>
-                <pre>{{ stringifyMonitorValue(monitorMainRequestBody) }}</pre>
-              </div>
-            </template>
-          </section>
-
-          <section class="canvas-monitor-section">
-            <h4>Что получает LLM при "Собрать контекст"</h4>
-            <div v-if="!Object.keys(monitorContextBuilderInput).length" class="canvas-monitor-empty">
+            <h4>Что получит ЛЛМ при "Собрать контекст"</h4>
+            <div v-if="!monitorContextBuilderFullInput" class="canvas-monitor-empty">
               Контекст билдер еще не запускался из окна чата проекта.
             </div>
-            <template v-else>
-              <p class="canvas-monitor-hint">
-                Модель: {{ monitorContextBuilderInput.model || 'n/a' }}
-              </p>
-              <div class="canvas-monitor-prompt-block">
-                <span>Context data: сущности, связи, группы</span>
-                <pre>{{ stringifyMonitorValue(monitorContextBuilderContextData) }}</pre>
-              </div>
-              <div class="canvas-monitor-prompt-block">
-                <span>System prompt</span>
-                <pre>{{ stringifyMonitorValue(monitorContextBuilderInput.systemPrompt) }}</pre>
-              </div>
-              <div class="canvas-monitor-prompt-block">
-                <span>User payload</span>
-                <pre>{{ stringifyMonitorValue(monitorContextBuilderInput.userPayload) }}</pre>
-              </div>
-              <div class="canvas-monitor-prompt-block">
-                <span>User prompt</span>
-                <pre>{{ stringifyMonitorValue(monitorContextBuilderInput.userPrompt) }}</pre>
-              </div>
-              <div class="canvas-monitor-prompt-block">
-                <span>Полный requestBody в OpenAI</span>
-                <pre>{{ stringifyMonitorValue(monitorContextBuilderRequestBody) }}</pre>
-              </div>
-            </template>
+            <pre v-else class="canvas-monitor-json">{{ stringifyMonitorValue(monitorContextBuilderFullInput) }}</pre>
           </section>
 
           <section class="canvas-monitor-section">
-            <h4>Реальные запросы чата проекта</h4>
-            <div v-if="!monitorProjectChatLogs.length" class="canvas-monitor-empty">
+            <h4>Что получит ЛЛМ при запросах в чате проекта</h4>
+            <div v-if="!monitorProjectChatFullInputs.length" class="canvas-monitor-empty">
               Запросы чата проекта еще не зафиксированы.
             </div>
             <div v-else class="canvas-monitor-attempts">
               <article
-                v-for="entry in monitorProjectChatLogs"
+                v-for="entry in monitorProjectChatFullInputs"
                 :key="entry.id"
                 class="canvas-monitor-attempt"
               >
                 <div class="canvas-monitor-attempt-head">
-                  <strong>{{ entry.request.message || 'Пустой запрос' }}</strong>
-                  <span>{{ entry.response.model || 'unknown model' }}</span>
+                  <strong>{{ entry.message || 'Пустой запрос' }}</strong>
+                  <span>{{ entry.createdAt }}</span>
                 </div>
-                <p>{{ entry.createdAt }}</p>
-                <div class="canvas-monitor-prompt-block">
-                  <span>Бриф проекта</span>
-                  <pre>{{ entry.llmInput.brief || 'Бриф не извлечен.' }}</pre>
-                </div>
-                <div class="canvas-monitor-prompt-block">
-                  <span>История чата</span>
-                  <pre>{{ stringifyMonitorValue(entry.llmInput.history) }}</pre>
-                </div>
-                <div v-if="entry.llmInput.attachments.length" class="canvas-monitor-prompt-block">
-                  <span>Вложения</span>
-                  <pre>{{ stringifyMonitorValue(entry.llmInput.attachments) }}</pre>
-                </div>
-                <div class="canvas-monitor-prompt-block">
-                  <span>System prompt</span>
-                  <pre>{{ entry.llmInput.systemPrompt || 'Пусто' }}</pre>
-                </div>
-                <div class="canvas-monitor-prompt-block">
-                  <span>User prompt</span>
-                  <pre>{{ entry.llmInput.userPrompt || 'Пусто' }}</pre>
-                </div>
-                <div
-                  v-if="Object.keys(entry.llmInput.requestBodyBeforeRoleInjection || {}).length"
-                  class="canvas-monitor-prompt-block"
-                >
-                  <span>Request body до role injection</span>
-                  <pre>{{ stringifyMonitorValue(entry.llmInput.requestBodyBeforeRoleInjection) }}</pre>
-                </div>
-                <div class="canvas-monitor-prompt-block">
-                  <span>Полный requestBody в OpenAI</span>
-                  <pre>{{ stringifyMonitorValue(entry.llmInput.requestBody) }}</pre>
-                </div>
+                <pre class="canvas-monitor-json">{{ stringifyMonitorValue(entry) }}</pre>
               </article>
             </div>
           </section>
