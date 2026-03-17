@@ -2451,7 +2451,7 @@ function startTensionReturnAnimation() {
 }
 
 function onNodeTensionStart(payload: { nodeId: string; pointerEvent: PointerEvent }) {
-  if (!isPlayMode.value) return;
+  if (!isPlayMode.value || !isTensionPlayMode.value) return;
   if (payload.pointerEvent.button !== 0) return;
 
   const node = getNodeById(payload.nodeId);
@@ -6490,7 +6490,48 @@ onBeforeUnmount(() => {
 });
 
 // ─── Play mode ────────────────────────────────────────────────────────────────
-const isPlayMode = ref(false);
+type CanvasViewMode = 'stop' | 'tooltip' | 'tooltip-tension' | 'tension';
+
+const CANVAS_VIEW_MODE_SEQUENCE: CanvasViewMode[] = ['stop', 'tooltip', 'tooltip-tension', 'tension'];
+const CANVAS_VIEW_MODE_META: Record<CanvasViewMode, { label: string; hint: string }> = {
+  stop: {
+    label: 'Стоп',
+    hint: 'Стоп. Следующий режим: просмотр тултипов.',
+  },
+  tooltip: {
+    label: 'Просмотр тултипов',
+    hint: 'Просмотр тултипов. Следующий режим: тултипы и резинки.',
+  },
+  'tooltip-tension': {
+    label: 'Тултипы и резинки',
+    hint: 'Тултипы и резинки. Следующий режим: только резинки.',
+  },
+  tension: {
+    label: 'Только резинки',
+    hint: 'Только резинки. Следующий режим: стоп.',
+  },
+};
+
+const canvasViewMode = ref<CanvasViewMode>('stop');
+const canvasPlayHintVisible = ref(false);
+const isPlayMode = computed(() => canvasViewMode.value !== 'stop');
+const isTooltipPlayMode = computed(() => {
+  return canvasViewMode.value === 'tooltip' || canvasViewMode.value === 'tooltip-tension';
+});
+const isTensionPlayMode = computed(() => {
+  return canvasViewMode.value === 'tooltip-tension' || canvasViewMode.value === 'tension';
+});
+const activeCanvasViewModeMeta = computed(() => CANVAS_VIEW_MODE_META[canvasViewMode.value]);
+const nextCanvasViewMode = computed(() => {
+  const index = CANVAS_VIEW_MODE_SEQUENCE.indexOf(canvasViewMode.value);
+  const nextIndex = index >= 0 ? (index + 1) % CANVAS_VIEW_MODE_SEQUENCE.length : 0;
+  return CANVAS_VIEW_MODE_SEQUENCE[nextIndex] ?? 'stop';
+});
+const nextCanvasViewModeMeta = computed(() => CANVAS_VIEW_MODE_META[nextCanvasViewMode.value]);
+const canvasPlayButtonTitle = computed(() => {
+  if (!isPlayMode.value) return 'Стоп. Включить просмотр тултипов';
+  return `${activeCanvasViewModeMeta.value.label}. Следующий режим: ${nextCanvasViewModeMeta.value.label.toLowerCase()}`;
+});
 
 interface CanvasNodeTooltipState {
   entity: Entity;
@@ -6514,11 +6555,12 @@ const CANVAS_NODE_TOOLTIP_FIELDS: Partial<Record<EntityType, Array<{ key: string
   shape:      [{ key: 'status', label: 'Статус' }, { key: 'tags', label: 'Теги' }],
 };
 
-function togglePlayMode() {
+function setCanvasViewMode(mode: CanvasViewMode) {
   clearTensionState();
-  isPlayMode.value = !isPlayMode.value;
+  canvasPlayHintVisible.value = false;
+  canvasViewMode.value = mode;
 
-  if (isPlayMode.value) {
+  if (mode !== 'stop') {
     closeCanvasTooltip();
     closeContextMenu();
     closeEdgeMenu();
@@ -6541,6 +6583,19 @@ function togglePlayMode() {
   }
 
   closeCanvasTooltip();
+}
+
+function cycleCanvasViewMode() {
+  setCanvasViewMode(nextCanvasViewMode.value);
+}
+
+function onCanvasPlayButtonEnter() {
+  if (!isPlayMode.value) return;
+  canvasPlayHintVisible.value = true;
+}
+
+function onCanvasPlayButtonLeave() {
+  canvasPlayHintVisible.value = false;
 }
 
 function getCanvasTooltipDescription(entity: Entity): string {
@@ -6657,6 +6712,7 @@ const canvasTooltipStyle = computed<Partial<Record<string, string>>>(() => {
 });
 
 function onNodePlayEnter(payload: { nodeId: string; rect: DOMRect }) {
+  if (!isTooltipPlayMode.value) return;
   if (isTensionActive.value || hasTensionOffsets.value) return;
   clearCanvasTooltipCloseTimer();
   const node = nodes.value.find((n) => n.id === payload.nodeId);
@@ -6666,6 +6722,7 @@ function onNodePlayEnter(payload: { nodeId: string; rect: DOMRect }) {
 }
 
 function onNodePlayLeave() {
+  if (!isTooltipPlayMode.value) return;
   if (isTensionActive.value || hasTensionOffsets.value) return;
   // Don't close a tooltip that was opened by a touch tap —
   // mobile browsers fire synthetic mouseleave after pointerup and would
@@ -6675,6 +6732,7 @@ function onNodePlayLeave() {
 }
 
 function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
+  if (!isTooltipPlayMode.value) return;
   clearCanvasTooltipCloseTimer();
   const node = nodes.value.find((n) => n.id === payload.nodeId);
   const entity = node ? entitiesStore.byId(node.entityId) : null;
@@ -7033,6 +7091,8 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           :is-name-editing="nameEditingNodeId === node.id"
           :preview-type="contextMenu?.nodeId === node.id ? contextMenuHoverType : null"
           :play-mode="isPlayMode"
+          :play-tooltip-enabled="isTooltipPlayMode"
+          :play-tension-enabled="isTensionPlayMode"
           @start-drag="onNodeDragStart"
           @node-tension-start="onNodeTensionStart"
           @open-menu="onNodeOpenMenu"
@@ -7441,25 +7501,55 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       v-if="!isLoading && !loadError"
       type="button"
       class="canvas-play-btn"
-      :class="{ active: isPlayMode }"
-      :aria-label="isPlayMode ? 'Выключить просмотр' : 'Режим просмотра'"
-      :title="isPlayMode ? 'Выключить просмотр' : 'Режим просмотра'"
+      :class="[{ active: isPlayMode }, `mode-${canvasViewMode}`]"
+      :aria-label="activeCanvasViewModeMeta.label"
+      :title="canvasPlayButtonTitle"
       @pointerdown.stop
-      @click.stop="togglePlayMode"
+      @pointerenter="onCanvasPlayButtonEnter"
+      @pointerleave="onCanvasPlayButtonLeave"
+      @click.stop="cycleCanvasViewMode"
     >
-      <svg v-if="!isPlayMode" class="canvas-play-icon" viewBox="0 0 24 24" aria-hidden="true">
-        <polygon points="5,3 19,12 5,21" />
+      <svg v-if="canvasViewMode === 'stop'" class="canvas-play-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="8" />
+        <rect x="9.1" y="9.1" width="5.8" height="5.8" rx="1.2" />
+      </svg>
+      <svg v-else-if="canvasViewMode === 'tooltip'" class="canvas-play-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="7" cy="12" r="2.1" />
+        <path d="M10.5 9.2h7.4a1.4 1.4 0 0 1 1.4 1.4v4.2a1.4 1.4 0 0 1-1.4 1.4h-4.2l-2.3 2v-2h-.9a1.4 1.4 0 0 1-1.4-1.4v-4.2a1.4 1.4 0 0 1 1.4-1.4Z" />
+        <path d="M11.6 12h4.8" />
+      </svg>
+      <svg v-else-if="canvasViewMode === 'tooltip-tension'" class="canvas-play-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="6.5" cy="8" r="1.8" />
+        <path d="M10 5.4h7.2a1.4 1.4 0 0 1 1.4 1.4v3.9a1.4 1.4 0 0 1-1.4 1.4h-3.9l-2.1 1.8v-1.8H10a1.4 1.4 0 0 1-1.4-1.4V6.8A1.4 1.4 0 0 1 10 5.4Z" />
+        <circle cx="6" cy="17.2" r="1.7" />
+        <circle cx="18" cy="17.2" r="1.7" />
+        <path d="M7.7 17.2h3l2-2.2 2.1 4.3 1.8-2.1h1.7" />
       </svg>
       <svg v-else class="canvas-play-icon" viewBox="0 0 24 24" aria-hidden="true">
-        <rect x="6" y="4" width="4" height="16" rx="1" />
-        <rect x="14" y="4" width="4" height="16" rx="1" />
+        <circle cx="5.8" cy="12" r="2" />
+        <circle cx="12" cy="6.2" r="2" />
+        <circle cx="18.2" cy="12" r="2" />
+        <circle cx="12" cy="17.8" r="2" />
+        <path d="M7.7 11.1 10.1 7.9" />
+        <path d="M13.9 7.9 16.3 11.1" />
+        <path d="m7.8 12.9 2.3 3" />
+        <path d="m16.2 12.9-2.3 3" />
       </svg>
     </button>
+
+    <div
+      v-if="canvasPlayHintVisible && isPlayMode"
+      class="canvas-play-hint"
+      @pointerdown.stop
+    >
+      <span class="canvas-play-hint-label">{{ activeCanvasViewModeMeta.label }}</span>
+      <span class="canvas-play-hint-text">Следующий: {{ nextCanvasViewModeMeta.label.toLowerCase() }}</span>
+    </div>
 
     <!-- Canvas node tooltip (play mode) -->
     <Teleport to="body">
       <div
-        v-if="canvasTooltip && isPlayMode"
+        v-if="canvasTooltip && isTooltipPlayMode"
         class="entity-card-tooltip"
         :style="canvasTooltipStyle"
         @pointerenter="onCanvasTooltipPointerEnter"
@@ -9896,9 +9986,43 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 .canvas-play-icon {
   width: 18px;
   height: 18px;
-  fill: currentColor;
-  stroke: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
   display: block;
+}
+
+.canvas-play-hint {
+  position: absolute;
+  top: 56px;
+  right: 14px;
+  z-index: 50;
+  min-width: 188px;
+  max-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.92);
+  color: #f8fafc;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.2);
+  pointer-events: none;
+}
+
+.canvas-play-hint-label {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.canvas-play-hint-text {
+  font-size: 11px;
+  line-height: 1.35;
+  color: rgba(226, 232, 240, 0.88);
 }
 
 @media (max-width: 1024px) {

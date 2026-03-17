@@ -15,6 +15,8 @@ const props = defineProps<{
   isNameEditing?: boolean;
   previewType?: EntityType | null;
   playMode?: boolean;
+  playTooltipEnabled?: boolean;
+  playTensionEnabled?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -250,9 +252,13 @@ function onNodePointerDown(event: PointerEvent) {
   if (isLocked.value) return;
 
   if (props.playMode) {
-    // Record start position — tap is detected on pointerup (more reliable on mobile)
-    playModePointerDown.value = { x: event.clientX, y: event.clientY, id: event.pointerId };
-    emit('node-tension-start', { nodeId: props.node.id, pointerEvent: event });
+    playModePointerDown.value = props.playTooltipEnabled
+      ? { x: event.clientX, y: event.clientY, id: event.pointerId }
+      : null;
+
+    if (props.playTensionEnabled) {
+      emit('node-tension-start', { nodeId: props.node.id, pointerEvent: event });
+    }
     return;
   }
 
@@ -277,6 +283,10 @@ function onNodePointerUp(event: PointerEvent) {
   clearHoldTracking(event.pointerId);
 
   if (!props.playMode) return;
+  if (!props.playTooltipEnabled) {
+    playModePointerDown.value = null;
+    return;
+  }
   const start = playModePointerDown.value;
   if (!start || start.id !== event.pointerId) return;
   playModePointerDown.value = null;
@@ -294,6 +304,7 @@ function onNodeClick(event: MouseEvent) {
   event.stopPropagation();
 
   if (props.playMode) {
+    if (!props.playTooltipEnabled) return;
     // Touch taps are fully handled by onNodePointerUp.
     // For mouse, playModePointerDown is cleared in pointerup — skip to avoid double-emit.
     if (playModePointerDown.value === null) return;
@@ -314,13 +325,13 @@ function onNodeClick(event: MouseEvent) {
 }
 
 function onNodeMouseEnter(event: MouseEvent) {
-  if (!props.playMode) return;
+  if (!props.playMode || !props.playTooltipEnabled) return;
   const el = event.currentTarget as HTMLElement;
   emit('node-play-enter', { nodeId: props.node.id, rect: el.getBoundingClientRect() });
 }
 
 function onNodeMouseLeave() {
-  if (!props.playMode) return;
+  if (!props.playMode || !props.playTooltipEnabled) return;
   emit('node-play-leave', { nodeId: props.node.id });
 }
 
