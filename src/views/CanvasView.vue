@@ -15,6 +15,11 @@ import { useAuthStore } from '../stores/auth';
 import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../services/entityAi';
 import { apiClient } from '../services/api';
 import { calculateEntityProfileProgress } from '../utils/profileProgress';
+import {
+  PROJECT_CHAT_MONITOR_UPDATED_EVENT,
+  readProjectChatMonitorEntries,
+  type ProjectChatMonitorEntry,
+} from '../utils/projectMonitor';
 import type { LogoLibraryItem } from '../data/logoLibrary';
 import type {
   CanvasEdgeProjection,
@@ -212,6 +217,8 @@ interface AgentChatPreviewStats {
   totalEntitiesInProject: number;
   entitiesInContext: number;
   connectionsInContext: number;
+  sourceNodesInScope: number;
+  sourceEdgesInScope: number;
   historyMessages: number;
   historyTextChars: number;
   attachmentsCount: number;
@@ -219,6 +226,10 @@ interface AgentChatPreviewStats {
   contextBytes: number;
   routerPromptChars: number;
   routerPromptBytes: number;
+  requestBodyBeforeRoleInjectionChars: number;
+  requestBodyBeforeRoleInjectionBytes: number;
+  requestBodyAfterRoleInjectionChars: number;
+  requestBodyAfterRoleInjectionBytes: number;
   llmPromptChars: number;
   llmPromptBytes: number;
   previewJsonBytes: number;
@@ -227,12 +238,6 @@ interface AgentChatPreviewStats {
 interface AgentChatPreviewResponse {
   stats: AgentChatPreviewStats;
   preview: Record<string, unknown>;
-}
-
-interface AgentChatMonitorReplyResponse {
-  reply: string;
-  model?: string;
-  debug?: Record<string, unknown>;
 }
 
 interface AgentChatPreviewEntitySummary {
@@ -244,6 +249,22 @@ interface AgentChatPreviewEntitySummary {
   fieldsItemsTotal: number;
   fieldCounts: Record<string, number>;
   updatedAt: string;
+}
+
+interface MonitorCanvasConnectionSummary {
+  id: string;
+  sourceId: string;
+  sourceName: string;
+  sourceKind: 'entity' | 'group' | 'unknown';
+  targetId: string;
+  targetName: string;
+  targetKind: 'entity' | 'group' | 'unknown';
+  label: string;
+  color: string;
+  relationMode: string;
+  direction: string;
+  directedFrom: string;
+  directedTo: string;
 }
 
 type MetadataFieldKey =
@@ -625,9 +646,7 @@ const monitorErrorMessage = ref('');
 const monitorNotice = ref('');
 const monitorMessageDraft = ref('');
 const monitorPayload = ref<AgentChatPreviewResponse | null>(null);
-const monitorReplyPayload = ref<AgentChatMonitorReplyResponse | null>(null);
-const isMonitorReasoningLoading = ref(false);
-const monitorReasoningErrorMessage = ref('');
+const monitorProjectChatLogs = ref<ProjectChatMonitorEntry[]>([]);
 const monitorRefreshTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const monitorNoticeTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const localEntityInfoAiRequestInFlight = ref(false);
@@ -1519,6 +1538,154 @@ const monitorEntityDataSignature = computed(() => {
     .join('|');
 });
 
+const currentProjectEntity = computed<Entity | null>(() => {
+  const projectId = routeProjectId.value;
+  if (!projectId) return null;
+  const entity = entitiesStore.byId(projectId);
+  if (!entity || entity.type !== 'project') return null;
+  return entity;
+});
+
+function summarizeMonitorEntity(entity: Entity): AgentChatPreviewEntitySummary {
+  const metadata = toProfile(entity.ai_metadata);
+  const description = typeof metadata.description === 'string'
+    ? metadata.description.trim()
+    : typeof entity.profile?.description === 'string'
+      ? entity.profile.description.trim()
+      : '';
+  const fieldCounts: Record<string, number> = {};
+  let fieldsItemsTotal = 0;
+
+  for (const [key, rawValue] of Object.entries(metadata)) {
+    if (!Array.isArray(rawValue)) continue;
+    const count = rawValue
+      .map((value) => (typeof value === 'string' ? value.trim() : ''))
+      .filter(Boolean)
+      .length;
+    if (!count) continue;
+    fieldCounts[key] = count;
+    fieldsItemsTotal += count;
+  }
+
+  return {
+    id: entity._id,
+    type: entity.type,
+    name: typeof entity.name === 'string' && entity.name.trim() ? entity.name.trim() : '(без названия)',
+    description,
+    descriptionLength: description.length,
+    fieldsItemsTotal,
+    fieldCounts,
+    updatedAt: typeof entity.updatedAt === 'string' ? entity.updatedAt : '',
+  };
+}
+
+const monitorCanvasEntitiesSummary = computed(() => {
+  const seen = new Set<string>();
+  return nodes.value
+    .map((node) => {
+      const entityId = typeof node.entityId === 'string' ? node.entityId : '';
+      if (!entityId || seen.has(entityId)) return null;
+      seen.add(entityId);
+      const entity = entitiesStore.byId(entityId);
+      if (!entity) {
+        return {
+          id: entityId,
+          type: 'shape',
+          name: '(сущность не найдена)',
+          description: '',
+          descriptionLength: 0,
+          fieldsItemsTotal: 0,
+          fieldCounts: {},
+          updatedAt: '',
+        } satisfies AgentChatPreviewEntitySummary;
+      }
+      return summarizeMonitorEntity(entity);
+    })
+    .filter((item): item is AgentChatPreviewEntitySummary => Boolean(item));
+});
+
+const monitorCanvasConnections = computed(() => {
+  const nodeEntityByNodeId = new Map<string, string>();
+  const anchorNameById = new Map<string, string>();
+
+  for (const node of nodes.value) {
+    if (!node.id || !node.entityId) continue;
+    nodeEntityByNodeId.set(node.id, node.entityId);
+    const entity = entitiesStore.byId(node.entityId);
+    const name = typeof entity?.name === 'string' && entity.name.trim() ? entity.name.trim() : '';
+    if (name) {
+      anchorNameById.set(node.entityId, name);
+      anchorNameById.set(node.id, name);
+    }
+  }
+
+  for (const group of groups.value) {
+    if (!group?.id) continue;
+    anchorNameById.set(group.id, typeof group.name === 'string' && group.name.trim() ? group.name.trim() : 'Группа');
+  }
+
+  return edges.value
+    .map((edge) => {
+      const sourceId = nodeEntityByNodeId.get(edge.source) || edge.source || '';
+      const targetId = nodeEntityByNodeId.get(edge.target) || edge.target || '';
+      const sourceName = anchorNameById.get(edge.source) || anchorNameById.get(sourceId) || edge.source || '';
+      const targetName = anchorNameById.get(edge.target) || anchorNameById.get(targetId) || edge.target || '';
+      if (!sourceName || !targetName) return null;
+
+      let relationMode = 'equivalent';
+      let direction = edge.arrowLeft && edge.arrowRight ? 'bidirectional' : 'equivalent';
+      let directedFrom = '';
+      let directedTo = '';
+
+      if (edge.arrowLeft && !edge.arrowRight) {
+        relationMode = 'directed';
+        direction = 'target_to_source';
+        directedFrom = targetName;
+        directedTo = sourceName;
+      } else if (!edge.arrowLeft && edge.arrowRight) {
+        relationMode = 'directed';
+        direction = 'source_to_target';
+        directedFrom = sourceName;
+        directedTo = targetName;
+      }
+
+      return {
+        id: edge.id,
+        sourceId,
+        sourceName,
+        sourceKind: groups.value.some((group) => group.id === edge.source) ? 'group' : nodeEntityByNodeId.has(edge.source) ? 'entity' : 'unknown',
+        targetId,
+        targetName,
+        targetKind: groups.value.some((group) => group.id === edge.target) ? 'group' : nodeEntityByNodeId.has(edge.target) ? 'entity' : 'unknown',
+        label: typeof edge.label === 'string' ? edge.label.trim() : '',
+        color: typeof edge.color === 'string' ? edge.color.trim() : '',
+        relationMode,
+        direction,
+        directedFrom,
+        directedTo,
+      } satisfies MonitorCanvasConnectionSummary;
+    })
+    .filter((item): item is MonitorCanvasConnectionSummary => Boolean(item));
+});
+
+const monitorContextBuilderLog = computed(() => {
+  const metadata = toProfile(currentProjectEntity.value?.ai_metadata);
+  return toProfile(metadata.project_context_last_build_log);
+});
+const monitorContextBuilderInput = computed(() => toProfile(monitorContextBuilderLog.value.llm_input));
+const monitorProjectContextDescription = computed(() => {
+  const previewProjectContext = toProfile(monitorPreviewContext.value.projectContext);
+  if (typeof previewProjectContext.description === 'string' && previewProjectContext.description.trim()) {
+    return previewProjectContext.description.trim();
+  }
+  const metadata = toProfile(currentProjectEntity.value?.ai_metadata);
+  const compiled = typeof metadata.project_context_compiled_description === 'string'
+    ? metadata.project_context_compiled_description.trim()
+    : '';
+  if (compiled) return compiled;
+  return typeof metadata.description === 'string' ? metadata.description.trim() : '';
+});
+
 const monitorPreview = computed(() => toProfile(monitorPayload.value?.preview));
 const monitorStats = computed(() => {
   const source = monitorPayload.value?.stats;
@@ -1530,42 +1697,6 @@ const monitorPreviewInput = computed(() => toProfile(monitorPreview.value.input)
 const monitorPreviewRouter = computed(() => toProfile(monitorPreview.value.semanticRouter));
 const monitorPreviewPrompts = computed(() => toProfile(monitorPreview.value.prompts));
 const monitorPreviewContext = computed(() => toProfile(monitorPreview.value.contextData));
-const monitorContextEntitiesCount = computed(() => {
-  const entities = monitorPreviewContext.value.entities;
-  return Array.isArray(entities) ? entities.length : 0;
-});
-const monitorPreviewEntitiesSummary = computed(() => {
-  const source = Array.isArray(monitorPreview.value.entitiesSummary) ? monitorPreview.value.entitiesSummary : [];
-  return source.map((item) => {
-    const entity = toProfile(item);
-    const rawFieldCounts = toProfile(entity.fieldCounts);
-    const fieldCounts: Record<string, number> = {};
-    for (const [key, rawCount] of Object.entries(rawFieldCounts)) {
-      const numeric = Number(rawCount);
-      if (!Number.isFinite(numeric) || numeric <= 0) continue;
-      fieldCounts[key] = Math.max(0, Math.floor(numeric));
-    }
-
-    const description = typeof entity.description === 'string' ? entity.description : '';
-
-    return {
-      id: typeof entity.id === 'string' ? entity.id : '',
-      type: typeof entity.type === 'string' ? entity.type : '',
-      name: typeof entity.name === 'string' ? entity.name : '(без названия)',
-      description,
-      descriptionLength:
-        typeof entity.descriptionLength === 'number'
-          ? Math.max(0, Math.floor(entity.descriptionLength))
-          : description.length,
-      fieldsItemsTotal:
-        typeof entity.fieldsItemsTotal === 'number'
-          ? Math.max(0, Math.floor(entity.fieldsItemsTotal))
-          : Object.values(fieldCounts).reduce((sum, count) => sum + count, 0),
-      fieldCounts,
-      updatedAt: typeof entity.updatedAt === 'string' ? entity.updatedAt : '',
-    } satisfies AgentChatPreviewEntitySummary;
-  });
-});
 const monitorPreviewHistory = computed(() => {
   const input = monitorPreviewInput.value;
   const source = Array.isArray(input.history) ? input.history : [];
@@ -1579,11 +1710,6 @@ const monitorPreviewHistory = computed(() => {
     })
     .filter((item) => item.text.trim().length > 0);
 });
-const monitorPreviewConnections = computed(() => {
-  const context = monitorPreviewContext.value;
-  const source = Array.isArray(context.connections) ? context.connections : [];
-  return source.map((item) => toProfile(item));
-});
 const monitorRouterRequestBody = computed(() => {
   const source = toProfile(monitorPreviewRouter.value.requestBody);
   return Object.keys(source).length ? source : null;
@@ -1591,131 +1717,6 @@ const monitorRouterRequestBody = computed(() => {
 const monitorMainRequestBody = computed(() => {
   const source = toProfile(monitorPreviewPrompts.value.requestBody);
   return Object.keys(source).length ? source : null;
-});
-const monitorPreviewJson = computed(() => {
-  if (monitorMainRequestBody.value) {
-    try {
-      return JSON.stringify(monitorMainRequestBody.value, null, 2);
-    } catch {
-      return '';
-    }
-  }
-
-  if (!monitorRouterRequestBody.value) return '';
-
-  try {
-    return JSON.stringify(monitorRouterRequestBody.value, null, 2);
-  } catch {
-    return '';
-  }
-});
-const monitorReplyText = computed(() => {
-  const reply = monitorReplyPayload.value?.reply;
-  return typeof reply === 'string' ? reply.trim() : '';
-});
-const monitorReplyModel = computed(() => {
-  const model = monitorReplyPayload.value?.model;
-  return typeof model === 'string' ? model.trim() : '';
-});
-const monitorReplyDebug = computed(() => toProfile(monitorReplyPayload.value?.debug));
-const monitorDeepReasoning = computed(() => toProfile(monitorReplyDebug.value.deepReasoning));
-const monitorReasoningState = computed(() => toProfile(monitorDeepReasoning.value.reasoningState));
-const monitorReasoningQualityGate = computed(() => toProfile(monitorDeepReasoning.value.qualityGate));
-const monitorReasoningRelevantEntities = computed(() => {
-  const source = Array.isArray(monitorReasoningState.value.relevant_entities)
-    ? monitorReasoningState.value.relevant_entities
-    : [];
-  return source
-    .map((item) => {
-      const entity = toProfile(item);
-      return {
-        id: typeof entity.id === 'string' ? entity.id : '',
-        type: typeof entity.type === 'string' ? entity.type : '',
-        name: typeof entity.name === 'string' ? entity.name : '',
-        whyRelevant: typeof entity.why_relevant === 'string' ? entity.why_relevant : '',
-      };
-    })
-    .filter((item) => item.id || item.name || item.type || item.whyRelevant);
-});
-const monitorReasoningConfirmedFacts = computed(() =>
-  normalizeMonitorStringList(monitorReasoningState.value.confirmed_facts, 20),
-);
-const monitorReasoningUncertainFacts = computed(() =>
-  normalizeMonitorStringList(monitorReasoningState.value.uncertain_facts, 20),
-);
-const monitorReasoningConflicts = computed(() =>
-  normalizeMonitorStringList(monitorReasoningState.value.conflicts, 20),
-);
-const monitorReasoningConstraints = computed(() =>
-  normalizeMonitorStringList(monitorReasoningState.value.constraints, 12),
-);
-const monitorReasoningFastLevers = computed(() =>
-  normalizeMonitorStringList(monitorReasoningState.value.fast_levers, 12),
-);
-const monitorReasoningExcludedPaths = computed(() =>
-  normalizeMonitorStringList(monitorReasoningState.value.excluded_paths, 12),
-);
-const monitorReasoningConclusion = computed(() => {
-  const value = monitorReasoningState.value.core_conclusion || monitorReasoningState.value.conclusion;
-  return typeof value === 'string' ? value.trim() : '';
-});
-const monitorReasoningInsufficiencyReason = computed(() => {
-  const value = monitorReasoningState.value.why_not_enough || monitorReasoningState.value.insufficiency_reason;
-  return typeof value === 'string' ? value.trim() : '';
-});
-const monitorReasoningNextGrowthContour = computed(() => {
-  const value = monitorReasoningState.value.next_growth_contour;
-  return typeof value === 'string' ? value.trim() : '';
-});
-const monitorReasoningMissingBlocks = computed(() =>
-  normalizeMonitorStringList(monitorReasoningQualityGate.value.missingMandatoryBlocks, 16),
-);
-const monitorReasoningAttempts = computed(() => {
-  const source = Array.isArray(monitorDeepReasoning.value.attempts) ? monitorDeepReasoning.value.attempts : [];
-  return source.map((item) => {
-    const attempt = toProfile(item);
-    const gate = toProfile(attempt.qualityGate);
-    const nextQuestionQuality = toProfile(gate.nextQuestionQuality);
-    return {
-      attemptIndex:
-        typeof attempt.attemptIndex === 'number' && Number.isFinite(attempt.attemptIndex)
-          ? Math.max(1, Math.floor(attempt.attemptIndex))
-          : 1,
-      score:
-        typeof gate.score === 'number' && Number.isFinite(gate.score)
-          ? Math.floor(gate.score)
-          : 0,
-      passed: gate.passed === true,
-      parseError: typeof attempt.parseError === 'string' ? attempt.parseError : '',
-      model: typeof attempt.model === 'string' ? attempt.model : '',
-      nextQuestionReason:
-        typeof nextQuestionQuality.reason === 'string' ? nextQuestionQuality.reason : '',
-    };
-  });
-});
-const monitorReasoningSelectedAttempt = computed(() => {
-  const raw = monitorDeepReasoning.value.selectedAttempt;
-  return typeof raw === 'number' && Number.isFinite(raw) ? Math.max(1, Math.floor(raw)) : null;
-});
-const monitorReasoningNextBestQuestion = computed(() => {
-  const raw = toProfile(monitorDeepReasoning.value.nextBestQuestion).value;
-  if (typeof raw === 'string') return raw.trim();
-  const fallback = monitorReasoningState.value.next_best_question;
-  return typeof fallback === 'string' ? fallback.trim() : '';
-});
-const monitorReasoningAnswerPattern = computed(() => {
-  const pattern = monitorDeepReasoning.value.answerPattern;
-  return typeof pattern === 'string' ? pattern.trim() : '';
-});
-const monitorExportJson = computed(() => {
-  if (monitorReplyPayload.value) {
-    try {
-      return JSON.stringify(monitorReplyPayload.value, null, 2);
-    } catch {
-      return '';
-    }
-  }
-  return monitorPreviewJson.value;
 });
 
 function clearMonitorRefreshTimer() {
@@ -1748,46 +1749,40 @@ function buildMonitorScopePayload() {
   };
 }
 
-function buildMonitorReplyHistoryPayload() {
-  return monitorPreviewHistory.value.slice(-12).map((item) => ({
-    role: item.role,
-    text: item.text,
-  }));
+function syncMonitorProjectChatLogs() {
+  monitorProjectChatLogs.value = readProjectChatMonitorEntries(routeProjectId.value);
 }
 
-function buildMonitorReplyAttachmentsPayload() {
-  const source = Array.isArray(monitorPreviewInput.value.attachments) ? monitorPreviewInput.value.attachments : [];
-  return source
-    .map((item) => {
-      const attachment = toProfile(item);
-      const name = typeof attachment.name === 'string' ? attachment.name : '';
-      if (!name.trim()) return null;
-      return {
-        name,
-        mime: typeof attachment.mime === 'string' ? attachment.mime : '',
-        size:
-          typeof attachment.size === 'number' && Number.isFinite(attachment.size)
-            ? Math.max(0, Math.floor(attachment.size))
-            : 0,
-        text: typeof attachment.text === 'string' ? attachment.text : '',
-      };
-    })
-    .filter((item): item is { name: string; mime: string; size: number; text: string } => Boolean(item))
-    .slice(0, 6);
+function handleProjectChatMonitorUpdated(event: Event) {
+  const customEvent = event as CustomEvent<{ projectId?: string }>;
+  const projectId = typeof customEvent.detail?.projectId === 'string' ? customEvent.detail.projectId : '';
+  if (projectId && projectId !== routeProjectId.value) return;
+  syncMonitorProjectChatLogs();
 }
 
-function clearMonitorReasoningState({ keepError = false } = {}) {
-  monitorReplyPayload.value = null;
-  if (!keepError) {
-    monitorReasoningErrorMessage.value = '';
-  }
+function buildMonitorDownloadFileName(kind: 'entities-links' | 'context-builder' | 'chat-requests') {
+  const projectName = sanitizeFileName(currentProjectEntity.value?.name || 'project');
+  return `${kind}-${projectName || 'project'}-${Date.now()}.json`;
+}
+
+function downloadMonitorPayload(fileName: string, payload: unknown) {
+  if (typeof window === 'undefined') return;
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+  const url = window.URL.createObjectURL(blob);
+  const anchor = window.document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  window.document.body.appendChild(anchor);
+  anchor.click();
+  window.document.body.removeChild(anchor);
+  window.URL.revokeObjectURL(url);
 }
 
 async function fetchMonitorSnapshot() {
   const scope = buildMonitorScopePayload();
   if (!scope) {
     monitorErrorMessage.value = 'Проект не определен.';
-    clearMonitorReasoningState();
     return;
   }
 
@@ -1817,52 +1812,6 @@ async function fetchMonitorSnapshot() {
   }
 }
 
-async function runMonitorReasoningTrace() {
-  const scope = buildMonitorScopePayload();
-  if (!scope) {
-    monitorReasoningErrorMessage.value = 'Проект не определен.';
-    clearMonitorReasoningState({ keepError: true });
-    return;
-  }
-
-  const message = monitorMessageDraft.value.trim();
-  if (!message) {
-    monitorReasoningErrorMessage.value = 'Введите вопрос, чтобы получить ответ и reasoning trace.';
-    clearMonitorReasoningState({ keepError: true });
-    return;
-  }
-
-  isMonitorReasoningLoading.value = true;
-  monitorReasoningErrorMessage.value = '';
-  try {
-    const { data } = await apiClient.post<AgentChatMonitorReplyResponse>(
-      '/ai/agent-chat',
-      {
-        scope,
-        message,
-        history: buildMonitorReplyHistoryPayload(),
-        attachments: buildMonitorReplyAttachmentsPayload(),
-        debug: true,
-        monitorMode: true,
-      },
-      {
-        timeout: 180_000,
-      },
-    );
-    monitorReplyPayload.value = data;
-    setMonitorNotice('Ответ и reasoning trace обновлены.');
-  } catch (error: unknown) {
-    const messageText =
-      error instanceof Error && typeof error.message === 'string'
-        ? error.message
-        : 'Не удалось получить ответ и reasoning trace.';
-    monitorReasoningErrorMessage.value = messageText;
-    clearMonitorReasoningState({ keepError: true });
-  } finally {
-    isMonitorReasoningLoading.value = false;
-  }
-}
-
 function scheduleMonitorRefresh(delayMs = 480) {
   clearMonitorRefreshTimer();
   monitorRefreshTimer.value = setTimeout(() => {
@@ -1875,18 +1824,17 @@ function scheduleMonitorRefresh(delayMs = 480) {
 function toggleMonitorPanel() {
   isMonitorPanelOpen.value = !isMonitorPanelOpen.value;
   if (isMonitorPanelOpen.value) {
+    syncMonitorProjectChatLogs();
     void fetchMonitorSnapshot();
   } else {
     monitorErrorMessage.value = '';
     monitorNotice.value = '';
-    clearMonitorReasoningState();
     clearMonitorRefreshTimer();
   }
 }
 
 async function restartMonitorBuild() {
-  const scope = buildMonitorScopePayload();
-  if (!scope) {
+  if (!buildMonitorScopePayload()) {
     monitorErrorMessage.value = 'Проект не определен.';
     return;
   }
@@ -1894,73 +1842,45 @@ async function restartMonitorBuild() {
   clearMonitorRefreshTimer();
   monitorPayload.value = null;
   monitorErrorMessage.value = '';
-  clearMonitorReasoningState();
-  isMonitorLoading.value = true;
-  try {
-    // 1) Force legacy scope-key migration into canonical project-canvas key.
-    setMonitorNotice('Шаг 1/3: миграция ключей истории...');
-    await apiClient.get('/ai/chat-history', {
-      params: {
-        scopeType: 'project',
-        projectId: scope.projectId,
-      },
-      timeout: 60_000,
-    });
-
-    // 2) Hard-reset project history (canonical + legacy keys on backend side).
-    setMonitorNotice('Шаг 2/3: очистка истории проекта...');
-    await apiClient.delete('/ai/chat-history', {
-      params: {
-        scopeType: 'project',
-        projectId: scope.projectId,
-      },
-      timeout: 60_000,
-    });
-  } catch (error: unknown) {
-    const message =
-      error instanceof Error && typeof error.message === 'string'
-        ? error.message
-        : 'Не удалось перезапустить сборку мониторинга.';
-    monitorErrorMessage.value = message;
-    return;
-  } finally {
-    isMonitorLoading.value = false;
-  }
-
-  setMonitorNotice('Шаг 3/3: пересборка контекста...');
   await fetchMonitorSnapshot();
+  syncMonitorProjectChatLogs();
   if (!monitorErrorMessage.value) {
-    setMonitorNotice('Пересборка завершена: история очищена, контекст обновлен.');
+    setMonitorNotice('Мониторинг обновлен по текущему состоянию канвы.');
   }
 }
 
-async function copyMonitorJsonToClipboard() {
-  const payload = monitorExportJson.value;
-  if (!payload || typeof window === 'undefined' || !navigator?.clipboard?.writeText) {
+function downloadMonitorEntitiesAndConnections() {
+  if (!monitorCanvasEntitiesSummary.value.length && !monitorCanvasConnections.value.length) return;
+  downloadMonitorPayload(buildMonitorDownloadFileName('entities-links'), {
+    exportedAt: getIsoNow(),
+    source: 'canvas-monitor.entities-and-connections',
+    projectId: routeProjectId.value,
+    projectName: currentProjectEntity.value?.name || '',
+    entities: monitorCanvasEntitiesSummary.value,
+    connections: monitorCanvasConnections.value,
+  });
+  setMonitorNotice('Экспорт сущностей и связей готов.');
+}
+
+function downloadMonitorContextBuilder() {
+  const payload = monitorContextBuilderLog.value;
+  if (!Object.keys(payload).length) return;
+  downloadMonitorPayload(buildMonitorDownloadFileName('context-builder'), payload);
+  setMonitorNotice('Экспорт context builder готов.');
+}
+
+function downloadMonitorChatRequests() {
+  if (!monitorProjectChatLogs.value.length) {
     return;
   }
-  try {
-    await navigator.clipboard.writeText(payload);
-    setMonitorNotice('JSON скопирован в буфер.');
-  } catch {
-    setMonitorNotice('Не удалось скопировать JSON.');
-  }
-}
-
-function downloadMonitorJson() {
-  const payload = monitorExportJson.value;
-  if (!payload || typeof window === 'undefined') return;
-  const fileName = `llm-context-monitor-${Date.now()}.json`;
-  const blob = new Blob([payload], { type: 'application/json;charset=utf-8' });
-  const url = window.URL.createObjectURL(blob);
-  const anchor = window.document.createElement('a');
-  anchor.href = url;
-  anchor.download = fileName;
-  window.document.body.appendChild(anchor);
-  anchor.click();
-  window.document.body.removeChild(anchor);
-  window.URL.revokeObjectURL(url);
-  setMonitorNotice('JSON сохранен.');
+  downloadMonitorPayload(buildMonitorDownloadFileName('chat-requests'), {
+    exportedAt: getIsoNow(),
+    source: 'canvas-monitor.project-chat-requests',
+    projectId: routeProjectId.value,
+    projectName: currentProjectEntity.value?.name || '',
+    entries: monitorProjectChatLogs.value,
+  });
+  setMonitorNotice('Экспорт запросов чата готов.');
 }
 
 function formatMonitorBytes(value: unknown) {
@@ -1973,12 +1893,12 @@ function formatMonitorBytes(value: unknown) {
   return `${mb.toFixed(2)} MB`;
 }
 
-function normalizeMonitorStringList(value: unknown, limit = 16) {
-  if (!Array.isArray(value)) return [] as string[];
+function sanitizeFileName(value: string) {
   return value
-    .map((item) => (typeof item === 'string' ? item.trim() : ''))
-    .filter((item) => item.length > 0)
-    .slice(0, Math.max(1, limit));
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .slice(0, 80);
 }
 
 function stringifyMonitorValue(value: unknown) {
@@ -6518,10 +6438,17 @@ watch(
 watch(
   () => monitorMessageDraft.value,
   () => {
-    clearMonitorReasoningState();
     if (!isMonitorPanelOpen.value) return;
     scheduleMonitorRefresh(700);
   },
+);
+
+watch(
+  routeProjectId,
+  () => {
+    syncMonitorProjectChatLogs();
+  },
+  { immediate: true },
 );
 
 watch(
@@ -6565,6 +6492,7 @@ void _legacyEntityInfoBindings;
 onMounted(() => {
   syncDeviceLayoutMetrics();
   window.setTimeout(syncDeviceLayoutMetrics, 120);
+  syncMonitorProjectChatLogs();
   attachViewportInteractionGuards(viewportRef.value);
   document.addEventListener('pointerdown', onDocumentPointerDownCapture, true);
   document.addEventListener('contextmenu', onWindowContextMenuCapture, true);
@@ -6577,6 +6505,7 @@ onMounted(() => {
   window.visualViewport?.addEventListener('resize', syncDeviceLayoutMetrics);
   window.visualViewport?.addEventListener('scroll', syncDeviceLayoutMetrics);
   window.addEventListener('blur', resetTransientStates);
+  window.addEventListener(PROJECT_CHAT_MONITOR_UPDATED_EVENT, handleProjectChatMonitorUpdated as EventListener);
 });
 
 onBeforeUnmount(() => {
@@ -6604,6 +6533,7 @@ onBeforeUnmount(() => {
   window.visualViewport?.removeEventListener('resize', syncDeviceLayoutMetrics);
   window.visualViewport?.removeEventListener('scroll', syncDeviceLayoutMetrics);
   window.removeEventListener('blur', resetTransientStates);
+  window.removeEventListener(PROJECT_CHAT_MONITOR_UPDATED_EVENT, handleProjectChatMonitorUpdated as EventListener);
 });
 
 // ─── Play mode ────────────────────────────────────────────────────────────────
@@ -6991,9 +6921,9 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
         <section v-if="isMonitorPanelOpen" class="canvas-monitor-panel">
           <header class="canvas-monitor-header">
             <div>
-              <h3 class="canvas-monitor-title">Контекст и reasoning для LLM</h3>
+              <h3 class="canvas-monitor-title">Монитор канвы и LLM</h3>
               <p class="canvas-monitor-subtitle">
-                Полный запрос, промты, история проекта, ответ и пошаговый reasoning trace.
+                Канва проекта, context builder и реальные payload'ы чата в одном окне.
               </p>
             </div>
             <button type="button" class="canvas-monitor-close" @click="toggleMonitorPanel">Закрыть</button>
@@ -7004,97 +6934,89 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
               Обновить
             </button>
             <button type="button" class="canvas-monitor-btn" :disabled="isMonitorLoading" @click="restartMonitorBuild">
-              Перезапустить сборку
+              Пересчитать монитор
             </button>
             <button
               type="button"
               class="canvas-monitor-btn"
-              :disabled="isMonitorLoading || isMonitorReasoningLoading || !monitorMessageDraft.trim()"
-              @click="runMonitorReasoningTrace"
+              :disabled="!monitorCanvasEntitiesSummary.length && !monitorCanvasConnections.length"
+              @click="downloadMonitorEntitiesAndConnections"
             >
-              Ответ + reasoning
+              Скачать сущности + связи
             </button>
             <button
               type="button"
               class="canvas-monitor-btn"
-              :disabled="!monitorExportJson"
-              @click="copyMonitorJsonToClipboard"
+              :disabled="!Object.keys(monitorContextBuilderLog).length"
+              @click="downloadMonitorContextBuilder"
             >
-              Копировать
+              Скачать контекст билдер
             </button>
             <button
               type="button"
               class="canvas-monitor-btn primary"
-              :disabled="!monitorExportJson"
-              @click="downloadMonitorJson"
+              :disabled="!monitorProjectChatLogs.length"
+              @click="downloadMonitorChatRequests"
             >
-              Скачать JSON
+              Скачать запросы чата
             </button>
           </div>
 
           <div class="canvas-monitor-message">
-            <label class="canvas-monitor-message-label" for="monitor-prompt-input">Сообщение для превью</label>
+            <label class="canvas-monitor-message-label" for="monitor-prompt-input">Черновик для превью запроса чата</label>
             <textarea
               id="monitor-prompt-input"
               v-model="monitorMessageDraft"
               class="canvas-monitor-message-input"
               rows="2"
-              placeholder="Необязательно: добавьте сообщение, чтобы увидеть как изменится запрос к LLM"
+              placeholder="Необязательно: добавьте сообщение, чтобы увидеть текущий payload чата проекта"
             />
           </div>
 
-          <p v-if="isMonitorLoading" class="canvas-monitor-status">Собираю контекст...</p>
-          <p v-if="isMonitorReasoningLoading" class="canvas-monitor-status">Запрашиваю ответ и reasoning trace...</p>
+          <p v-if="isMonitorLoading" class="canvas-monitor-status">Обновляю снимок LLM-контекста...</p>
           <p v-if="monitorErrorMessage" class="canvas-monitor-status error">{{ monitorErrorMessage }}</p>
-          <p v-if="monitorReasoningErrorMessage" class="canvas-monitor-status error">{{ monitorReasoningErrorMessage }}</p>
           <p v-else-if="monitorNotice" class="canvas-monitor-status">{{ monitorNotice }}</p>
 
           <div class="canvas-monitor-stats">
             <article class="canvas-monitor-stat">
-              <span class="canvas-monitor-stat-label">Сущности</span>
-              <strong>{{ monitorStats?.entitiesInContext ?? nodes.length }}</strong>
+              <span class="canvas-monitor-stat-label">Сущности на канве</span>
+              <strong>{{ monitorCanvasEntitiesSummary.length }}</strong>
             </article>
             <article class="canvas-monitor-stat">
-              <span class="canvas-monitor-stat-label">Связи</span>
-              <strong>{{ monitorStats?.connectionsInContext ?? edges.length }}</strong>
+              <span class="canvas-monitor-stat-label">Связи на канве</span>
+              <strong>{{ monitorCanvasConnections.length }}</strong>
             </article>
             <article class="canvas-monitor-stat">
-              <span class="canvas-monitor-stat-label">История чата</span>
-              <strong>{{ monitorStats?.historyMessages ?? monitorPreviewHistory.length }}</strong>
+              <span class="canvas-monitor-stat-label">Сущности в LLM</span>
+              <strong>{{ monitorStats?.entitiesInContext ?? 0 }}</strong>
             </article>
             <article class="canvas-monitor-stat">
-              <span class="canvas-monitor-stat-label">Контекст</span>
+              <span class="canvas-monitor-stat-label">Связи в LLM</span>
+              <strong>{{ monitorStats?.connectionsInContext ?? 0 }}</strong>
+            </article>
+            <article class="canvas-monitor-stat">
+              <span class="canvas-monitor-stat-label">Контекст чата</span>
               <strong>{{ formatMonitorBytes(monitorStats?.contextBytes || 0) }}</strong>
             </article>
             <article class="canvas-monitor-stat">
-              <span class="canvas-monitor-stat-label">Промты</span>
-              <strong>
-                {{
-                  formatMonitorBytes(
-                    (monitorStats?.routerPromptBytes || 0) + (monitorStats?.llmPromptBytes || 0),
-                  )
-                }}
-              </strong>
-            </article>
-            <article class="canvas-monitor-stat">
-              <span class="canvas-monitor-stat-label">Вес JSON</span>
-              <strong>{{ formatMonitorBytes(monitorStats?.previewJsonBytes || 0) }}</strong>
+              <span class="canvas-monitor-stat-label">Запрос чата</span>
+              <strong>{{ formatMonitorBytes(monitorStats?.requestBodyAfterRoleInjectionBytes || 0) }}</strong>
             </article>
           </div>
           <p class="canvas-monitor-scope">
-            Scope: {{ monitorPreviewScope.scopeKey || 'n/a' }} | Проект:
-            {{ monitorPreviewScope.projectId || routeProjectId || 'n/a' }} | Контекстных сущностей:
-            {{ monitorContextEntitiesCount || monitorStats?.entitiesInContext || 0 }}
+            Проект: {{ currentProjectEntity?.name || routeProjectId || 'n/a' }} | Scope:
+            {{ monitorPreviewScope.scopeKey || `project-canvas:${routeProjectId || 'n/a'}` }} | История чата:
+            {{ monitorStats?.historyMessages ?? monitorPreviewHistory.length }}
           </p>
 
           <section class="canvas-monitor-section">
-            <h4>Сущности и поля</h4>
-            <div v-if="!monitorPreviewEntitiesSummary.length" class="canvas-monitor-empty">
-              Сущности не найдены в текущем контексте.
+            <h4>Сущности на канве</h4>
+            <div v-if="!monitorCanvasEntitiesSummary.length" class="canvas-monitor-empty">
+              Сущности не найдены на текущей канве.
             </div>
             <div v-else class="canvas-monitor-entities">
               <article
-                v-for="entity in monitorPreviewEntitiesSummary"
+                v-for="entity in monitorCanvasEntitiesSummary"
                 :key="entity.id || `${entity.type}:${entity.name}`"
                 class="canvas-monitor-entity"
               >
@@ -7120,205 +7042,35 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           </section>
 
           <section class="canvas-monitor-section">
-            <h4>История проекта для LLM</h4>
-            <div v-if="!monitorPreviewHistory.length" class="canvas-monitor-empty">История чата пустая.</div>
-            <div v-else class="canvas-monitor-history">
-              <article v-for="(item, idx) in monitorPreviewHistory" :key="`history-${idx}`" class="canvas-monitor-history-item">
-                <span class="canvas-monitor-history-role">{{ item.role }}</span>
-                <p>{{ item.text }}</p>
-              </article>
+            <h4>Связи на канве</h4>
+            <div v-if="!monitorCanvasConnections.length" class="canvas-monitor-empty">
+              Связи на канве не найдены.
+            </div>
+            <div v-else class="canvas-monitor-connections">
+              <pre v-for="connection in monitorCanvasConnections" :key="connection.id">{{
+                stringifyMonitorValue(connection)
+              }}</pre>
             </div>
           </section>
 
           <section class="canvas-monitor-section">
-            <h4>Ответ модели и итог</h4>
-            <div v-if="!monitorReplyText" class="canvas-monitor-empty">
-              Ответ еще не запрошен. Введите сообщение и нажмите «Ответ + reasoning».
-            </div>
-            <template v-else>
-              <p v-if="monitorReplyModel" class="canvas-monitor-hint">Модель: {{ monitorReplyModel }}</p>
-              <pre class="canvas-monitor-json">{{ monitorReplyText }}</pre>
-              <p v-if="monitorReasoningAnswerPattern" class="canvas-monitor-hint">
-                Шаблон ответа: {{ monitorReasoningAnswerPattern }}
-              </p>
-              <p v-if="monitorReasoningNextBestQuestion" class="canvas-monitor-hint">
-                Next best question: {{ monitorReasoningNextBestQuestion }}
-              </p>
-            </template>
-          </section>
-
-          <section class="canvas-monitor-section">
-            <h4>Пошаговый reasoning trace</h4>
-            <div v-if="!Object.keys(monitorReasoningState).length" class="canvas-monitor-empty">
-              Reasoning trace отсутствует. Выполните вызов «Ответ + reasoning».
-            </div>
-            <template v-else>
-              <div class="canvas-monitor-grid-two">
-                <div class="canvas-monitor-note">
-                  <span class="canvas-monitor-note-label">Как понят вопрос (actor)</span>
-                  <p>{{ monitorReasoningState.actor || 'n/a' }}</p>
-                </div>
-                <div class="canvas-monitor-note">
-                  <span class="canvas-monitor-note-label">Как понят intent</span>
-                  <p>{{ monitorReasoningState.intent || 'n/a' }}</p>
-                </div>
-              </div>
-
-              <div class="canvas-monitor-grid-two">
-                <div class="canvas-monitor-note">
-                  <span class="canvas-monitor-note-label">Текущая точка</span>
-                  <p>{{ monitorReasoningState.current_point || 'n/a' }}</p>
-                </div>
-                <div class="canvas-monitor-note">
-                  <span class="canvas-monitor-note-label">Целевая точка</span>
-                  <p>{{ monitorReasoningState.target_point || 'n/a' }}</p>
-                </div>
-              </div>
-
-              <div class="canvas-monitor-grid-two">
-                <div class="canvas-monitor-note">
-                  <span class="canvas-monitor-note-label">Ограничения</span>
-                  <ul v-if="monitorReasoningConstraints.length" class="canvas-monitor-list">
-                    <li v-for="(item, idx) in monitorReasoningConstraints" :key="`constraint-${idx}`">{{ item }}</li>
-                  </ul>
-                  <p v-else>Не выделены</p>
-                </div>
-                <div class="canvas-monitor-note">
-                  <span class="canvas-monitor-note-label">Быстрые рычаги</span>
-                  <ul v-if="monitorReasoningFastLevers.length" class="canvas-monitor-list">
-                    <li v-for="(item, idx) in monitorReasoningFastLevers" :key="`lever-${idx}`">{{ item }}</li>
-                  </ul>
-                  <p v-else>Не выделены</p>
-                </div>
-              </div>
-
-              <div class="canvas-monitor-note">
-                <span class="canvas-monitor-note-label">Что отброшено (excluded_paths)</span>
-                <ul v-if="monitorReasoningExcludedPaths.length" class="canvas-monitor-list">
-                  <li v-for="(item, idx) in monitorReasoningExcludedPaths" :key="`excluded-${idx}`">{{ item }}</li>
-                </ul>
-                <p v-else>Отсечения не зафиксированы</p>
-              </div>
-
-              <div class="canvas-monitor-grid-two">
-                <div class="canvas-monitor-note">
-                  <span class="canvas-monitor-note-label">К какому выводу пришла модель</span>
-                  <p>{{ monitorReasoningConclusion || 'Вывод не сформулирован' }}</p>
-                </div>
-                <div class="canvas-monitor-note">
-                  <span class="canvas-monitor-note-label">Почему этого недостаточно</span>
-                  <p>{{ monitorReasoningInsufficiencyReason || 'Причина недостаточности не указана' }}</p>
-                </div>
-              </div>
-
-              <div class="canvas-monitor-note">
-                <span class="canvas-monitor-note-label">Следующий контур роста (next_growth_contour)</span>
-                <p>{{ monitorReasoningNextGrowthContour || 'Контур роста не указан' }}</p>
-              </div>
-
-              <div class="canvas-monitor-note">
-                <span class="canvas-monitor-note-label">Выбранные важные данные (relevant_entities)</span>
-                <div v-if="!monitorReasoningRelevantEntities.length" class="canvas-monitor-empty">
-                  Важные сущности не выделены.
-                </div>
-                <div v-else class="canvas-monitor-entities">
-                  <article
-                    v-for="entity in monitorReasoningRelevantEntities"
-                    :key="`${entity.id}:${entity.name}:${entity.type}`"
-                    class="canvas-monitor-entity"
-                  >
-                    <div class="canvas-monitor-entity-head">
-                      <strong>{{ entity.name || entity.id || 'Без имени' }}</strong>
-                      <span>{{ entity.type || 'n/a' }}</span>
-                    </div>
-                    <p class="canvas-monitor-entity-desc">{{ entity.whyRelevant || 'Причина не указана.' }}</p>
-                  </article>
-                </div>
-              </div>
-
-              <div class="canvas-monitor-grid-two">
-                <div class="canvas-monitor-note">
-                  <span class="canvas-monitor-note-label">Промежуточные выводы (confirmed_facts)</span>
-                  <ul v-if="monitorReasoningConfirmedFacts.length" class="canvas-monitor-list">
-                    <li v-for="(item, idx) in monitorReasoningConfirmedFacts" :key="`fact-${idx}`">{{ item }}</li>
-                  </ul>
-                  <p v-else>Не выделены</p>
-                </div>
-                <div class="canvas-monitor-note">
-                  <span class="canvas-monitor-note-label">Неопределенности / конфликты</span>
-                  <ul v-if="monitorReasoningUncertainFacts.length" class="canvas-monitor-list">
-                    <li v-for="(item, idx) in monitorReasoningUncertainFacts" :key="`uncertain-${idx}`">{{ item }}</li>
-                  </ul>
-                  <ul v-if="monitorReasoningConflicts.length" class="canvas-monitor-list">
-                    <li v-for="(item, idx) in monitorReasoningConflicts" :key="`conflict-${idx}`">{{ item }}</li>
-                  </ul>
-                  <p v-if="!monitorReasoningUncertainFacts.length && !monitorReasoningConflicts.length">
-                    Не зафиксированы
-                  </p>
-                </div>
-              </div>
-            </template>
-          </section>
-
-          <section class="canvas-monitor-section">
-            <h4>Почему получился именно такой ответ</h4>
-            <div v-if="!Object.keys(monitorReasoningQualityGate).length" class="canvas-monitor-empty">
-              Quality gate отсутствует.
+            <h4>Контекст проекта для чата LLM</h4>
+            <div v-if="!monitorProjectContextDescription" class="canvas-monitor-empty">
+              Скомпилированный контекст проекта пока отсутствует.
             </div>
             <template v-else>
               <p class="canvas-monitor-hint">
-                Passed:
-                <strong>{{ monitorReasoningQualityGate.passed === true ? 'yes' : 'no' }}</strong>
-                |
-                Score:
-                <strong>{{
-                  typeof monitorReasoningQualityGate.score === 'number' ? monitorReasoningQualityGate.score : 0
-                }}</strong>
-                |
-                Selected attempt:
-                <strong>{{ monitorReasoningSelectedAttempt || 'n/a' }}</strong>
+                Статус: {{ toProfile(monitorPreviewContext.projectContext).contextStatus || 'n/a' }} |
+                Собран: {{ toProfile(monitorPreviewContext.projectContext).builtAt || 'n/a' }}
               </p>
-              <p v-if="monitorReasoningMissingBlocks.length" class="canvas-monitor-hint">
-                Непокрытые обязательные блоки: {{ monitorReasoningMissingBlocks.join(', ') }}
-              </p>
-              <p v-if="monitorReasoningQualityGate.factAnchored === false" class="canvas-monitor-hint">
-                Ответ ослаблен: недостаточная привязка к фактам/сущностям.
-              </p>
-              <p
-                v-if="toProfile(monitorReasoningQualityGate.nextQuestionQuality).present === true"
-                class="canvas-monitor-hint"
-              >
-                Next-question quality:
-                {{
-                  toProfile(monitorReasoningQualityGate.nextQuestionQuality).accepted === true
-                    ? 'accepted'
-                    : `rejected (${toProfile(monitorReasoningQualityGate.nextQuestionQuality).reason || 'unknown'})`
-                }}
-              </p>
+              <pre class="canvas-monitor-json">{{ monitorProjectContextDescription }}</pre>
             </template>
-            <div v-if="monitorReasoningAttempts.length" class="canvas-monitor-attempts">
-              <article
-                v-for="attempt in monitorReasoningAttempts"
-                :key="`attempt-${attempt.attemptIndex}`"
-                class="canvas-monitor-attempt"
-              >
-                <div class="canvas-monitor-attempt-head">
-                  <strong>Pass {{ attempt.attemptIndex }}</strong>
-                  <span>{{ attempt.model || 'unknown' }}</span>
-                </div>
-                <p>
-                  score={{ attempt.score }} | passed={{ attempt.passed ? 'yes' : 'no' }}
-                  <template v-if="attempt.parseError"> | parse={{ attempt.parseError }}</template>
-                  <template v-if="attempt.nextQuestionReason"> | nextQ={{ attempt.nextQuestionReason }}</template>
-                </p>
-              </article>
-            </div>
           </section>
 
           <section class="canvas-monitor-section">
-            <h4>Тело запроса к LLM (1:1)</h4>
+            <h4>Что сейчас улетит в LLM из чата проекта</h4>
             <div v-if="!monitorRouterRequestBody && !monitorMainRequestBody" class="canvas-monitor-empty">
-              Вопрос из чата отсутствует: request body не сформирован.
+              Добавьте черновик сообщения или откройте историю проекта, чтобы сформировать preview запроса.
             </div>
             <template v-else>
               <div v-if="monitorRouterRequestBody" class="canvas-monitor-prompt-block">
@@ -7333,19 +7085,51 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           </section>
 
           <section class="canvas-monitor-section">
-            <h4>Связи в контексте</h4>
-            <div v-if="!monitorPreviewConnections.length" class="canvas-monitor-empty">Связи не найдены.</div>
-            <div v-else class="canvas-monitor-connections">
-              <pre v-for="(connection, index) in monitorPreviewConnections" :key="`connection-${index}`">{{
-                stringifyMonitorValue(connection)
-              }}</pre>
+            <h4>Последний context builder</h4>
+            <div v-if="!Object.keys(monitorContextBuilderInput).length" class="canvas-monitor-empty">
+              Контекст билдер еще не запускался из окна чата проекта.
             </div>
+            <template v-else>
+              <p class="canvas-monitor-hint">
+                Модель: {{ monitorContextBuilderInput.model || 'n/a' }}
+              </p>
+              <div class="canvas-monitor-prompt-block">
+                <span>System prompt</span>
+                <pre>{{ stringifyMonitorValue(monitorContextBuilderInput.systemPrompt) }}</pre>
+              </div>
+              <div class="canvas-monitor-prompt-block">
+                <span>User payload</span>
+                <pre>{{ stringifyMonitorValue(monitorContextBuilderInput.userPayload) }}</pre>
+              </div>
+            </template>
           </section>
 
           <section class="canvas-monitor-section">
-            <h4>JSON, отправляемый в LLM (1:1)</h4>
-            <div v-if="!monitorPreviewJson" class="canvas-monitor-empty">Пусто: нет вопроса для LLM.</div>
-            <pre v-else class="canvas-monitor-json">{{ monitorPreviewJson }}</pre>
+            <h4>Реальные запросы чата проекта</h4>
+            <div v-if="!monitorProjectChatLogs.length" class="canvas-monitor-empty">
+              Запросы чата проекта еще не зафиксированы.
+            </div>
+            <div v-else class="canvas-monitor-attempts">
+              <article
+                v-for="entry in monitorProjectChatLogs"
+                :key="entry.id"
+                class="canvas-monitor-attempt"
+              >
+                <div class="canvas-monitor-attempt-head">
+                  <strong>{{ entry.request.message || 'Пустой запрос' }}</strong>
+                  <span>{{ entry.response.model || 'unknown model' }}</span>
+                </div>
+                <p>{{ entry.createdAt }}</p>
+                <div class="canvas-monitor-prompt-block">
+                  <span>Main Reply requestBody</span>
+                  <pre>{{ stringifyMonitorValue(toProfile(entry.debug.prompts).requestBody) }}</pre>
+                </div>
+                <div class="canvas-monitor-prompt-block">
+                  <span>Ответ модели</span>
+                  <pre>{{ entry.response.reply || 'Пустой ответ' }}</pre>
+                </div>
+              </article>
+            </div>
           </section>
         </section>
       </div>

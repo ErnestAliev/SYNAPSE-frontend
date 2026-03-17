@@ -6,6 +6,7 @@ import { useEntitiesStore } from '../../stores/entities';
 import type { Entity, EntityType } from '../../types/entity';
 import { apiClient } from '../../services/api';
 import { useUnifiedVoiceInput } from '../../composables/useUnifiedVoiceInput';
+import { appendProjectChatMonitorEntry } from '../../utils/projectMonitor';
 
 type ChatRole = 'user' | 'assistant';
 
@@ -33,6 +34,7 @@ interface AgentChatRequestScope {
 
 interface AgentChatResponse {
   reply: string;
+  model?: string;
   debug?: Record<string, unknown>;
 }
 
@@ -1607,19 +1609,24 @@ async function requestAssistantReply(args: {
   message: string;
   history: Array<{ role: ChatRole; text: string }>;
   attachments: EntityAttachment[];
+  includeDebug?: boolean;
+  monitorMode?: boolean;
 }) {
   const { data } = await apiClient.post<AgentChatResponse>('/ai/agent-chat', {
     scope: args.scope,
     message: args.message,
     history: args.history,
     attachments: buildAttachmentsPayload(args.attachments),
-    debug: false,
+    debug: args.includeDebug === true,
+    ...(args.monitorMode === true ? { monitorMode: true } : {}),
   }, {
     timeout: AGENT_CHAT_REQUEST_TIMEOUT_MS,
   });
 
   return {
     reply: typeof data.reply === 'string' ? data.reply.trim() : '',
+    model: typeof data.model === 'string' ? data.model.trim() : '',
+    debug: data.debug && typeof data.debug === 'object' ? data.debug : undefined,
   };
 }
 
@@ -1629,18 +1636,58 @@ async function requestAssistantDebugReply(args: {
   history: Array<{ role: ChatRole; text: string }>;
   attachments: EntityAttachment[];
 }) {
-  const { data } = await apiClient.post<AgentChatResponse>('/ai/agent-chat', {
-    scope: args.scope,
-    message: args.message,
-    history: args.history,
-    attachments: buildAttachmentsPayload(args.attachments),
-    debug: true,
+  return requestAssistantReply({
+    ...args,
+    includeDebug: true,
     monitorMode: true,
-  }, {
-    timeout: AGENT_CHAT_REQUEST_TIMEOUT_MS,
   });
+}
 
-  return data;
+function persistProjectChatMonitorLog(args: {
+  scope: AgentChatRequestScope;
+  message: string;
+  history: Array<{ role: ChatRole; text: string }>;
+  attachments: EntityAttachment[];
+  response: {
+    reply: string;
+    model?: string;
+    debug?: Record<string, unknown>;
+  };
+}) {
+  const projectId = String(args.scope.projectId || '').trim();
+  if (!projectId) return;
+
+  const debug = toProfile(args.response.debug);
+  appendProjectChatMonitorEntry(projectId, {
+    id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: getIsoNow(),
+    projectId,
+    scope: {
+      type: args.scope.type,
+      entityType: args.scope.entityType || '',
+      projectId,
+    },
+    request: {
+      message: args.message,
+      history: args.history.map((item) => ({
+        role: item.role,
+        text: item.text,
+      })),
+      attachments: buildAttachmentsPayload(args.attachments),
+    },
+    response: {
+      reply: args.response.reply,
+      model: typeof args.response.model === 'string' ? args.response.model : '',
+    },
+    debug: {
+      scope: toProfile(debug.scope),
+      input: toProfile(debug.input),
+      semanticRouter: toProfile(debug.semanticRouter),
+      prompts: toProfile(debug.prompts),
+      directContextChat: toProfile(debug.directContextChat),
+      response: toProfile(debug.response),
+    },
+  });
 }
 
 async function requestProjectContextBuildPreview(projectId: string) {
@@ -1986,7 +2033,17 @@ async function sendMessage() {
       message: value,
       history: historyPayload,
       attachments,
+      includeDebug: activeScope.type === 'project',
     });
+    if (activeScope.type === 'project' && aiResponse.debug) {
+      persistProjectChatMonitorLog({
+        scope: activeScope,
+        message: value,
+        history: historyPayload,
+        attachments,
+        response: aiResponse,
+      });
+    }
     if (aiResponse.reply) {
       pushMessage('assistant', aiResponse.reply, [], activeScopeKey);
     } else {
