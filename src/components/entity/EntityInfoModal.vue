@@ -1858,6 +1858,7 @@ async function onSendInput() {
   }
 
   pushChatMessage('user', message, attachments);
+  const submittedVoiceInput = draft.value.voiceInput;
   draft.value.pendingUploads = [];
   draft.value.documents = Array.from(
     new Map([...draft.value.documents, ...attachments].map((attachment) => [attachment.id, attachment])).values(),
@@ -1897,7 +1898,7 @@ async function onSendInput() {
   const requestPayload = {
     entityId: activeDraft.entityId,
     message,
-    voiceInput: activeDraft.voiceInput,
+    voiceInput: submittedVoiceInput,
     history: activeDraft.chatHistory
       .slice(-12)
       .map((item) => ({
