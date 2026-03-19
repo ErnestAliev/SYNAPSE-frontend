@@ -327,26 +327,6 @@ export const useEntitiesStore = defineStore('entities', {
       });
     },
 
-    projectNodeEntityIds(project: Entity | undefined) {
-      if (!project || project.type !== 'project') return [] as string[];
-
-      const rawCanvas = project.canvas_data;
-      if (!rawCanvas || typeof rawCanvas !== 'object' || Array.isArray(rawCanvas)) {
-        return [] as string[];
-      }
-
-      const canvasData = rawCanvas as ProjectCanvasData;
-      const nodes = Array.isArray(canvasData.nodes) ? canvasData.nodes : [];
-
-      return Array.from(
-        new Set(
-          nodes
-            .map((node) => (typeof node.entityId === 'string' ? node.entityId : ''))
-            .filter((entityId) => entityId && entityId !== project._id),
-        ),
-      );
-    },
-
     pruneRemovedEntitiesFromProjectCanvases(removedEntityIds: Set<string>) {
       if (!removedEntityIds.size) return;
 
@@ -863,14 +843,7 @@ export const useEntitiesStore = defineStore('entities', {
     },
 
     async deleteEntity(id: string) {
-      const target = this.items.find((item) => item._id === id);
       const removedEntityIds = new Set<string>([id]);
-
-      if (target?.type === 'project') {
-        for (const nodeEntityId of this.projectNodeEntityIds(target)) {
-          removedEntityIds.add(nodeEntityId);
-        }
-      }
 
       for (const removedEntityId of removedEntityIds) {
         this.clearBufferedPatchState(removedEntityId);
