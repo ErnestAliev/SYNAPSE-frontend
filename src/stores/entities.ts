@@ -15,6 +15,7 @@ const bufferedEntityPatchTimers = new Map<string, ReturnType<typeof setTimeout>>
 const bufferedEntityPatchInFlight = new Set<string>();
 const bufferedEntityPatchRetryCounts = new Map<string, number>();
 const bufferedEntityPatchBaseUpdatedAt = new Map<string, string>();
+const bufferedEntityPatchBaseCanvasVersion = new Map<string, string>();
 const recentlyDeletedEntityIds = new Map<string, number>();
 let realtimeEventSource: EventSource | null = null;
 let realtimeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -70,6 +71,8 @@ interface FetchEntitiesOptions {
 interface QueueEntityUpdateOptions {
   delay?: number;
   expectedUpdatedAt?: string;
+  expectedCanvasVersion?: string;
+  useUpdatedAtConflictCheck?: boolean;
 }
 
 interface SetPersonAsMeResponse {
@@ -159,12 +162,18 @@ function readEntityUpdatedAt(value: Entity | null | undefined) {
 function buildEntityUpdatePayload(
   payload: Partial<Entity>,
   expectedUpdatedAt?: string,
+  expectedCanvasVersion?: string,
 ): EntityUpdateRequestPayload {
   const nextPayload: EntityUpdateRequestPayload = { ...payload };
   const normalizedExpectedUpdatedAt =
     typeof expectedUpdatedAt === 'string' ? expectedUpdatedAt.trim() : '';
   if (normalizedExpectedUpdatedAt) {
     nextPayload.expectedUpdatedAt = normalizedExpectedUpdatedAt;
+  }
+  const normalizedExpectedCanvasVersion =
+    typeof expectedCanvasVersion === 'string' ? expectedCanvasVersion.trim() : '';
+  if (normalizedExpectedCanvasVersion) {
+    nextPayload.expectedCanvasVersion = normalizedExpectedCanvasVersion;
   }
   return nextPayload;
 }
@@ -357,6 +366,7 @@ export const useEntitiesStore = defineStore('entities', {
       bufferedEntityPatchInFlight.delete(normalizedId);
       bufferedEntityPatchRetryCounts.delete(normalizedId);
       bufferedEntityPatchBaseUpdatedAt.delete(normalizedId);
+      bufferedEntityPatchBaseCanvasVersion.delete(normalizedId);
     },
 
     setEntityAiPending(id: string, pending: boolean) {
@@ -830,13 +840,19 @@ export const useEntitiesStore = defineStore('entities', {
       if (!normalizedId) return;
 
       const delay = options?.delay ?? 500;
+      const useUpdatedAtConflictCheck = options?.useUpdatedAtConflictCheck ?? true;
       const explicitExpectedUpdatedAt =
         typeof options?.expectedUpdatedAt === 'string' ? options.expectedUpdatedAt.trim() : '';
-      if (!bufferedEntityPatchBaseUpdatedAt.has(normalizedId)) {
+      const explicitExpectedCanvasVersion =
+        typeof options?.expectedCanvasVersion === 'string' ? options.expectedCanvasVersion.trim() : '';
+      if (useUpdatedAtConflictCheck && !bufferedEntityPatchBaseUpdatedAt.has(normalizedId)) {
         const baseUpdatedAt = explicitExpectedUpdatedAt || readEntityUpdatedAt(this.byId(normalizedId));
         if (baseUpdatedAt) {
           bufferedEntityPatchBaseUpdatedAt.set(normalizedId, baseUpdatedAt);
         }
+      }
+      if (explicitExpectedCanvasVersion && !bufferedEntityPatchBaseCanvasVersion.has(normalizedId)) {
+        bufferedEntityPatchBaseCanvasVersion.set(normalizedId, explicitExpectedCanvasVersion);
       }
 
       this.applyLocalEntityPatch(normalizedId, payload);
@@ -877,15 +893,16 @@ export const useEntitiesStore = defineStore('entities', {
       bufferedEntityPatchInFlight.add(normalizedId);
 
       try {
-        const expectedUpdatedAt =
-          bufferedEntityPatchBaseUpdatedAt.get(normalizedId) || readEntityUpdatedAt(this.byId(normalizedId));
-        const requestPayload = buildEntityUpdatePayload(payload, expectedUpdatedAt);
+        const expectedUpdatedAt = bufferedEntityPatchBaseUpdatedAt.get(normalizedId) || '';
+        const expectedCanvasVersion = bufferedEntityPatchBaseCanvasVersion.get(normalizedId) || '';
+        const requestPayload = buildEntityUpdatePayload(payload, expectedUpdatedAt, expectedCanvasVersion);
         const { data } = await apiClient.put<Entity>(`/entities/${normalizedId}`, requestPayload, {
           timeout: ENTITY_UPDATE_TIMEOUT_MS,
         });
         this.items = this.items.map((item) => (item._id === normalizedId ? data : item));
         bufferedEntityPatchRetryCounts.delete(normalizedId);
         bufferedEntityPatchBaseUpdatedAt.delete(normalizedId);
+        bufferedEntityPatchBaseCanvasVersion.delete(normalizedId);
       } catch (error: unknown) {
         if (isEntityConflictError(error)) {
           const conflictEntity = readConflictEntity(error);

@@ -1432,6 +1432,7 @@ const nodeSearchResults = computed<CanvasNodeSearchItem[]>(() => {
 
 let loadVersion = 0;
 const lastAppliedProjectCanvasVersion = ref('');
+const lastAppliedProjectCanvasContentVersion = ref('');
 const lastAppliedProjectUpdatedAt = ref('');
 const pendingRemoteCanvasSnapshot = ref<{
   projectId: string;
@@ -1445,6 +1446,43 @@ interface CanvasCacheSnapshot {
   savedAt: number;
   projectVersion: string;
   canvas_data: ProjectCanvasData;
+}
+
+function buildProjectCanvasContentVersion(canvasData: ProjectCanvasData | undefined) {
+  const canvas = normalizeCanvasData(canvasData);
+  let fingerprint = 2166136261;
+  const hashChunk = (value: string) => {
+    for (let index = 0; index < value.length; index += 1) {
+      fingerprint ^= value.charCodeAt(index);
+      fingerprint = Math.imul(fingerprint, 16777619);
+    }
+  };
+
+  for (const node of canvas.nodes) {
+    hashChunk(
+      `${node.id}|${node.entityId}|${Math.round(node.x * 100)}|${Math.round(node.y * 100)}|${Math.round(
+        normalizeNodeScale(node.scale) * 1000,
+      )}|${Math.round(normalizeNodeMass(node.mass) * 1000)};`,
+    );
+  }
+  for (const edge of canvas.edges) {
+    hashChunk(
+      `${edge.id}|${edge.source}|${edge.target}|${edge.label || ''}|${edge.color || ''}|${
+        edge.arrowLeft ? 1 : 0
+      }|${edge.arrowRight ? 1 : 0};`,
+    );
+  }
+  for (const group of canvas.groups || []) {
+    hashChunk(`${group.id}|${group.name}|${group.color || ''}|${group.nodeIds.join(',')};`);
+  }
+
+  return [
+    (canvas.groups || []).length,
+    canvas.nodes.length,
+    canvas.edges.length,
+    canvas.background || DEFAULT_CANVAS_BACKGROUND,
+    String(fingerprint >>> 0),
+  ].join('|');
 }
 
 function resolveProjectCanvasVersion(project: Entity | null | undefined) {
@@ -4101,6 +4139,7 @@ function applyIncomingCanvasSnapshot(snapshot: {
   }
   writeCanvasCache(snapshot.projectId, normalized, snapshot.projectVersion);
   lastAppliedProjectCanvasVersion.value = snapshot.projectVersion;
+  lastAppliedProjectCanvasContentVersion.value = buildProjectCanvasContentVersion(normalized);
   lastAppliedProjectUpdatedAt.value = snapshot.projectUpdatedAt;
 }
 
@@ -4817,6 +4856,11 @@ function queueCanvasSync(options?: { immediate?: boolean; projectId?: string }) 
   const projectId = options?.projectId || routeProjectId.value;
   if (!projectId) return;
 
+  if (projectId === routeProjectId.value) {
+    clearPendingRemoteCanvasApplyTimer();
+    pendingRemoteCanvasSnapshot.value = null;
+  }
+
   const canvasData = buildCanvasDataSnapshot();
   writeCanvasCache(projectId, canvasData, lastAppliedProjectCanvasVersion.value);
 
@@ -4827,7 +4871,8 @@ function queueCanvasSync(options?: { immediate?: boolean; projectId?: string }) 
     },
     {
       delay: options?.immediate ? 0 : CANVAS_SYNC_DELAY,
-      expectedUpdatedAt: lastAppliedProjectUpdatedAt.value,
+      expectedCanvasVersion: lastAppliedProjectCanvasContentVersion.value,
+      useUpdatedAtConflictCheck: false,
     },
   );
 }
@@ -4875,6 +4920,7 @@ async function loadProjectCanvas(projectId: string) {
   clearPendingRemoteCanvasApplyTimer();
   pendingRemoteCanvasSnapshot.value = null;
   lastAppliedProjectCanvasVersion.value = '';
+  lastAppliedProjectCanvasContentVersion.value = '';
   lastAppliedProjectUpdatedAt.value = '';
   const currentVersion = ++loadVersion;
   isLoading.value = true;
@@ -4931,6 +4977,7 @@ async function loadProjectCanvas(projectId: string) {
         : DEFAULT_CANVAS_BACKGROUND;
     resetCanvasHistory(canvasData);
     lastAppliedProjectCanvasVersion.value = projectCanvasVersion;
+    lastAppliedProjectCanvasContentVersion.value = buildProjectCanvasContentVersion(canvasData);
     lastAppliedProjectUpdatedAt.value = typeof project.updatedAt === 'string' ? project.updatedAt : '';
 
     await nextTick();

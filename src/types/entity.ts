@@ -68,4 +68,5 @@ export interface Entity {
 export type EntityPayload = Partial<Omit<Entity, '_id'>> & Pick<Entity, 'type'>;
 export type EntityUpdateRequestPayload = Partial<Omit<Entity, '_id'>> & {
   expectedUpdatedAt?: string;
+  expectedCanvasVersion?: string;
 };
