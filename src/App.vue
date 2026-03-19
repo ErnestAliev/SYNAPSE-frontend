@@ -14,6 +14,7 @@ const router = useRouter();
 const settingsMenuRef = ref<HTMLElement | null>(null);
 const settingsOpen = ref(false);
 const whatsappImportMonitorTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+const workspaceResumeSyncTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const whatsappCompletionNotice = ref<{
   title: string;
   message: string;
@@ -70,6 +71,34 @@ function scheduleWhatsappImportMonitor(delayMs = 2200) {
   whatsappImportMonitorTimer.value = setTimeout(() => {
     void pollWhatsappImportState();
   }, delayMs);
+}
+
+function clearWorkspaceResumeSyncTimer() {
+  if (!workspaceResumeSyncTimer.value) return;
+  clearTimeout(workspaceResumeSyncTimer.value);
+  workspaceResumeSyncTimer.value = null;
+}
+
+function scheduleWorkspaceResumeSync(delayMs = 80) {
+  clearWorkspaceResumeSyncTimer();
+  if (!authStore.isAuthenticated || !entitiesStore.initialized) return;
+
+  workspaceResumeSyncTimer.value = setTimeout(() => {
+    workspaceResumeSyncTimer.value = null;
+    if (!authStore.isAuthenticated || !entitiesStore.initialized) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    entitiesStore.startRealtimeSync();
+    void entitiesStore.fetchEntities({ silent: true });
+  }, delayMs);
+}
+
+function onDocumentVisibilityChange() {
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+  scheduleWorkspaceResumeSync(40);
+}
+
+function onWindowResumeSync() {
+  scheduleWorkspaceResumeSync(40);
 }
 
 async function pollWhatsappImportState() {
@@ -155,8 +184,12 @@ onMounted(async () => {
     scheduleWhatsappImportMonitor(1200);
   }
   document.addEventListener('pointerdown', onPointerDown);
+  document.addEventListener('visibilitychange', onDocumentVisibilityChange);
   window.addEventListener('resize', updateViewportBottomOffset);
   window.addEventListener('orientationchange', updateViewportBottomOffset);
+  window.addEventListener('focus', onWindowResumeSync);
+  window.addEventListener('pageshow', onWindowResumeSync);
+  window.addEventListener('online', onWindowResumeSync);
   window.visualViewport?.addEventListener('resize', updateViewportBottomOffset);
   window.visualViewport?.addEventListener('scroll', updateViewportBottomOffset);
   updateViewportBottomOffset();
@@ -164,13 +197,18 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   entitiesStore.stopRealtimeSync();
+  clearWorkspaceResumeSyncTimer();
   if (whatsappImportMonitorTimer.value) {
     clearTimeout(whatsappImportMonitorTimer.value);
     whatsappImportMonitorTimer.value = null;
   }
   document.removeEventListener('pointerdown', onPointerDown);
+  document.removeEventListener('visibilitychange', onDocumentVisibilityChange);
   window.removeEventListener('resize', updateViewportBottomOffset);
   window.removeEventListener('orientationchange', updateViewportBottomOffset);
+  window.removeEventListener('focus', onWindowResumeSync);
+  window.removeEventListener('pageshow', onWindowResumeSync);
+  window.removeEventListener('online', onWindowResumeSync);
   window.visualViewport?.removeEventListener('resize', updateViewportBottomOffset);
   window.visualViewport?.removeEventListener('scroll', updateViewportBottomOffset);
   document.documentElement.style.setProperty('--synapse-vv-bottom-offset', '0px');
@@ -182,6 +220,7 @@ watch(
     if (isAuthenticated) {
       scheduleWhatsappImportMonitor(1200);
       entitiesStore.startRealtimeSync();
+      scheduleWorkspaceResumeSync(0);
       if (!entitiesStore.initialized) {
         await entitiesStore.bootstrap({ deferConnection: true });
         return;
@@ -192,6 +231,7 @@ watch(
     }
 
     if (wasAuthenticated) {
+      clearWorkspaceResumeSyncTimer();
       clearTrackedWhatsappSessionId();
       whatsappCompletionNotice.value = null;
       if (whatsappImportMonitorTimer.value) {

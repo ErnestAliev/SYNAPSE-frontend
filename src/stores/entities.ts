@@ -2,12 +2,19 @@ import { defineStore } from 'pinia';
 import axios from 'axios';
 import { apiClient } from '../services/api';
 import { AUTH_SESSION_STORAGE_KEY } from '../constants/auth';
-import type { Entity, EntityPayload, EntityType, ProjectCanvasData } from '../types/entity';
+import type {
+  Entity,
+  EntityPayload,
+  EntityType,
+  EntityUpdateRequestPayload,
+  ProjectCanvasData,
+} from '../types/entity';
 
 const bufferedEntityPatches = new Map<string, Partial<Entity>>();
 const bufferedEntityPatchTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const bufferedEntityPatchInFlight = new Set<string>();
 const bufferedEntityPatchRetryCounts = new Map<string, number>();
+const bufferedEntityPatchBaseUpdatedAt = new Map<string, string>();
 const recentlyDeletedEntityIds = new Map<string, number>();
 let realtimeEventSource: EventSource | null = null;
 let realtimeReconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -58,6 +65,11 @@ interface FetchEntitiesOptions {
   type?: EntityType;
   excludeType?: EntityType;
   merge?: boolean;
+}
+
+interface QueueEntityUpdateOptions {
+  delay?: number;
+  expectedUpdatedAt?: string;
 }
 
 interface SetPersonAsMeResponse {
@@ -138,6 +150,34 @@ function dedupeEntitiesById(items: Entity[]) {
   }
 
   return result;
+}
+
+function readEntityUpdatedAt(value: Entity | null | undefined) {
+  return typeof value?.updatedAt === 'string' ? value.updatedAt.trim() : '';
+}
+
+function buildEntityUpdatePayload(
+  payload: Partial<Entity>,
+  expectedUpdatedAt?: string,
+): EntityUpdateRequestPayload {
+  const nextPayload: EntityUpdateRequestPayload = { ...payload };
+  const normalizedExpectedUpdatedAt =
+    typeof expectedUpdatedAt === 'string' ? expectedUpdatedAt.trim() : '';
+  if (normalizedExpectedUpdatedAt) {
+    nextPayload.expectedUpdatedAt = normalizedExpectedUpdatedAt;
+  }
+  return nextPayload;
+}
+
+function isEntityConflictError(error: unknown) {
+  return axios.isAxiosError(error) && error.response?.status === 409;
+}
+
+function readConflictEntity(error: unknown): Entity | null {
+  if (!axios.isAxiosError(error)) return null;
+
+  const candidate = (error.response?.data as { entity?: Entity } | undefined)?.entity;
+  return normalizeEntityForStore(candidate) || null;
 }
 
 function markRecentlyDeleted(ids: Iterable<string>, ttlMs = RECENT_DELETE_TTL_MS) {
@@ -288,15 +328,19 @@ export const useEntitiesStore = defineStore('entities', {
     },
 
     clearBufferedPatchState(id: string) {
-      const timer = bufferedEntityPatchTimers.get(id);
+      const normalizedId = normalizeEntityId(id);
+      if (!normalizedId) return;
+
+      const timer = bufferedEntityPatchTimers.get(normalizedId);
       if (timer) {
         clearTimeout(timer);
-        bufferedEntityPatchTimers.delete(id);
+        bufferedEntityPatchTimers.delete(normalizedId);
       }
 
-      bufferedEntityPatches.delete(id);
-      bufferedEntityPatchInFlight.delete(id);
-      bufferedEntityPatchRetryCounts.delete(id);
+      bufferedEntityPatches.delete(normalizedId);
+      bufferedEntityPatchInFlight.delete(normalizedId);
+      bufferedEntityPatchRetryCounts.delete(normalizedId);
+      bufferedEntityPatchBaseUpdatedAt.delete(normalizedId);
     },
 
     setEntityAiPending(id: string, pending: boolean) {
@@ -561,6 +605,9 @@ export const useEntitiesStore = defineStore('entities', {
 
       source.onopen = () => {
         realtimeReconnectAttempt = 0;
+        if (this.initialized) {
+          void this.fetchEntities({ silent: true });
+        }
       };
 
       source.addEventListener('entity.created', (event: MessageEvent<string>) => {
@@ -619,15 +666,37 @@ export const useEntitiesStore = defineStore('entities', {
           const nextFetchedItems = dedupeEntitiesById(data).filter(
             (item) => !recentlyDeletedEntityIds.has(item._id),
           );
+          const pendingEntityIds = new Set<string>([
+            ...bufferedEntityPatches.keys(),
+            ...bufferedEntityPatchTimers.keys(),
+            ...bufferedEntityPatchInFlight.values(),
+          ]);
 
           if (merge) {
             const merged = new Map(this.items.map((item) => [item._id, item] as const));
             for (const item of nextFetchedItems) {
+              if (pendingEntityIds.has(item._id)) {
+                continue;
+              }
               merged.set(item._id, item);
             }
             this.items = Array.from(merged.values());
           } else {
-            this.items = nextFetchedItems;
+            const currentItemsById = new Map(this.items.map((item) => [item._id, item] as const));
+            const fetchedIds = new Set(nextFetchedItems.map((item) => item._id));
+            const nextItems = nextFetchedItems.map((item) => {
+              if (!pendingEntityIds.has(item._id)) {
+                return item;
+              }
+              return currentItemsById.get(item._id) || item;
+            });
+
+            for (const [id, item] of currentItemsById.entries()) {
+              if (!pendingEntityIds.has(id) || fetchedIds.has(id)) continue;
+              nextItems.push(item);
+            }
+
+            this.items = dedupeEntitiesById(nextItems);
           }
 
           if (requestedType) {
@@ -738,65 +807,95 @@ export const useEntitiesStore = defineStore('entities', {
       return data;
     },
 
-    queueEntityUpdate(id: string, payload: Partial<Entity>, options?: { delay?: number }) {
+    queueEntityUpdate(id: string, payload: Partial<Entity>, options?: QueueEntityUpdateOptions) {
+      const normalizedId = normalizeEntityId(id);
+      if (!normalizedId) return;
+
       const delay = options?.delay ?? 500;
+      const explicitExpectedUpdatedAt =
+        typeof options?.expectedUpdatedAt === 'string' ? options.expectedUpdatedAt.trim() : '';
+      if (!bufferedEntityPatchBaseUpdatedAt.has(normalizedId)) {
+        const baseUpdatedAt = explicitExpectedUpdatedAt || readEntityUpdatedAt(this.byId(normalizedId));
+        if (baseUpdatedAt) {
+          bufferedEntityPatchBaseUpdatedAt.set(normalizedId, baseUpdatedAt);
+        }
+      }
 
-      this.applyLocalEntityPatch(id, payload);
+      this.applyLocalEntityPatch(normalizedId, payload);
 
-      const existing = bufferedEntityPatches.get(id) || {};
-      bufferedEntityPatches.set(id, mergeEntityPatch(existing, payload));
+      const existing = bufferedEntityPatches.get(normalizedId) || {};
+      bufferedEntityPatches.set(normalizedId, mergeEntityPatch(existing, payload));
 
-      const currentTimer = bufferedEntityPatchTimers.get(id);
+      const currentTimer = bufferedEntityPatchTimers.get(normalizedId);
       if (currentTimer) {
         clearTimeout(currentTimer);
       }
 
       const nextTimer = setTimeout(() => {
-        void this.flushQueuedEntityUpdate(id);
+        void this.flushQueuedEntityUpdate(normalizedId);
       }, delay);
 
-      bufferedEntityPatchTimers.set(id, nextTimer);
+      bufferedEntityPatchTimers.set(normalizedId, nextTimer);
     },
 
     async flushQueuedEntityUpdate(id: string) {
-      const timer = bufferedEntityPatchTimers.get(id);
+      const normalizedId = normalizeEntityId(id);
+      if (!normalizedId) return;
+
+      const timer = bufferedEntityPatchTimers.get(normalizedId);
       if (timer) {
         clearTimeout(timer);
-        bufferedEntityPatchTimers.delete(id);
+        bufferedEntityPatchTimers.delete(normalizedId);
       }
 
-      if (bufferedEntityPatchInFlight.has(id)) {
+      if (bufferedEntityPatchInFlight.has(normalizedId)) {
         return;
       }
 
-      const payload = bufferedEntityPatches.get(id);
+      const payload = bufferedEntityPatches.get(normalizedId);
       if (!payload) return;
 
-      bufferedEntityPatches.delete(id);
-      bufferedEntityPatchInFlight.add(id);
+      bufferedEntityPatches.delete(normalizedId);
+      bufferedEntityPatchInFlight.add(normalizedId);
 
       try {
-        const { data } = await apiClient.put<Entity>(`/entities/${id}`, payload, {
+        const expectedUpdatedAt =
+          bufferedEntityPatchBaseUpdatedAt.get(normalizedId) || readEntityUpdatedAt(this.byId(normalizedId));
+        const requestPayload = buildEntityUpdatePayload(payload, expectedUpdatedAt);
+        const { data } = await apiClient.put<Entity>(`/entities/${normalizedId}`, requestPayload, {
           timeout: ENTITY_UPDATE_TIMEOUT_MS,
         });
-        this.items = this.items.map((item) => (item._id === id ? data : item));
-        bufferedEntityPatchRetryCounts.delete(id);
+        this.items = this.items.map((item) => (item._id === normalizedId ? data : item));
+        bufferedEntityPatchRetryCounts.delete(normalizedId);
+        bufferedEntityPatchBaseUpdatedAt.delete(normalizedId);
       } catch (error: unknown) {
-        this.error = this.formatApiError(error);
-        const current = bufferedEntityPatches.get(id) || {};
-        bufferedEntityPatches.set(id, mergeEntityPatch(payload, current));
-        const nextRetryCount = (bufferedEntityPatchRetryCounts.get(id) || 0) + 1;
-        bufferedEntityPatchRetryCounts.set(id, nextRetryCount);
-      } finally {
-        bufferedEntityPatchInFlight.delete(id);
+        if (isEntityConflictError(error)) {
+          const conflictEntity = readConflictEntity(error);
+          this.clearBufferedPatchState(normalizedId);
+          if (conflictEntity) {
+            this.upsertEntityFromRealtime(conflictEntity);
+          } else {
+            void this.fetchEntities({ silent: true });
+          }
+          this.error = this.formatApiError(error);
+          return;
+        }
 
-        if (bufferedEntityPatches.has(id)) {
-          const retryCount = bufferedEntityPatchRetryCounts.get(id) || 0;
+        this.error = this.formatApiError(error);
+        const current = bufferedEntityPatches.get(normalizedId) || {};
+        bufferedEntityPatches.set(normalizedId, mergeEntityPatch(payload, current));
+        const nextRetryCount = (bufferedEntityPatchRetryCounts.get(normalizedId) || 0) + 1;
+        bufferedEntityPatchRetryCounts.set(normalizedId, nextRetryCount);
+      } finally {
+        bufferedEntityPatchInFlight.delete(normalizedId);
+
+        if (bufferedEntityPatches.has(normalizedId)) {
+          const retryCount = bufferedEntityPatchRetryCounts.get(normalizedId) || 0;
           const retryDelay = Math.min(5000, 300 * Math.max(1, retryCount));
           const retryTimer = setTimeout(() => {
-            void this.flushQueuedEntityUpdate(id);
+            void this.flushQueuedEntityUpdate(normalizedId);
           }, retryDelay);
-          bufferedEntityPatchTimers.set(id, retryTimer);
+          bufferedEntityPatchTimers.set(normalizedId, retryTimer);
         }
       }
     },
@@ -810,11 +909,32 @@ export const useEntitiesStore = defineStore('entities', {
     },
 
     async updateEntity(id: string, payload: Partial<Entity>) {
-      this.clearBufferedPatchState(id);
-      const { data } = await apiClient.put<Entity>(`/entities/${id}`, payload);
-      this.items = this.items.map((item) => (item._id === id ? data : item));
+      const normalizedId = normalizeEntityId(id);
+      if (!normalizedId) {
+        throw new Error('Entity id is required');
+      }
 
-      return data;
+      this.clearBufferedPatchState(normalizedId);
+      const expectedUpdatedAt = readEntityUpdatedAt(this.byId(normalizedId));
+
+      try {
+        const requestPayload = buildEntityUpdatePayload(payload, expectedUpdatedAt);
+        const { data } = await apiClient.put<Entity>(`/entities/${normalizedId}`, requestPayload);
+        this.items = this.items.map((item) => (item._id === normalizedId ? data : item));
+        return data;
+      } catch (error: unknown) {
+        if (isEntityConflictError(error)) {
+          const conflictEntity = readConflictEntity(error);
+          if (conflictEntity) {
+            this.upsertEntityFromRealtime(conflictEntity);
+          } else {
+            void this.fetchEntities({ silent: true });
+          }
+        }
+
+        this.error = this.formatApiError(error);
+        throw error;
+      }
     },
 
     async setPersonAsMe(id: string) {
