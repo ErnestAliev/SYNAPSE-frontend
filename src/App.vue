@@ -187,7 +187,6 @@ onMounted(async () => {
   document.addEventListener('visibilitychange', onDocumentVisibilityChange);
   window.addEventListener('resize', updateViewportBottomOffset);
   window.addEventListener('orientationchange', updateViewportBottomOffset);
-  window.addEventListener('focus', onWindowResumeSync);
   window.addEventListener('pageshow', onWindowResumeSync);
   window.addEventListener('online', onWindowResumeSync);
   window.visualViewport?.addEventListener('resize', updateViewportBottomOffset);
@@ -206,7 +205,6 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onDocumentVisibilityChange);
   window.removeEventListener('resize', updateViewportBottomOffset);
   window.removeEventListener('orientationchange', updateViewportBottomOffset);
-  window.removeEventListener('focus', onWindowResumeSync);
   window.removeEventListener('pageshow', onWindowResumeSync);
   window.removeEventListener('online', onWindowResumeSync);
   window.visualViewport?.removeEventListener('resize', updateViewportBottomOffset);

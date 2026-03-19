@@ -180,6 +180,22 @@ function readConflictEntity(error: unknown): Entity | null {
   return normalizeEntityForStore(candidate) || null;
 }
 
+function mergeFetchedEntityWithCurrent(incoming: Entity, current: Entity) {
+  const relation = compareEntityVersion(incoming, current);
+  if (relation === 'older') {
+    return current;
+  }
+
+  if (relation === 'equal_or_unknown') {
+    return {
+      ...current,
+      ...incoming,
+    };
+  }
+
+  return incoming;
+}
+
 function markRecentlyDeleted(ids: Iterable<string>, ttlMs = RECENT_DELETE_TTL_MS) {
   const expiresAt = Date.now() + ttlMs;
   for (const id of ids) {
@@ -678,7 +694,8 @@ export const useEntitiesStore = defineStore('entities', {
               if (pendingEntityIds.has(item._id)) {
                 continue;
               }
-              merged.set(item._id, item);
+              const current = merged.get(item._id);
+              merged.set(item._id, current ? mergeFetchedEntityWithCurrent(item, current) : item);
             }
             this.items = Array.from(merged.values());
           } else {
@@ -686,7 +703,8 @@ export const useEntitiesStore = defineStore('entities', {
             const fetchedIds = new Set(nextFetchedItems.map((item) => item._id));
             const nextItems = nextFetchedItems.map((item) => {
               if (!pendingEntityIds.has(item._id)) {
-                return item;
+                const current = currentItemsById.get(item._id);
+                return current ? mergeFetchedEntityWithCurrent(item, current) : item;
               }
               return currentItemsById.get(item._id) || item;
             });
