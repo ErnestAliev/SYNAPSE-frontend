@@ -4774,7 +4774,8 @@ function maybeShowNodeMenuHint(projectId: string) {
   };
 }
 
-function buildCanvasDataSnapshot(): ProjectCanvasData {
+function buildCanvasDataSnapshot(options?: { includeViewport?: boolean }): ProjectCanvasData {
+  const includeViewport = options?.includeViewport !== false;
   const viewport = viewportRef.value?.getBoundingClientRect();
 
   return {
@@ -4801,13 +4802,17 @@ function buildCanvasDataSnapshot(): ProjectCanvasData {
       nodeIds: [...group.nodeIds],
       color: group.color,
     })),
-    viewport: {
-      x: camera.value.x,
-      y: camera.value.y,
-      zoom: clampZoom(camera.value.zoom),
-      width: Math.max(1, viewport?.width || 1),
-      height: Math.max(1, viewport?.height || 1),
-    },
+    ...(includeViewport
+      ? {
+          viewport: {
+            x: camera.value.x,
+            y: camera.value.y,
+            zoom: clampZoom(camera.value.zoom),
+            width: Math.max(1, viewport?.width || 1),
+            height: Math.max(1, viewport?.height || 1),
+          },
+        }
+      : {}),
     background: canvasBackgroundId.value,
   };
 }
@@ -4861,13 +4866,14 @@ function queueCanvasSync(options?: { immediate?: boolean; projectId?: string }) 
     pendingRemoteCanvasSnapshot.value = null;
   }
 
-  const canvasData = buildCanvasDataSnapshot();
-  writeCanvasCache(projectId, canvasData, lastAppliedProjectCanvasVersion.value);
+  const localCanvasData = buildCanvasDataSnapshot({ includeViewport: true });
+  const serverCanvasData = buildCanvasDataSnapshot({ includeViewport: false });
+  writeCanvasCache(projectId, localCanvasData, lastAppliedProjectCanvasVersion.value);
 
   entitiesStore.queueEntityUpdate(
     projectId,
     {
-      canvas_data: canvasData,
+      canvas_data: serverCanvasData,
     },
     {
       delay: options?.immediate ? 0 : CANVAS_SYNC_DELAY,
@@ -4884,7 +4890,10 @@ function scheduleViewportSync() {
   clearViewportSyncTimer();
   viewportSyncTimer.value = setTimeout(() => {
     viewportSyncTimer.value = null;
-    queueCanvasSync();
+    const projectId = routeProjectId.value;
+    if (!projectId) return;
+    const localCanvasData = buildCanvasDataSnapshot({ includeViewport: true });
+    writeCanvasCache(projectId, localCanvasData, lastAppliedProjectCanvasVersion.value);
   }, VIEWPORT_SYNC_DELAY);
 }
 
@@ -4957,6 +4966,7 @@ async function loadProjectCanvas(projectId: string) {
 
     const serverCanvasData = normalizeCanvasData(project.canvas_data);
     const cached = readCanvasCache(projectId);
+    const cachedViewport = cached?.canvas_data?.viewport;
     const shouldUseCache = Boolean(
       cached &&
         cached.projectVersion &&
@@ -4964,7 +4974,12 @@ async function loadProjectCanvas(projectId: string) {
         cached.projectVersion === projectCanvasVersion
     );
 
-    const canvasData = shouldUseCache ? cached!.canvas_data : serverCanvasData;
+    const canvasData = shouldUseCache
+      ? cached!.canvas_data
+      : normalizeCanvasData({
+          ...serverCanvasData,
+          ...(cachedViewport ? { viewport: cachedViewport } : {}),
+        });
     if (!shouldUseCache) {
       writeCanvasCache(projectId, canvasData, projectCanvasVersion);
     }
