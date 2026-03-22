@@ -3784,10 +3784,11 @@ onBeforeUnmount(() => {
   align-items: center;
   background: rgba(15, 23, 42, 0.34);
   padding: 24px;
+  padding-right: calc(24px + var(--synapse-web-search-reserved-width, 0px));
 }
 
 .entity-info-modal {
-  width: min(560px, 96vw);
+  width: min(560px, max(320px, calc(96vw - var(--synapse-web-search-reserved-width, 0px))));
   height: min(90vh, 980px);
   max-height: 94vh;
   position: relative;

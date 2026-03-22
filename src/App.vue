@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import AppHeader from './components/layout/AppHeader.vue';
 import AgentChatDock from './components/ui/AgentChatDock.vue';
+import WebSearchDock from './components/ui/WebSearchDock.vue';
 import { useEntitiesStore } from './stores/entities';
 import { useAuthStore } from './stores/auth';
 import { apiClient } from './services/api';
@@ -296,6 +297,7 @@ watch(
     </div>
 
     <AgentChatDock v-if="showWorkspaceExtras" />
+    <WebSearchDock v-if="showWorkspaceExtras" />
 
     <div v-if="showWorkspaceExtras" ref="settingsMenuRef" class="settings-wrap">
       <button class="settings-btn" aria-label="Настройки" @click="toggleSettingsMenu">
