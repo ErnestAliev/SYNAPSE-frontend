@@ -93,6 +93,8 @@ a {
   color: #475569;
   line-height: 1.45;
   margin: 0 0 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .entity-card-tooltip-photo-mode {

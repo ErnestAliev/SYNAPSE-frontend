@@ -75,7 +75,7 @@ const TENSION_NEIGHBOR_MAX_OFFSET = 260;
 const TENSION_RETURN_EASE = 0.82;
 const TENSION_RETURN_STOP_EPSILON = 0.5;
 const DEFAULT_NODE_MASS = 5;
-const CANVAS_TOOLTIP_CLOSE_DELAY_MS = 360;
+const CANVAS_TOOLTIP_CLOSE_DELAY_MS = 900;
 const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   project: 'Проект',
   connection: 'Подключение',
@@ -6767,7 +6767,7 @@ function onCanvasTooltipPointerEnter() {
 }
 
 function onCanvasTooltipPointerLeave() {
-  closeCanvasTooltip();
+  scheduleCanvasTooltipClose();
 }
 
 function onCanvasTooltipWheel(event: WheelEvent) {
