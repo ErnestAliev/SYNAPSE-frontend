@@ -6576,9 +6576,9 @@ onBeforeUnmount(() => {
 });
 
 // ─── Play mode ────────────────────────────────────────────────────────────────
-type CanvasViewMode = 'stop' | 'tooltip' | 'tooltip-tension' | 'tension';
+type CanvasViewMode = 'stop' | 'tooltip' | 'tooltip-photo' | 'tooltip-tension' | 'tension';
 
-const CANVAS_VIEW_MODE_SEQUENCE: CanvasViewMode[] = ['stop', 'tooltip', 'tooltip-tension', 'tension'];
+const CANVAS_VIEW_MODE_SEQUENCE: CanvasViewMode[] = ['stop', 'tooltip', 'tooltip-photo', 'tooltip-tension', 'tension'];
 const CANVAS_VIEW_MODE_META: Record<CanvasViewMode, { label: string; hint: string }> = {
   stop: {
     label: 'Стоп',
@@ -6586,7 +6586,11 @@ const CANVAS_VIEW_MODE_META: Record<CanvasViewMode, { label: string; hint: strin
   },
   tooltip: {
     label: 'Просмотр тултипов',
-    hint: 'Просмотр тултипов. Следующий режим: тултипы и резинки.',
+    hint: 'Просмотр тултипов. Следующий режим: тултип + фото.',
+  },
+  'tooltip-photo': {
+    label: 'Тултип + фото',
+    hint: 'Тултип + фото. Следующий режим: тултипы и резинки.',
   },
   'tooltip-tension': {
     label: 'Тултипы и резинки',
@@ -6602,8 +6606,13 @@ const canvasViewMode = ref<CanvasViewMode>('stop');
 const canvasPlayHintVisible = ref(false);
 const isPlayMode = computed(() => canvasViewMode.value !== 'stop');
 const isTooltipPlayMode = computed(() => {
-  return canvasViewMode.value === 'tooltip' || canvasViewMode.value === 'tooltip-tension';
+  return (
+    canvasViewMode.value === 'tooltip' ||
+    canvasViewMode.value === 'tooltip-photo' ||
+    canvasViewMode.value === 'tooltip-tension'
+  );
 });
+const isPhotoTooltipPlayMode = computed(() => canvasViewMode.value === 'tooltip-photo');
 const isTensionPlayMode = computed(() => {
   return canvasViewMode.value === 'tooltip-tension' || canvasViewMode.value === 'tension';
 });
@@ -6691,6 +6700,30 @@ function getCanvasTooltipDescription(entity: Entity): string {
   return desc.length > 240 ? `${desc.slice(0, 240)}…` : desc;
 }
 
+function imageFromProfile(profile: Record<string, unknown>) {
+  const raw = profile.image;
+  return typeof raw === 'string' ? raw.trim() : '';
+}
+
+function getCanvasTooltipMedia(entity: Entity): { src: string; kind: 'photo' | 'logo' } | null {
+  const profile = toProfile(entity.profile);
+  const image = imageFromProfile(profile);
+  if (image) {
+    return {
+      src: image,
+      kind: 'photo',
+    };
+  }
+
+  const logoImage = logoImageFromProfile(profile).trim();
+  if (!logoImage) return null;
+
+  return {
+    src: logoImage,
+    kind: 'logo',
+  };
+}
+
 function getCanvasTooltipFields(entity: Entity): Array<{ label: string; values: string[] }> {
   const meta = entity.ai_metadata as Record<string, unknown> | null | undefined;
   if (!meta) return [];
@@ -6742,6 +6775,21 @@ const canvasTooltipMass = computed(() => {
   const node = getNodeById(nodeId);
   return normalizeNodeMass(node?.mass);
 });
+const canvasTooltipDescription = computed(() => {
+  const entity = canvasTooltip.value?.entity;
+  if (!entity) return '';
+  return getCanvasTooltipDescription(entity);
+});
+const canvasTooltipFields = computed(() => {
+  const entity = canvasTooltip.value?.entity;
+  if (!entity) return [] as Array<{ label: string; values: string[] }>;
+  return getCanvasTooltipFields(entity);
+});
+const canvasTooltipMedia = computed(() => {
+  const entity = canvasTooltip.value?.entity;
+  if (!entity) return null;
+  return getCanvasTooltipMedia(entity);
+});
 
 function onCanvasTooltipMassInput(event: Event) {
   clearCanvasTooltipCloseTimer();
@@ -6779,10 +6827,17 @@ const canvasTooltipStyle = computed<Partial<Record<string, string>>>(() => {
   const bottomReserve = isTouchDevice ? vvOffset + 120 : vvOffset + GAP;
   const effectiveVH = vh - bottomReserve;
 
-  // On touch devices the tooltip is wider (288px per CSS), on desktop 264px.
-  const W = isTouchDevice ? 288 : 264;
-  // Match CSS max-height: 68vh (desktop), 50vh (touch).
-  const maxH = Math.round(vh * (isTouchDevice ? 0.5 : 0.68));
+  const baseWidth = isPhotoTooltipPlayMode.value
+    ? (isTouchDevice ? 304 : 336)
+    : (isTouchDevice ? 288 : 264);
+  const W = Math.min(baseWidth, Math.max(220, vw - GAP * 2));
+  const maxH = Math.round(
+    vh * (
+      isTouchDevice
+        ? (isPhotoTooltipPlayMode.value ? 0.58 : 0.5)
+        : (isPhotoTooltipPlayMode.value ? 0.74 : 0.68)
+    ),
+  );
 
   let left = rect.right + GAP;
   if (left + W > vw - GAP) {
@@ -7604,6 +7659,11 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
         <path d="M10.5 9.2h7.4a1.4 1.4 0 0 1 1.4 1.4v4.2a1.4 1.4 0 0 1-1.4 1.4h-4.2l-2.3 2v-2h-.9a1.4 1.4 0 0 1-1.4-1.4v-4.2a1.4 1.4 0 0 1 1.4-1.4Z" />
         <path d="M11.6 12h4.8" />
       </svg>
+      <svg v-else-if="canvasViewMode === 'tooltip-photo'" class="canvas-play-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="4.5" y="5.5" width="15" height="13" rx="2.2" />
+        <circle cx="9" cy="10" r="1.4" />
+        <path d="m6.6 16 3.2-3.1 2.6 2.2 4.2-4.3 2.4 3.6" />
+      </svg>
       <svg v-else-if="canvasViewMode === 'tooltip-tension'" class="canvas-play-icon" viewBox="0 0 24 24" aria-hidden="true">
         <circle cx="6.5" cy="8" r="1.8" />
         <path d="M10 5.4h7.2a1.4 1.4 0 0 1 1.4 1.4v3.9a1.4 1.4 0 0 1-1.4 1.4h-3.9l-2.1 1.8v-1.8H10a1.4 1.4 0 0 1-1.4-1.4V6.8A1.4 1.4 0 0 1 10 5.4Z" />
@@ -7637,44 +7697,71 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       <div
         v-if="canvasTooltip && isTooltipPlayMode"
         class="entity-card-tooltip"
+        :class="{ 'entity-card-tooltip-photo-mode': isPhotoTooltipPlayMode }"
         :style="canvasTooltipStyle"
         @pointerenter="onCanvasTooltipPointerEnter"
         @pointerleave="onCanvasTooltipPointerLeave"
         @pointerdown.stop
         @click.stop
       >
-        <div class="entity-card-tooltip-name">{{ canvasTooltip.entity.name || 'Без названия' }}</div>
-        <p v-if="getCanvasTooltipDescription(canvasTooltip.entity)" class="entity-card-tooltip-desc">
-          {{ getCanvasTooltipDescription(canvasTooltip.entity) }}
-        </p>
-        <div class="entity-card-tooltip-mass">
-          <div class="entity-card-tooltip-mass-head">
-            <span class="entity-card-tooltip-field-label">Mass</span>
-            <span class="entity-card-tooltip-mass-value">{{ canvasTooltipMass }}</span>
-          </div>
-          <input
-            class="entity-card-tooltip-mass-slider"
-            type="range"
-            min="0"
-            max="10"
-            step="1"
-            :value="canvasTooltipMass"
-            @input="onCanvasTooltipMassInput"
-          />
-        </div>
-        <template v-if="getCanvasTooltipFields(canvasTooltip.entity).length">
-          <div class="entity-card-tooltip-fields">
-            <div
-              v-for="group in getCanvasTooltipFields(canvasTooltip.entity)"
-              :key="group.label"
-              class="entity-card-tooltip-field-group"
-            >
-              <span class="entity-card-tooltip-field-label">{{ group.label }}</span>
-              <div class="entity-card-tooltip-tags">
-                <span v-for="val in group.values" :key="val" class="entity-card-tooltip-tag">{{ val }}</span>
-              </div>
+        <template v-if="isPhotoTooltipPlayMode">
+          <div class="entity-card-tooltip-photo-media">
+            <img
+              v-if="canvasTooltipMedia"
+              class="entity-card-tooltip-photo-image"
+              :class="{ 'is-logo': canvasTooltipMedia.kind === 'logo' }"
+              :src="canvasTooltipMedia.src"
+              alt=""
+            />
+            <div v-else class="entity-card-tooltip-photo-placeholder">
+              <AppIcon class="entity-card-tooltip-photo-placeholder-icon" :name="canvasTooltip.entity.type" />
+              <span class="entity-card-tooltip-photo-placeholder-text">Фото не добавлено</span>
             </div>
           </div>
+          <div class="entity-card-tooltip-photo-copy">
+            <div class="entity-card-tooltip-name">{{ canvasTooltip.entity.name || 'Без названия' }}</div>
+            <p
+              class="entity-card-tooltip-desc entity-card-tooltip-photo-desc"
+              :class="{ 'is-empty': !canvasTooltipDescription }"
+            >
+              {{ canvasTooltipDescription || 'Описание пока не добавлено.' }}
+            </p>
+          </div>
+        </template>
+        <template v-else>
+          <div class="entity-card-tooltip-name">{{ canvasTooltip.entity.name || 'Без названия' }}</div>
+          <p v-if="canvasTooltipDescription" class="entity-card-tooltip-desc">
+            {{ canvasTooltipDescription }}
+          </p>
+          <div class="entity-card-tooltip-mass">
+            <div class="entity-card-tooltip-mass-head">
+              <span class="entity-card-tooltip-field-label">Mass</span>
+              <span class="entity-card-tooltip-mass-value">{{ canvasTooltipMass }}</span>
+            </div>
+            <input
+              class="entity-card-tooltip-mass-slider"
+              type="range"
+              min="0"
+              max="10"
+              step="1"
+              :value="canvasTooltipMass"
+              @input="onCanvasTooltipMassInput"
+            />
+          </div>
+          <template v-if="canvasTooltipFields.length">
+            <div class="entity-card-tooltip-fields">
+              <div
+                v-for="group in canvasTooltipFields"
+                :key="group.label"
+                class="entity-card-tooltip-field-group"
+              >
+                <span class="entity-card-tooltip-field-label">{{ group.label }}</span>
+                <div class="entity-card-tooltip-tags">
+                  <span v-for="val in group.values" :key="val" class="entity-card-tooltip-tag">{{ val }}</span>
+                </div>
+              </div>
+            </div>
+          </template>
         </template>
       </div>
     </Teleport>
