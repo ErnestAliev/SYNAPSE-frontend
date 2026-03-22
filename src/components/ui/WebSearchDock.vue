@@ -261,6 +261,9 @@ const pendingStateLoads = new Map<string, Promise<void>>();
 const searchFieldValueDrafts = ref<Record<string, string>>({});
 const editableSearchFieldValues = ref<Record<string, string[]>>({});
 const editingSearchFieldValue = ref<{ fieldKey: string; originalValue: string } | null>(null);
+const isFieldsSectionExpanded = ref(true);
+const isImagesSectionExpanded = ref(true);
+const isSummarySectionExpanded = ref(true);
 
 function toProfile(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -449,6 +452,28 @@ function normalizeSearchFieldSuggestion(rawValue: unknown, entityType: EntityTyp
     updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt.trim() : '',
     model: typeof row.model === 'string' ? row.model.trim() : '',
   };
+}
+
+function extractSearchPhoneCandidates(rawText: string) {
+  const text = rawText.trim();
+  if (!text) return [];
+
+  const matches = [];
+  const phonePattern = /(?:\+\d[\d\s().-]{7,}\d|\b\d[\d\s().-]{8,}\d\b)/g;
+  for (const match of text.matchAll(phonePattern)) {
+    matches.push(match[0].replace(/\s+/g, ' ').trim());
+  }
+  return matches;
+}
+
+function getSearchFieldFallbackValues(fieldKey: string, state: WebSearchStateEntry) {
+  if (fieldKey === 'links') {
+    return state.citations.map((citation) => citation.url).filter(Boolean);
+  }
+  if (fieldKey === 'phones') {
+    return extractSearchPhoneCandidates(state.summary);
+  }
+  return [];
 }
 
 function normalizeSearchLinkForOpen(value: string) {
@@ -917,6 +942,16 @@ const searchFieldStateVersion = computed(
 const hasEditableSearchFields = computed(() =>
   activeSearchFields.value.some((field) => (editableSearchFieldValues.value[field.key] || []).length > 0),
 );
+const editableSearchFieldValueCount = computed(() =>
+  activeSearchFields.value.reduce(
+    (total, field) => total + (editableSearchFieldValues.value[field.key] || []).length,
+    0,
+  ),
+);
+const summarySectionCount = computed(() => {
+  if (!syncedSearchState.value.summary) return 0;
+  return Math.max(1, syncedSearchState.value.citations.length || syncedSearchState.value.sourceCount || 1);
+});
 
 function areStringListsEqual(left: string[], right: string[]) {
   if (left.length !== right.length) return false;
@@ -928,7 +963,10 @@ function syncEditableSearchFieldsFromState() {
   for (const field of activeSearchFields.value) {
     baseFields[field.key] = normalizeSearchFieldValues(
       field.key,
-      syncedSearchState.value.fieldSuggestion.fields[field.key] || [],
+      [
+        ...(syncedSearchState.value.fieldSuggestion.fields[field.key] || []),
+        ...getSearchFieldFallbackValues(field.key, syncedSearchState.value),
+      ],
     ).slice(0, 24);
   }
 
@@ -1512,156 +1550,190 @@ onBeforeUnmount(() => {
       <p v-else-if="copyNotice" class="web-search-copy-notice">{{ copyNotice }}</p>
 
       <section class="web-search-fields-wrap">
-        <div class="web-search-section-head">
-          <h3>Поля из поиска</h3>
-          <button
-            type="button"
-            class="web-search-apply-fields-btn"
-            :disabled="!hasEditableSearchFields || !activeSearchEntity"
-            @click="void applySearchFieldsToEntity()"
-          >
-            Заполнить поля сущности
-          </button>
-        </div>
+        <button
+          type="button"
+          class="web-search-section-toggle"
+          :class="{ expanded: isFieldsSectionExpanded }"
+          @click="isFieldsSectionExpanded = !isFieldsSectionExpanded"
+        >
+          <span class="web-search-section-toggle-label">Поля из поиска</span>
+          <span class="web-search-section-toggle-count">{{ editableSearchFieldValueCount }}</span>
+          <span class="web-search-section-toggle-chevron" aria-hidden="true"></span>
+        </button>
 
-        <div class="web-search-fields-list">
-          <template v-if="hasEditableSearchFields">
-            <div
-              v-for="field in activeSearchFields"
-              :key="field.key"
-              class="web-search-field-row"
+        <div v-show="isFieldsSectionExpanded" class="web-search-section-body">
+          <div class="web-search-section-head">
+            <span class="web-search-section-note">Очистите лишнее перед переносом в сущность</span>
+            <button
+              type="button"
+              class="web-search-apply-fields-btn"
+              :disabled="!hasEditableSearchFields || !activeSearchEntity"
+              @click="void applySearchFieldsToEntity()"
             >
-              <div class="web-search-field-scroll">
-                <input
-                  v-model="searchFieldValueDrafts[field.key]"
-                  type="text"
-                  class="web-search-field-input"
-                  :maxlength="getSearchFieldMaxLength(field.key)"
-                  :placeholder="getSearchFieldPlaceholder(field)"
-                  @input="onSearchFieldDraftInput(field.key, $event)"
-                  @keydown.enter.prevent="addSearchFieldValue(field.key)"
-                  @keydown="onSearchFieldDraftKeydown(field.key, $event)"
-                />
-                <div
-                  v-for="value in getEditableSearchFieldValues(field.key)"
-                  :key="`${field.key}:${value}`"
-                  class="web-search-field-chip"
-                >
-                  <button
-                    type="button"
-                    class="web-search-field-chip-main"
-                    :class="{ link: field.key === 'links' }"
-                    :title="field.key === 'links' ? value : 'Редактировать'"
-                    @click="field.key === 'links' ? openSearchFieldLink(value) : startEditSearchFieldValue(field.key, value)"
+              Заполнить поля сущности
+            </button>
+          </div>
+
+          <div v-if="!hasActiveEntityContext" class="web-search-fields-empty">
+            Выберите сущность на канве, чтобы готовить для нее поля.
+          </div>
+          <template v-else>
+            <div class="web-search-fields-list">
+              <div
+                v-for="field in activeSearchFields"
+                :key="field.key"
+                class="web-search-field-row"
+              >
+                <div class="web-search-field-scroll">
+                  <input
+                    v-model="searchFieldValueDrafts[field.key]"
+                    type="text"
+                    class="web-search-field-input"
+                    :maxlength="getSearchFieldMaxLength(field.key)"
+                    :placeholder="getSearchFieldPlaceholder(field)"
+                    @input="onSearchFieldDraftInput(field.key, $event)"
+                    @keydown.enter.prevent="addSearchFieldValue(field.key)"
+                    @keydown="onSearchFieldDraftKeydown(field.key, $event)"
+                  />
+                  <div
+                    v-for="value in getEditableSearchFieldValues(field.key)"
+                    :key="`${field.key}:${value}`"
+                    class="web-search-field-chip"
                   >
-                    {{ field.key === 'links' ? getSearchLinkChipLabel(value) : formatSearchFieldValueForDisplay(field.key, value) }}
-                  </button>
-                  <button
-                    type="button"
-                    class="web-search-field-chip-remove"
-                    title="Удалить"
-                    @click.stop="removeSearchFieldValue(field.key, value)"
-                  >
-                    ×
-                  </button>
+                    <button
+                      type="button"
+                      class="web-search-field-chip-main"
+                      :class="{ link: field.key === 'links' }"
+                      :title="field.key === 'links' ? value : 'Редактировать'"
+                      @click="field.key === 'links' ? openSearchFieldLink(value) : startEditSearchFieldValue(field.key, value)"
+                    >
+                      {{ field.key === 'links' ? getSearchLinkChipLabel(value) : formatSearchFieldValueForDisplay(field.key, value) }}
+                    </button>
+                    <button
+                      type="button"
+                      class="web-search-field-chip-remove"
+                      title="Удалить"
+                      @click.stop="removeSearchFieldValue(field.key, value)"
+                    >
+                      ×
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
+            <div v-if="isBusy && !hasEditableSearchFields" class="web-search-fields-empty">
+              Собираю кандидаты для полей сущности...
+            </div>
+            <div v-else-if="!hasEditableSearchFields" class="web-search-fields-empty">
+              По этому поиску пока нет подтвержденных значений. Можно добавить свои вручную или повторить запрос.
+            </div>
           </template>
-          <div v-else-if="isBusy" class="web-search-fields-empty">
-            Собираю кандидаты для полей сущности...
-          </div>
-          <div v-else-if="!hasActiveEntityContext" class="web-search-fields-empty">
-            Выберите сущность на канве, чтобы готовить для нее поля.
-          </div>
-          <div v-else class="web-search-fields-empty">
-            После поиска здесь появятся теги, роли, ссылки и другие поля. Их можно отредактировать и очистить перед переносом в сущность.
-          </div>
         </div>
       </section>
 
       <section class="web-search-images-wrap">
-        <div class="web-search-section-head">
-          <h3>Фото</h3>
-          <span class="web-search-section-note">Перетащите в аватарку</span>
-        </div>
+        <button
+          type="button"
+          class="web-search-section-toggle"
+          :class="{ expanded: isImagesSectionExpanded }"
+          @click="isImagesSectionExpanded = !isImagesSectionExpanded"
+        >
+          <span class="web-search-section-toggle-label">Фото</span>
+          <span class="web-search-section-toggle-count">{{ syncedSearchState.images.length }}</span>
+          <span class="web-search-section-toggle-chevron" aria-hidden="true"></span>
+        </button>
 
-        <div class="web-search-images-grid">
-          <template v-if="syncedSearchState.images.length">
-            <div
-              v-for="image in syncedSearchState.images"
-              :key="image.id"
-              class="web-search-image-card"
-            >
+        <div v-show="isImagesSectionExpanded" class="web-search-section-body">
+          <div class="web-search-section-head">
+            <span class="web-search-section-note">Перетащите в аватарку</span>
+          </div>
+
+          <div class="web-search-images-grid">
+            <template v-if="syncedSearchState.images.length">
               <div
-                class="web-search-image-drag-zone"
-                draggable="true"
-                :title="image.title || 'Перетащите фото в аватарку сущности'"
-                @dragstart="onImageDragStart($event, image)"
+                v-for="image in syncedSearchState.images"
+                :key="image.id"
+                class="web-search-image-card"
               >
-                <img
-                  class="web-search-image-thumb"
-                  :src="image.thumbnailUrl"
-                  :alt="image.title || 'Фото по запросу'"
-                  loading="lazy"
-                  decoding="async"
-                  referrerpolicy="no-referrer"
-                  draggable="false"
-                />
+                <div
+                  class="web-search-image-drag-zone"
+                  draggable="true"
+                  :title="image.title || 'Перетащите фото в аватарку сущности'"
+                  @dragstart="onImageDragStart($event, image)"
+                >
+                  <img
+                    class="web-search-image-thumb"
+                    :src="image.thumbnailUrl"
+                    :alt="image.title || 'Фото по запросу'"
+                    loading="lazy"
+                    decoding="async"
+                    referrerpolicy="no-referrer"
+                    draggable="false"
+                  />
+                </div>
+                <a
+                  class="web-search-image-link"
+                  :href="image.sourcePageUrl || image.imageUrl"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  :title="image.title || image.sourcePageUrl || image.imageUrl"
+                  @dragstart.stop
+                >
+                  {{ image.domain || 'Открыть источник' }}
+                </a>
               </div>
-              <a
-                class="web-search-image-link"
-                :href="image.sourcePageUrl || image.imageUrl"
-                target="_blank"
-                rel="noopener noreferrer"
-                :title="image.title || image.sourcePageUrl || image.imageUrl"
-                @dragstart.stop
-              >
-                {{ image.domain || 'Открыть источник' }}
-              </a>
+            </template>
+            <div v-else-if="isBusy" class="web-search-images-empty">
+              Подбираю релевантные фото...
             </div>
-          </template>
-          <div v-else-if="isBusy" class="web-search-images-empty">
-            Подбираю релевантные фото...
-          </div>
-          <div v-else-if="!hasActiveEntityContext" class="web-search-images-empty">
-            Выберите сущность на канве, чтобы увидеть ее подборку фото.
-          </div>
-          <div v-else class="web-search-images-empty">
-            Фото по запросу появятся здесь.
+            <div v-else-if="!hasActiveEntityContext" class="web-search-images-empty">
+              Выберите сущность на канве, чтобы увидеть ее подборку фото.
+            </div>
+            <div v-else class="web-search-images-empty">
+              Фото по запросу появятся здесь.
+            </div>
           </div>
         </div>
       </section>
 
       <section class="web-search-summary-wrap">
-        <div class="web-search-section-head">
-          <h3>Сводка</h3>
-        </div>
+        <button
+          type="button"
+          class="web-search-section-toggle"
+          :class="{ expanded: isSummarySectionExpanded }"
+          @click="isSummarySectionExpanded = !isSummarySectionExpanded"
+        >
+          <span class="web-search-section-toggle-label">Сводка</span>
+          <span class="web-search-section-toggle-count">{{ summarySectionCount }}</span>
+          <span class="web-search-section-toggle-chevron" aria-hidden="true"></span>
+        </button>
 
-        <div class="web-search-summary" aria-label="Сводка с источниками">
-          <template v-if="syncedSearchState.summary">
-            <template v-for="segment in answerSegments" :key="segment.key">
-              <span v-if="segment.type === 'text'">{{ segment.text }}</span>
-              <a
-                v-else
-                class="web-search-citation"
-                :href="segment.citation.url"
-                target="_blank"
-                rel="noopener noreferrer"
-                :title="segment.citation.title || segment.citation.url"
-              >
-                [{{ segment.citation.sourceIndex }}]
-              </a>
+        <div v-show="isSummarySectionExpanded" class="web-search-section-body">
+          <div class="web-search-summary" aria-label="Сводка с источниками">
+            <template v-if="syncedSearchState.summary">
+              <template v-for="segment in answerSegments" :key="segment.key">
+                <span v-if="segment.type === 'text'">{{ segment.text }}</span>
+                <a
+                  v-else
+                  class="web-search-citation"
+                  :href="segment.citation.url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  :title="segment.citation.title || segment.citation.url"
+                >
+                  [{{ segment.citation.sourceIndex }}]
+                </a>
+              </template>
             </template>
-          </template>
-          <div v-else-if="isBusy" class="web-search-summary-empty">
-            Идет поиск и сборка сводки...
-          </div>
-          <div v-else-if="!hasActiveEntityContext" class="web-search-summary-empty">
-            Откройте карточку сущности или выделите одну ноду. Для каждой сущности хранится собственная история веб-поиска.
-          </div>
-          <div v-else class="web-search-summary-empty">
-            Введите запрос и получите одну сводку. Ссылки останутся внутри текста в виде меток `[1]`, `[2]`, `[3]`.
+            <div v-else-if="isBusy" class="web-search-summary-empty">
+              Идет поиск и сборка сводки...
+            </div>
+            <div v-else-if="!hasActiveEntityContext" class="web-search-summary-empty">
+              Откройте карточку сущности или выделите одну ноду. Для каждой сущности хранится собственная история веб-поиска.
+            </div>
+            <div v-else class="web-search-summary-empty">
+              Введите запрос и получите одну сводку. Ссылки останутся внутри текста в виде меток `[1]`, `[2]`, `[3]`.
+            </div>
           </div>
         </div>
       </section>
@@ -1897,6 +1969,54 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.web-search-section-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  border: 1px solid #dbe4f3;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.web-search-section-toggle-label {
+  line-height: 1;
+}
+
+.web-search-section-toggle-count {
+  margin-left: auto;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.web-search-section-toggle-chevron {
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid #64748b;
+  transition: transform 0.16s ease;
+}
+
+.web-search-section-toggle.expanded .web-search-section-toggle-chevron {
+  transform: rotate(180deg);
+}
+
+.web-search-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 6px;
 }
 
 .web-search-section-head h3 {
