@@ -62,7 +62,7 @@ const RESERVED_WIDTH_CSS_VAR = '--synapse-web-search-reserved-width';
 const PANEL_MIN_WIDTH_PX = 360;
 const PANEL_DEFAULT_WIDTH_PX = 480;
 const PANEL_MAX_WIDTH_PX = 760;
-const PANEL_RIGHT_OFFSET_PX = 18;
+const PANEL_RIGHT_OFFSET_PX = 14;
 const PANEL_TOP_OFFSET_PX = 60;
 const PANEL_BOTTOM_OFFSET_PX = 74;
 const NARROW_VIEWPORT_PX = 900;
@@ -657,14 +657,17 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .web-search-dock {
-  position: fixed;
-  right: calc(18px + env(safe-area-inset-right, 0px));
-  top: 50%;
-  transform: translateY(-50%);
+  position: absolute;
+  inset: 0;
   z-index: 205;
+  pointer-events: none;
 }
 
 .web-search-trigger {
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  transform: translateY(-50%);
   min-width: 52px;
   min-height: 138px;
   border: 1px solid #bfd5ff;
@@ -680,6 +683,7 @@ onBeforeUnmount(() => {
   padding: 14px 10px;
   box-shadow: 0 18px 34px rgba(16, 88, 255, 0.28);
   cursor: pointer;
+  pointer-events: auto;
   transition:
     background 0.18s ease,
     box-shadow 0.18s ease,
@@ -711,7 +715,7 @@ onBeforeUnmount(() => {
 }
 
 .web-search-panel {
-  position: fixed;
+  position: absolute;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -722,6 +726,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
   min-width: 360px;
   backdrop-filter: blur(10px);
+  pointer-events: auto;
 }
 
 .web-search-resize-handle {
@@ -1056,13 +1061,15 @@ onBeforeUnmount(() => {
 
 @media (max-width: 900px) {
   .web-search-dock {
+    position: absolute;
+    inset: 0;
+  }
+
+  .web-search-trigger {
     top: auto;
     right: calc(10px + env(safe-area-inset-right, 0px));
     bottom: calc(10px + env(safe-area-inset-bottom, 0px) + var(--synapse-vv-bottom-offset, 0px));
     transform: none;
-  }
-
-  .web-search-trigger {
     min-width: 46px;
     min-height: 46px;
     width: 46px;

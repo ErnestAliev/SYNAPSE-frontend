@@ -9,6 +9,7 @@ import EntityInfoModal from '../components/entity/EntityInfoModal.vue';
 import QuickEntityVoiceModal from '../components/entity/QuickEntityVoiceModal.vue';
 import AppIcon from '../components/ui/AppIcon.vue';
 import ProfileProgressRing from '../components/ui/ProfileProgressRing.vue';
+import WebSearchDock from '../components/ui/WebSearchDock.vue';
 import { useUnifiedVoiceInput } from '../composables/useUnifiedVoiceInput';
 import { useEntitiesStore } from '../stores/entities';
 import { useAuthStore } from '../stores/auth';
@@ -7785,6 +7786,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
         <path d="m16.2 12.9-2.3 3" />
       </svg>
     </button>
+    <WebSearchDock />
 
     <div
       v-if="canvasPlayHintVisible && isPlayMode"
