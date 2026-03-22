@@ -15,34 +15,18 @@ interface WebSearchCitation {
   endIndex: number;
 }
 
-interface WebSearchSource {
-  id: string;
-  index: number;
-  url: string;
-  title: string;
-  snippet: string;
-  domain: string;
-}
-
-interface WebSearchResponse {
+interface ProjectWebSearchState {
+  status: 'idle' | 'searching' | 'ready' | 'failed';
   query: string;
-  answer: string;
+  summary: string;
   citations: WebSearchCitation[];
-  sources: WebSearchSource[];
-  searchQueries: string[];
+  errorMessage: string;
+  startedAt: string;
+  completedAt: string;
+  updatedAt: string;
   model: string;
-}
-
-interface WebPagePreview {
-  sourceUrl: string;
-  finalUrl: string;
-  hostname: string;
-  siteLabel: string;
-  sourceKind: string;
-  title: string;
-  description: string;
-  textSnippet: string;
-  preparedText: string;
+  sourceCount: number;
+  searchQueries: string[];
 }
 
 type AnswerSegment =
@@ -57,40 +41,54 @@ type AnswerSegment =
       citation: WebSearchCitation;
     };
 
-const PANEL_WIDTH_STORAGE_KEY = 'synapse12.web-search.panel-width.v1';
+const PANEL_SIZE_STORAGE_KEY = 'synapse12.web-search.panel-size.v3';
 const RESERVED_WIDTH_CSS_VAR = '--synapse-web-search-reserved-width';
-const PANEL_MIN_WIDTH_PX = 360;
-const PANEL_DEFAULT_WIDTH_PX = 480;
-const PANEL_MAX_WIDTH_PX = 760;
-const PANEL_RIGHT_OFFSET_PX = 14;
 const PANEL_TOP_OFFSET_PX = 60;
-const PANEL_BOTTOM_OFFSET_PX = 74;
+const PANEL_EDGE_MARGIN_PX = 14;
+const PANEL_MIN_WIDTH_PX = 360;
+const PANEL_MAX_WIDTH_PX = 760;
+const PANEL_MIN_HEIGHT_PX = 360;
+const PANEL_DEFAULT_WIDTH_PX = 520;
 const NARROW_VIEWPORT_PX = 900;
+const SEARCH_STEPS = [
+  'Ищу релевантные источники',
+  'Сверяю даты и факты',
+  'Отсекаю шум и дубли',
+  'Собираю расширенную сводку',
+] as const;
 
 const route = useRoute();
 const entitiesStore = useEntitiesStore();
 
 const isOpen = ref(false);
-const isSearching = ref(false);
-const searchErrorMessage = ref('');
-const searchResult = ref<WebSearchResponse | null>(null);
+const isSubmitting = ref(false);
 const queryDraft = ref('');
-const panelWidth = ref<number | null>(loadStoredPanelWidth());
-const isResizing = ref(false);
-const resizePointerId = ref<number | null>(null);
-const resizeStart = ref<{ clientX: number; width: number } | null>(null);
-const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1440);
 const searchInputRef = ref<HTMLInputElement | null>(null);
-
-const selectedSourceUrl = ref('');
-const sourcePreview = ref<WebPagePreview | null>(null);
-const isPreviewLoading = ref(false);
-const previewErrorMessage = ref('');
-const previewRequestToken = ref(0);
-const previewCache = new Map<string, WebPagePreview>();
-
+const panelRef = ref<HTMLElement | null>(null);
+const isQueryFocused = ref(false);
+const localErrorMessage = ref('');
 const copyNotice = ref('');
 const copyNoticeTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1366);
+const viewportHeight = ref(typeof window !== 'undefined' ? window.innerHeight : 768);
+const panelSize = ref<{ width: number; height: number } | null>(loadStoredPanelSize());
+const isResizingPanel = ref(false);
+const resizePointerId = ref<number | null>(null);
+const resizeStart = ref<{
+  clientX: number;
+  clientY: number;
+  width: number;
+  height: number;
+} | null>(null);
+const animatedStepIndex = ref(0);
+const animatedStepTimer = ref<ReturnType<typeof setInterval> | null>(null);
+
+function toProfile(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {} as Record<string, unknown>;
+  }
+  return value as Record<string, unknown>;
+}
 
 function normalizeRouteParam(value: unknown) {
   if (typeof value === 'string') return value.trim();
@@ -98,69 +96,209 @@ function normalizeRouteParam(value: unknown) {
   return '';
 }
 
-function loadStoredPanelWidth() {
+function normalizeWebUrl(rawValue: unknown) {
+  const raw = typeof rawValue === 'string' ? rawValue.trim() : '';
+  if (!raw) return '';
+
+  try {
+    const url = new URL(raw);
+    for (const key of Array.from(url.searchParams.keys())) {
+      if (key.toLowerCase().startsWith('utm_')) {
+        url.searchParams.delete(key);
+      }
+    }
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+function normalizeWebSearchState(rawValue: unknown): ProjectWebSearchState {
+  const row = toProfile(rawValue);
+  const statusRaw = typeof row.status === 'string' ? row.status.trim().toLowerCase() : '';
+  const status: ProjectWebSearchState['status'] = ['searching', 'ready', 'failed'].includes(statusRaw)
+    ? (statusRaw as ProjectWebSearchState['status'])
+    : 'idle';
+  const rawCitations = Array.isArray(row.citations) ? row.citations : [];
+
+  return {
+    status,
+    query: typeof row.query === 'string' ? row.query.trim() : '',
+    summary: typeof row.summary === 'string' ? row.summary.trim() : '',
+    citations: rawCitations
+      .map((item, index) => {
+        const citation = toProfile(item);
+        const url = normalizeWebUrl(citation.url);
+        if (!url) return null;
+        return {
+          id: typeof citation.id === 'string' && citation.id.trim() ? citation.id.trim() : `citation-${index + 1}`,
+          sourceIndex: Math.max(1, Number(citation.sourceIndex) || index + 1),
+          title: typeof citation.title === 'string' ? citation.title.trim() : '',
+          url,
+          domain: typeof citation.domain === 'string' ? citation.domain.trim() : '',
+          startIndex: Math.max(0, Number(citation.startIndex) || 0),
+          endIndex: Math.max(0, Number(citation.endIndex) || 0),
+        };
+      })
+      .filter((item): item is WebSearchCitation => Boolean(item))
+      .slice(0, 80),
+    errorMessage: typeof row.errorMessage === 'string' ? row.errorMessage.trim() : '',
+    startedAt: typeof row.startedAt === 'string' ? row.startedAt.trim() : '',
+    completedAt: typeof row.completedAt === 'string' ? row.completedAt.trim() : '',
+    updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt.trim() : '',
+    model: typeof row.model === 'string' ? row.model.trim() : '',
+    sourceCount: Math.max(0, Number(row.sourceCount) || 0),
+    searchQueries: (Array.isArray(row.searchQueries) ? row.searchQueries : [])
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter(Boolean)
+      .slice(0, 12),
+  };
+}
+
+function loadStoredPanelSize() {
   if (typeof window === 'undefined') return null;
 
   try {
-    const raw = window.localStorage.getItem(PANEL_WIDTH_STORAGE_KEY);
-    const width = Number(raw);
-    if (!Number.isFinite(width)) return null;
-    return Math.max(1, Math.round(width));
+    const raw = window.localStorage.getItem(PANEL_SIZE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { width?: number; height?: number };
+    const width = Number(parsed.width);
+    const height = Number(parsed.height);
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+    return {
+      width: Math.max(1, Math.floor(width)),
+      height: Math.max(1, Math.floor(height)),
+    };
   } catch {
     return null;
   }
 }
 
-function persistPanelWidth() {
-  if (typeof window === 'undefined' || !panelWidth.value) return;
-
+function persistPanelSize() {
+  if (typeof window === 'undefined' || !panelSize.value) return;
   try {
-    window.localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, String(panelWidth.value));
+    window.localStorage.setItem(PANEL_SIZE_STORAGE_KEY, JSON.stringify(panelSize.value));
   } catch {
-    // Ignore storage write errors.
+    // Ignore local storage write errors.
   }
 }
 
-function updateViewportWidth() {
-  if (typeof window === 'undefined') return;
-  viewportWidth.value = window.innerWidth;
-}
-
 const projectId = computed(() => normalizeRouteParam(route.params.id));
-const isCanvasRoute = computed(() => route.name === 'project-canvas' && Boolean(projectId.value));
-const activeProject = computed(() => {
+const projectEntity = computed(() => {
   if (!projectId.value) return null;
-  return entitiesStore.byId(projectId.value) || null;
+  const entity = entitiesStore.byId(projectId.value);
+  if (!entity || entity.type !== 'project') return null;
+  return entity;
 });
-const projectName = computed(() => activeProject.value?.name?.trim() || 'Канва проекта');
-const isNarrowViewport = computed(() => viewportWidth.value <= NARROW_VIEWPORT_PX);
+const projectName = computed(() => projectEntity.value?.name?.trim() || 'Канва проекта');
+const isCanvasRoute = computed(() => route.name === 'project-canvas' && Boolean(projectId.value));
+const syncedSearchState = computed(() => {
+  const metadata = toProfile(projectEntity.value?.ai_metadata);
+  return normalizeWebSearchState(metadata.web_search);
+});
 
-function clampPanelWidth(width: number) {
-  const maxWidth = isNarrowViewport.value
-    ? Math.max(320, viewportWidth.value)
-    : Math.max(PANEL_MIN_WIDTH_PX, Math.min(PANEL_MAX_WIDTH_PX, viewportWidth.value - 120));
-  const minWidth = Math.min(PANEL_MIN_WIDTH_PX, maxWidth);
-  return Math.max(minWidth, Math.min(maxWidth, Math.round(width)));
+const isPhoneViewport = computed(() => viewportWidth.value <= NARROW_VIEWPORT_PX);
+const panelConstraints = computed(() => {
+  const maxWidth = Math.max(
+    280,
+    Math.min(PANEL_MAX_WIDTH_PX, viewportWidth.value - PANEL_EDGE_MARGIN_PX * 2),
+  );
+  const maxHeight = Math.max(260, viewportHeight.value - PANEL_TOP_OFFSET_PX - PANEL_EDGE_MARGIN_PX);
+  const minWidth = isPhoneViewport.value ? 280 : PANEL_MIN_WIDTH_PX;
+  const minHeight = isPhoneViewport.value ? 320 : PANEL_MIN_HEIGHT_PX;
+
+  return {
+    maxWidth,
+    maxHeight,
+    minWidth: Math.min(minWidth, maxWidth),
+    minHeight: Math.min(minHeight, maxHeight),
+  };
+});
+
+function getDefaultPanelSize() {
+  const constraints = panelConstraints.value;
+  const width = Math.min(isPhoneViewport.value ? constraints.maxWidth : PANEL_DEFAULT_WIDTH_PX, constraints.maxWidth);
+  const heightTarget = Math.round(viewportHeight.value * (isPhoneViewport.value ? 0.72 : 0.76));
+  const height = Math.min(heightTarget, constraints.maxHeight);
+  return {
+    width: Math.max(constraints.minWidth, width),
+    height: Math.max(constraints.minHeight, height),
+  };
 }
 
-const resolvedPanelWidth = computed(() => clampPanelWidth(panelWidth.value || PANEL_DEFAULT_WIDTH_PX));
+function clampPanelSize(size: { width: number; height: number }) {
+  const constraints = panelConstraints.value;
+  return {
+    width: Math.min(constraints.maxWidth, Math.max(constraints.minWidth, Math.round(size.width))),
+    height: Math.min(constraints.maxHeight, Math.max(constraints.minHeight, Math.round(size.height))),
+  };
+}
+
+const resolvedPanelSize = computed(() => {
+  const fallback = getDefaultPanelSize();
+  const raw = panelSize.value || fallback;
+  return clampPanelSize(raw);
+});
 
 const panelStyle = computed(() => {
-  if (isNarrowViewport.value) {
+  if (isPhoneViewport.value) {
     return {
       inset: '0px',
       width: 'auto',
+      height: 'auto',
+      maxWidth: '100vw',
+      maxHeight: '100dvh',
       borderRadius: '0px',
     };
   }
 
   return {
-    width: `${resolvedPanelWidth.value}px`,
-    top: `${PANEL_TOP_OFFSET_PX}px`,
-    bottom: `${PANEL_BOTTOM_OFFSET_PX}px`,
-    right: `calc(${PANEL_RIGHT_OFFSET_PX}px + env(safe-area-inset-right, 0px))`,
+    width: `${resolvedPanelSize.value.width}px`,
+    height: `${resolvedPanelSize.value.height}px`,
+    maxWidth: `${panelConstraints.value.maxWidth}px`,
+    maxHeight: `${panelConstraints.value.maxHeight}px`,
+    right: `${PANEL_EDGE_MARGIN_PX}px`,
+    top: '50%',
+    transform: 'translateY(-50%)',
   };
 });
+
+function updateViewportSize() {
+  if (typeof window === 'undefined') return;
+  viewportWidth.value = window.innerWidth;
+  viewportHeight.value = window.innerHeight;
+}
+
+function resetReservedWidthVar() {
+  if (typeof document === 'undefined') return;
+  document.documentElement.style.setProperty(RESERVED_WIDTH_CSS_VAR, '0px');
+}
+
+function syncReservedWidthVar() {
+  if (typeof document === 'undefined') return;
+  if (!isOpen.value || !isCanvasRoute.value || isPhoneViewport.value) {
+    resetReservedWidthVar();
+    return;
+  }
+
+  const reservedWidth = resolvedPanelSize.value.width + PANEL_EDGE_MARGIN_PX + 12;
+  document.documentElement.style.setProperty(RESERVED_WIDTH_CSS_VAR, `${reservedWidth}px`);
+}
+
+function extractApiErrorMessage(error: unknown, fallback: string) {
+  if (axios.isAxiosError(error)) {
+    const message = (error.response?.data as { message?: unknown } | undefined)?.message;
+    if (typeof message === 'string' && message.trim()) {
+      return message.trim();
+    }
+  }
+
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  return fallback;
+}
 
 function clearCopyNoticeTimer() {
   if (!copyNoticeTimer.value) return;
@@ -175,42 +313,6 @@ function showCopyNotice(message: string) {
     copyNotice.value = '';
     copyNoticeTimer.value = null;
   }, 2200);
-}
-
-function resetReservedWidthVar() {
-  if (typeof document === 'undefined') return;
-  document.documentElement.style.setProperty(RESERVED_WIDTH_CSS_VAR, '0px');
-}
-
-function syncReservedWidthVar() {
-  if (typeof document === 'undefined') return;
-  if (!isOpen.value || !isCanvasRoute.value || isNarrowViewport.value) {
-    resetReservedWidthVar();
-    return;
-  }
-
-  const reservedWidth = resolvedPanelWidth.value + PANEL_RIGHT_OFFSET_PX + 12;
-  document.documentElement.style.setProperty(RESERVED_WIDTH_CSS_VAR, `${reservedWidth}px`);
-}
-
-function extractApiErrorMessage(error: unknown, fallback: string) {
-  if (axios.isAxiosError(error)) {
-    const message = (error.response?.data as { message?: unknown } | undefined)?.message;
-    if (typeof message === 'string' && message.trim()) {
-      return message.trim();
-    }
-  }
-  if (error instanceof Error && error.message.trim()) {
-    return error.message.trim();
-  }
-  return fallback;
-}
-
-function clearPreviewState() {
-  selectedSourceUrl.value = '';
-  sourcePreview.value = null;
-  previewErrorMessage.value = '';
-  isPreviewLoading.value = false;
 }
 
 async function writeTextToClipboard(text: string) {
@@ -246,6 +348,7 @@ function buildAnswerSegments(answer: string, citations: WebSearchCitation[]) {
       })
     : [];
   const grouped = new Map<number, WebSearchCitation[]>();
+
   for (const citation of safeCitations) {
     const safeEnd = Math.max(0, Math.min(text.length, Number(citation.endIndex) || 0));
     const bucket = grouped.get(safeEnd) || [];
@@ -286,151 +389,128 @@ function buildAnswerSegments(answer: string, citations: WebSearchCitation[]) {
 }
 
 const answerSegments = computed(() =>
-  buildAnswerSegments(searchResult.value?.answer || '', searchResult.value?.citations || []),
+  buildAnswerSegments(syncedSearchState.value.summary, syncedSearchState.value.citations),
 );
 
-const selectedSource = computed(() => {
-  const sources = searchResult.value?.sources || [];
-  return sources.find((source) => source.url === selectedSourceUrl.value) || null;
-});
-
 const summaryCopyText = computed(() => {
-  const result = searchResult.value;
-  if (!result) return '';
-
-  const lines = [`Запрос: ${result.query.trim()}`];
-  if (result.answer.trim()) {
-    lines.push('', result.answer.trim());
+  const state = syncedSearchState.value;
+  const lines = [];
+  if (state.query) {
+    lines.push(`Запрос: ${state.query}`);
   }
-  if (result.sources.length) {
-    lines.push('', 'Источники:');
-    for (const source of result.sources) {
-      lines.push(`[${source.index}] ${source.title} — ${source.url}`);
-    }
+  if (state.summary) {
+    lines.push('', state.summary);
   }
   return lines.join('\n').trim();
 });
 
-const previewCopyText = computed(() => {
-  const preview = sourcePreview.value;
-  if (!preview) return '';
-
-  return [
-    preview.title.trim(),
-    preview.finalUrl.trim() || preview.sourceUrl.trim(),
-    '',
-    preview.preparedText.trim() || preview.description.trim() || preview.textSnippet.trim(),
-  ]
-    .filter(Boolean)
-    .join('\n')
-    .trim();
+const isBusy = computed(() => isSubmitting.value || syncedSearchState.value.status === 'searching');
+const activeStepLabel = computed(() => SEARCH_STEPS[animatedStepIndex.value] || SEARCH_STEPS[0]);
+const effectiveErrorMessage = computed(() => {
+  if (localErrorMessage.value.trim()) return localErrorMessage.value.trim();
+  if (syncedSearchState.value.status === 'failed') return syncedSearchState.value.errorMessage;
+  return '';
 });
 
-async function copyText(text: string, successMessage: string) {
-  if (!text.trim()) return;
-  await writeTextToClipboard(text);
-  showCopyNotice(successMessage);
+const syncMetaText = computed(() => {
+  const state = syncedSearchState.value;
+  if (isBusy.value) {
+    return 'Поиск: web -> сверка -> сводка • синхронизация между устройствами';
+  }
+  if (state.status === 'ready' && state.sourceCount > 0) {
+    return `Сводка из ${state.sourceCount} веб-источников • синхронизируется между устройствами`;
+  }
+  if (state.status === 'failed') {
+    return 'Последняя ошибка синхронизирована между устройствами';
+  }
+  return 'Результаты поиска сохраняются в проекте и доступны на всех устройствах';
+});
+
+function stopAnimatedSteps() {
+  if (!animatedStepTimer.value) return;
+  clearInterval(animatedStepTimer.value);
+  animatedStepTimer.value = null;
 }
 
-async function openSourcePreview(source: WebSearchSource) {
-  selectedSourceUrl.value = source.url;
-  previewErrorMessage.value = '';
-
-  const cached = previewCache.get(source.url);
-  if (cached) {
-    sourcePreview.value = cached;
-    return;
-  }
-
-  isPreviewLoading.value = true;
-  const requestToken = previewRequestToken.value + 1;
-  previewRequestToken.value = requestToken;
-
-  try {
-    const { data } = await apiClient.post<WebPagePreview>('/ai/web-page-preview', {
-      url: source.url,
-    });
-    if (previewRequestToken.value !== requestToken) return;
-    previewCache.set(source.url, data);
-    sourcePreview.value = data;
-  } catch (error) {
-    if (previewRequestToken.value !== requestToken) return;
-    sourcePreview.value = null;
-    previewErrorMessage.value = extractApiErrorMessage(error, 'Не удалось открыть источник внутри панели.');
-  } finally {
-    if (previewRequestToken.value === requestToken) {
-      isPreviewLoading.value = false;
-    }
-  }
+function startAnimatedSteps() {
+  stopAnimatedSteps();
+  animatedStepIndex.value = 0;
+  animatedStepTimer.value = setInterval(() => {
+    animatedStepIndex.value = (animatedStepIndex.value + 1) % SEARCH_STEPS.length;
+  }, 960);
 }
 
-function openSourceInNewTab(source: WebSearchSource) {
-  if (typeof window === 'undefined') return;
-  window.open(source.url, '_blank', 'noopener,noreferrer');
+async function copySummary() {
+  if (!summaryCopyText.value) return;
+  await writeTextToClipboard(summaryCopyText.value);
+  showCopyNotice('Сводка скопирована');
 }
 
 async function submitSearch() {
   const query = queryDraft.value.trim();
-  if (!query || isSearching.value) return;
+  if (!query || !projectId.value || isSubmitting.value) return;
 
-  isSearching.value = true;
-  searchErrorMessage.value = '';
-  searchResult.value = null;
-  clearPreviewState();
-
+  isSubmitting.value = true;
+  localErrorMessage.value = '';
   try {
-    const { data } = await apiClient.post<WebSearchResponse>('/ai/web-search', {
+    await apiClient.post('/ai/web-search', {
+      projectId: projectId.value,
       query,
     });
-    searchResult.value = data;
-    if (data.sources[0]) {
-      void openSourcePreview(data.sources[0]);
-    }
   } catch (error) {
-    searchErrorMessage.value = extractApiErrorMessage(error, 'Не удалось выполнить веб-поиск.');
+    localErrorMessage.value = extractApiErrorMessage(error, 'Не удалось выполнить веб-поиск.');
   } finally {
-    isSearching.value = false;
+    isSubmitting.value = false;
   }
 }
 
-function stopResize() {
+function stopPanelResize() {
   if (typeof window === 'undefined') return;
-  isResizing.value = false;
-  resizePointerId.value = null;
+  isResizingPanel.value = false;
   resizeStart.value = null;
-  window.removeEventListener('pointermove', onResizePointerMove);
-  window.removeEventListener('pointerup', onResizePointerUp);
-  window.removeEventListener('pointercancel', onResizePointerUp);
+  resizePointerId.value = null;
+  window.removeEventListener('pointermove', onPanelResizePointerMove);
+  window.removeEventListener('pointerup', onPanelResizePointerUp);
+  window.removeEventListener('pointercancel', onPanelResizePointerUp);
 }
 
-function onResizePointerMove(event: PointerEvent) {
-  if (!isResizing.value || !resizeStart.value) return;
+function onPanelResizePointerMove(event: PointerEvent) {
+  if (!isResizingPanel.value || !resizeStart.value) return;
   const deltaX = event.clientX - resizeStart.value.clientX;
-  panelWidth.value = clampPanelWidth(resizeStart.value.width - deltaX);
+  const deltaY = event.clientY - resizeStart.value.clientY;
+  panelSize.value = clampPanelSize({
+    width: resizeStart.value.width - deltaX,
+    height: resizeStart.value.height - deltaY,
+  });
 }
 
-function onResizePointerUp() {
-  if (!isResizing.value) return;
-  stopResize();
-  persistPanelWidth();
+function onPanelResizePointerUp() {
+  if (!isResizingPanel.value) return;
+  stopPanelResize();
+  persistPanelSize();
 }
 
-function onResizeHandlePointerDown(event: PointerEvent) {
-  if (isNarrowViewport.value) return;
+function onPanelResizeHandlePointerDown(event: PointerEvent) {
+  if (isPhoneViewport.value) return;
   if (event.pointerType === 'mouse' && event.button !== 0) return;
   event.preventDefault();
   event.stopPropagation();
 
-  resizePointerId.value = event.pointerId;
+  const panel = panelRef.value;
+  if (!panel) return;
+  const rect = panel.getBoundingClientRect();
   resizeStart.value = {
     clientX: event.clientX,
-    width: resolvedPanelWidth.value,
+    clientY: event.clientY,
+    width: rect.width,
+    height: rect.height,
   };
-  isResizing.value = true;
+  isResizingPanel.value = true;
+  resizePointerId.value = event.pointerId;
 
-  window.addEventListener('pointermove', onResizePointerMove, { passive: true });
-  window.addEventListener('pointerup', onResizePointerUp);
-  window.addEventListener('pointercancel', onResizePointerUp);
+  window.addEventListener('pointermove', onPanelResizePointerMove, { passive: true });
+  window.addEventListener('pointerup', onPanelResizePointerUp);
+  window.addEventListener('pointercancel', onPanelResizePointerUp);
 }
 
 async function togglePanel() {
@@ -439,18 +519,15 @@ async function togglePanel() {
   if (isOpen.value) {
     await nextTick();
     searchInputRef.value?.focus();
-    return;
   }
-  copyNotice.value = '';
 }
 
 function closePanel() {
   isOpen.value = false;
-  copyNotice.value = '';
 }
 
 watch(
-  [isOpen, isCanvasRoute, resolvedPanelWidth, isNarrowViewport],
+  [isOpen, isCanvasRoute, resolvedPanelSize, isPhoneViewport],
   () => {
     syncReservedWidthVar();
   },
@@ -458,37 +535,65 @@ watch(
 );
 
 watch(
-  isCanvasRoute,
-  (nextValue) => {
-    if (nextValue) return;
-    closePanel();
-    resetReservedWidthVar();
+  () => syncedSearchState.value.status,
+  (nextStatus) => {
+    if (nextStatus === 'ready') {
+      localErrorMessage.value = '';
+    }
+    if (nextStatus === 'searching') {
+      localErrorMessage.value = '';
+    }
   },
   { immediate: true },
 );
 
-watch(resolvedPanelWidth, () => {
-  if (isResizing.value) return;
-  panelWidth.value = resolvedPanelWidth.value;
-  persistPanelWidth();
+watch(
+  () => syncedSearchState.value.query,
+  (nextQuery) => {
+    if (!nextQuery) return;
+    if (!queryDraft.value.trim() || !isQueryFocused.value) {
+      queryDraft.value = nextQuery;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  isBusy,
+  (nextValue) => {
+    if (nextValue) {
+      startAnimatedSteps();
+      return;
+    }
+    stopAnimatedSteps();
+  },
+  { immediate: true },
+);
+
+watch(resolvedPanelSize, () => {
+  if (isResizingPanel.value) return;
+  panelSize.value = resolvedPanelSize.value;
+  persistPanelSize();
 });
 
 onMounted(() => {
-  updateViewportWidth();
+  updateViewportSize();
+  panelSize.value = resolvedPanelSize.value;
   if (typeof window === 'undefined') return;
-  window.addEventListener('resize', updateViewportWidth);
-  window.addEventListener('orientationchange', updateViewportWidth);
-  window.visualViewport?.addEventListener('resize', updateViewportWidth);
+  window.addEventListener('resize', updateViewportSize);
+  window.addEventListener('orientationchange', updateViewportSize);
+  window.visualViewport?.addEventListener('resize', updateViewportSize);
 });
 
 onBeforeUnmount(() => {
   clearCopyNoticeTimer();
-  stopResize();
+  stopAnimatedSteps();
+  stopPanelResize();
   resetReservedWidthVar();
   if (typeof window === 'undefined') return;
-  window.removeEventListener('resize', updateViewportWidth);
-  window.removeEventListener('orientationchange', updateViewportWidth);
-  window.visualViewport?.removeEventListener('resize', updateViewportWidth);
+  window.removeEventListener('resize', updateViewportSize);
+  window.removeEventListener('orientationchange', updateViewportSize);
+  window.visualViewport?.removeEventListener('resize', updateViewportSize);
 });
 </script>
 
@@ -507,27 +612,51 @@ onBeforeUnmount(() => {
         <path d="M10 5.2c1.6 1.2 2.5 3 2.5 4.8s-.9 3.6-2.5 4.8" />
         <path d="M10 5.2C8.4 6.4 7.5 8.2 7.5 10s.9 3.6 2.5 4.8" />
         <path d="M5.2 10h9.6" />
-        <path d="M16 16l3.8 3.8" />
-        <circle cx="15.7" cy="15.7" r="3.1" />
+        <circle cx="16.6" cy="16.6" r="3.1" />
+        <path d="m18.9 18.9 2.1 2.1" />
       </svg>
     </button>
 
-    <section v-if="isOpen" class="web-search-panel" :style="panelStyle" @pointerdown.stop>
-      <div
-        v-if="!isNarrowViewport"
-        class="web-search-resize-handle"
-        title="Изменить ширину панели"
-        @pointerdown="onResizeHandlePointerDown"
-      />
-
+    <section
+      v-if="isOpen"
+      ref="panelRef"
+      class="web-search-panel"
+      :style="panelStyle"
+      @pointerdown.stop
+    >
       <header class="web-search-header">
-        <div class="web-search-header-copy">
+        <div
+          class="web-search-title-wrap"
+          @pointerdown="onPanelResizeHandlePointerDown"
+        >
           <div class="web-search-title">Веб-поиск</div>
           <div class="web-search-subtitle">{{ projectName }}</div>
+          <div class="web-search-meta">{{ syncMetaText }}</div>
         </div>
-        <button type="button" class="web-search-close" aria-label="Закрыть веб-поиск" @click="closePanel">
-          ×
-        </button>
+        <div class="web-search-header-actions">
+          <button
+            type="button"
+            class="web-search-icon-btn"
+            :disabled="!summaryCopyText"
+            aria-label="Копировать сводку"
+            title="Копировать сводку"
+            @click="void copySummary()"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="9" y="9" width="10" height="10" rx="2" />
+              <path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="web-search-icon-btn close"
+            aria-label="Закрыть веб-поиск"
+            title="Закрыть"
+            @click="closePanel"
+          >
+            ×
+          </button>
+        </div>
       </header>
 
       <form class="web-search-form" @submit.prevent="void submitSearch()">
@@ -536,135 +665,70 @@ onBeforeUnmount(() => {
           v-model.trim="queryDraft"
           type="search"
           class="web-search-input"
-          placeholder="Компания, человек, событие, домен..."
-          :disabled="isSearching"
+          :disabled="isSubmitting"
+          placeholder="Компания, человек, событие, тема..."
+          @focus="isQueryFocused = true"
+          @blur="isQueryFocused = false"
         />
-        <button type="submit" class="web-search-submit" :disabled="isSearching || !queryDraft.trim()">
-          {{ isSearching ? 'Ищу...' : 'Найти' }}
+        <button
+          type="submit"
+          class="web-search-submit"
+          :disabled="isSubmitting || !queryDraft.trim()"
+        >
+          {{ isBusy ? 'Сбор...' : 'Найти' }}
         </button>
       </form>
 
       <p v-if="copyNotice" class="web-search-copy-notice">{{ copyNotice }}</p>
-      <p v-if="searchErrorMessage" class="web-search-status error">{{ searchErrorMessage }}</p>
-      <p v-else-if="isSearching" class="web-search-status">Ищу источники и собираю сводку...</p>
 
-      <div v-if="!searchResult && !isSearching && !searchErrorMessage" class="web-search-empty">
-        Ищите компании, людей, события и открывайте источник во встроенном reader-режиме. Текст можно выделять и копировать
-        прямо на канве.
-      </div>
+      <section class="web-search-summary-wrap">
+        <div class="web-search-section-head">
+          <h3>Сводка</h3>
+        </div>
 
-      <template v-else-if="searchResult">
-        <section class="web-search-section">
-          <div class="web-search-section-head">
-            <h3>Сводка</h3>
-            <button
-              type="button"
-              class="web-search-inline-btn icon-only"
-              :disabled="!summaryCopyText"
-              title="Копировать сводку"
-              aria-label="Копировать сводку"
-              @click="void copyText(summaryCopyText, 'Сводка скопирована')"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <rect x="9" y="9" width="10" height="10" rx="2" />
-                <path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" />
-              </svg>
-            </button>
+        <div v-if="isBusy" class="web-search-loading-card">
+          <div class="web-search-loading-bars" aria-hidden="true">
+            <span
+              v-for="(step, index) in SEARCH_STEPS"
+              :key="step"
+              class="web-search-loading-bar"
+              :class="{ active: index === animatedStepIndex }"
+            />
           </div>
+          <p class="web-search-loading-title">{{ activeStepLabel }}</p>
+          <p class="web-search-loading-text">
+            Ищу веб-источники, сверяю факты, убираю шум и собираю расширенную сводку. Результат автоматически
+            синхронизируется между устройствами.
+          </p>
+        </div>
 
-          <div v-if="searchResult.answer.trim()" class="web-search-answer" aria-label="Сводка с источниками">
-            <template v-for="segment in answerSegments" :key="segment.key">
-              <span v-if="segment.type === 'text'">{{ segment.text }}</span>
-              <a
-                v-else
-                class="web-search-citation"
-                :href="segment.citation.url"
-                target="_blank"
-                rel="noopener noreferrer"
-                :title="segment.citation.title"
-              >
-                [{{ segment.citation.sourceIndex }}]
-              </a>
-            </template>
-          </div>
-          <div v-else class="web-search-answer muted">Сводка пока пустая, но источники доступны ниже.</div>
-        </section>
+        <p v-else-if="effectiveErrorMessage" class="web-search-status error">{{ effectiveErrorMessage }}</p>
 
-        <section class="web-search-section">
-          <div class="web-search-section-head">
-            <h3>Источники</h3>
-            <span class="web-search-counter">{{ searchResult.sources.length }}</span>
-          </div>
-
-          <div v-if="!searchResult.sources.length" class="web-search-answer muted">Источники не вернулись.</div>
-          <div v-else class="web-search-sources">
-            <article
-              v-for="source in searchResult.sources"
-              :key="source.id"
-              class="web-search-source-card"
-              :class="{ active: selectedSourceUrl === source.url }"
-            >
-              <button type="button" class="web-search-source-main" @click="void openSourcePreview(source)">
-                <div class="web-search-source-index">[{{ source.index }}]</div>
-                <div class="web-search-source-body">
-                  <strong>{{ source.title }}</strong>
-                  <div class="web-search-source-domain">{{ source.domain || source.url }}</div>
-                  <p v-if="source.snippet" class="web-search-source-snippet">{{ source.snippet }}</p>
-                </div>
-              </button>
-              <div class="web-search-source-actions">
-                <button type="button" class="web-search-inline-btn" @click="void openSourcePreview(source)">
-                  Reader
-                </button>
-                <button type="button" class="web-search-inline-btn" @click="openSourceInNewTab(source)">
-                  Открыть
-                </button>
-              </div>
-            </article>
-          </div>
-        </section>
-
-        <section class="web-search-section web-search-preview-section">
-          <div class="web-search-section-head">
-            <h3>Reader</h3>
-            <button
-              type="button"
-              class="web-search-inline-btn icon-only"
-              :disabled="!previewCopyText"
-              title="Копировать текст источника"
-              aria-label="Копировать текст источника"
-              @click="void copyText(previewCopyText, 'Текст источника скопирован')"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <rect x="9" y="9" width="10" height="10" rx="2" />
-                <path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" />
-              </svg>
-            </button>
-          </div>
-
-          <div v-if="isPreviewLoading" class="web-search-answer muted">Открываю источник...</div>
-          <p v-else-if="previewErrorMessage" class="web-search-status error">{{ previewErrorMessage }}</p>
-          <div v-else-if="sourcePreview" class="web-search-preview-card">
-            <div class="web-search-preview-head">
-              <strong>{{ sourcePreview.title || selectedSource?.title || 'Источник' }}</strong>
-              <span>{{ sourcePreview.siteLabel || sourcePreview.hostname || selectedSource?.domain || 'web' }}</span>
-            </div>
+        <div
+          v-else-if="syncedSearchState.summary"
+          class="web-search-summary"
+          aria-label="Сводка с источниками"
+        >
+          <template v-for="segment in answerSegments" :key="segment.key">
+            <span v-if="segment.type === 'text'">{{ segment.text }}</span>
             <a
-              class="web-search-preview-link"
-              :href="sourcePreview.finalUrl || sourcePreview.sourceUrl"
+              v-else
+              class="web-search-citation"
+              :href="segment.citation.url"
               target="_blank"
               rel="noopener noreferrer"
+              :title="segment.citation.title || segment.citation.url"
             >
-              {{ sourcePreview.finalUrl || sourcePreview.sourceUrl }}
+              [{{ segment.citation.sourceIndex }}]
             </a>
-            <p v-if="sourcePreview.description" class="web-search-preview-description">{{ sourcePreview.description }}</p>
-            <pre class="web-search-preview-text">{{
-              sourcePreview.preparedText || sourcePreview.textSnippet || 'Источник не отдал текст для reader-режима.'
-            }}</pre>
-          </div>
-          <div v-else class="web-search-answer muted">Выберите источник, чтобы открыть его внутри панели.</div>
-        </section>
-      </template>
+          </template>
+        </div>
+
+        <div v-else class="web-search-summary muted">
+          Введите запрос и получите одну расширенную сводку. Ссылки останутся внутри текста в виде меток `[1]`, `[2]`,
+          `[3]`.
+        </div>
+      </section>
     </section>
   </div>
 </template>
@@ -684,8 +748,8 @@ onBeforeUnmount(() => {
   transform: translateY(-50%);
   width: 44px;
   height: 44px;
-  border: 1px solid #bfd5ff;
   border-radius: 999px;
+  border: 1px solid #bfd5ff;
   background: linear-gradient(180deg, #1058ff 0%, #0b4bdd 100%);
   color: #ffffff;
   display: inline-flex;
@@ -727,19 +791,10 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.98);
   box-shadow: 0 26px 52px rgba(15, 23, 42, 0.24);
   overflow: hidden;
-  min-width: 360px;
+  min-width: 320px;
+  min-height: 320px;
   backdrop-filter: blur(10px);
   pointer-events: auto;
-}
-
-.web-search-resize-handle {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 10px;
-  cursor: ew-resize;
-  z-index: 2;
 }
 
 .web-search-header {
@@ -750,11 +805,14 @@ onBeforeUnmount(() => {
   padding: 14px 16px 0;
 }
 
-.web-search-header-copy {
+.web-search-title-wrap {
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  cursor: nwse-resize;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .web-search-title {
@@ -769,24 +827,60 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 
-.web-search-close {
+.web-search-meta {
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.web-search-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.web-search-icon-btn {
   width: 30px;
   height: 30px;
   border: 1px solid #dbe4f3;
   border-radius: 9px;
   background: #ffffff;
   color: #64748b;
-  font-size: 18px;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    color 0.16s ease,
+    background-color 0.16s ease;
 }
 
-.web-search-close:hover,
-.web-search-inline-btn:hover,
+.web-search-icon-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.web-search-icon-btn.close {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.web-search-icon-btn:hover:not(:disabled),
 .web-search-submit:hover:not(:disabled) {
   border-color: #bfd5ff;
   color: #1058ff;
   background: #eef4ff;
+}
+
+.web-search-icon-btn:disabled {
+  opacity: 0.56;
+  cursor: default;
 }
 
 .web-search-form {
@@ -804,6 +898,7 @@ onBeforeUnmount(() => {
   background: #ffffff;
   color: #0f172a;
   font-size: 13px;
+  line-height: 1.35;
   padding: 12px 13px;
   outline: none;
 }
@@ -813,53 +908,19 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.14);
 }
 
-.web-search-submit,
-.web-search-inline-btn {
-  appearance: none;
+.web-search-submit {
+  min-width: 84px;
   border: 1px solid #dbe4f3;
-  border-radius: 10px;
+  border-radius: 12px;
   background: #ffffff;
   color: #334155;
   font-size: 12px;
   font-weight: 700;
-  cursor: pointer;
-  transition:
-    border-color 0.16s ease,
-    color 0.16s ease,
-    background-color 0.16s ease;
-}
-
-.web-search-submit {
-  min-width: 80px;
   padding: 0 14px;
+  cursor: pointer;
 }
 
-.web-search-inline-btn {
-  min-height: 32px;
-  padding: 0 10px;
-}
-
-.web-search-inline-btn.icon-only {
-  width: 32px;
-  min-width: 32px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.web-search-inline-btn.icon-only svg {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.web-search-submit:disabled,
-.web-search-inline-btn:disabled {
+.web-search-submit:disabled {
   opacity: 0.56;
   cursor: default;
 }
@@ -885,28 +946,13 @@ onBeforeUnmount(() => {
   color: #b91c1c;
 }
 
-.web-search-empty {
-  margin: 0 16px 16px;
-  border: 1px dashed #cbd5e1;
-  border-radius: 14px;
-  background: #f8fafc;
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.5;
-  padding: 16px;
-}
-
-.web-search-section {
+.web-search-summary-wrap {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-height: 0;
-  padding: 0 16px;
-}
-
-.web-search-preview-section {
-  flex: 1;
-  padding-bottom: 16px;
+  padding: 0 16px 16px;
 }
 
 .web-search-section-head {
@@ -925,25 +971,72 @@ onBeforeUnmount(() => {
   letter-spacing: 0.04em;
 }
 
-.web-search-counter {
-  color: #64748b;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.web-search-answer {
+.web-search-loading-card,
+.web-search-summary {
+  flex: 1;
+  min-height: 0;
   border: 1px solid #e5ebf5;
   border-radius: 14px;
   background: #f8fafc;
   color: #1e293b;
-  font-size: 13px;
-  line-height: 1.55;
   padding: 14px;
+}
+
+.web-search-loading-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+}
+
+.web-search-loading-bars {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.web-search-loading-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(191, 213, 255, 0.6);
+  transition:
+    background-color 0.2s ease,
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.web-search-loading-bar.active {
+  background: linear-gradient(90deg, #1058ff 0%, #4f8dff 100%);
+  box-shadow: 0 0 0 1px rgba(16, 88, 255, 0.14);
+  transform: scaleY(1.15);
+}
+
+.web-search-loading-title,
+.web-search-loading-text {
+  margin: 0;
+}
+
+.web-search-loading-title {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.web-search-loading-text {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.web-search-summary {
+  overflow: auto;
   white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.6;
   user-select: text;
 }
 
-.web-search-answer.muted {
+.web-search-summary.muted {
   color: #64748b;
 }
 
@@ -963,153 +1056,7 @@ onBeforeUnmount(() => {
   text-decoration: underline;
 }
 
-.web-search-sources {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 220px;
-  overflow: auto;
-}
-
-.web-search-source-card {
-  border: 1px solid #dbe4f3;
-  border-radius: 13px;
-  background: #ffffff;
-  overflow: hidden;
-}
-
-.web-search-source-card.active {
-  border-color: #a9c6ff;
-  box-shadow: 0 0 0 1px rgba(16, 88, 255, 0.08);
-}
-
-.web-search-source-main {
-  appearance: none;
-  width: 100%;
-  padding: 11px 12px;
-  border: none;
-  background: transparent;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: flex-start;
-  gap: 10px;
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-}
-
-.web-search-source-index {
-  color: #1058ff;
-  font-size: 12px;
-  font-weight: 800;
-  line-height: 1.35;
-  padding-top: 1px;
-}
-
-.web-search-source-body {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.web-search-source-body strong {
-  display: block;
-  color: #0f172a;
-  font-size: 13px;
-  line-height: 1.35;
-  word-break: break-word;
-}
-
-.web-search-source-domain {
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.4;
-  word-break: break-word;
-}
-
-.web-search-source-snippet {
-  margin: 0;
-  color: #475569;
-  font-size: 11px;
-  line-height: 1.45;
-  word-break: break-word;
-}
-
-.web-search-source-actions {
-  display: flex;
-  gap: 8px;
-  padding: 0 12px 12px;
-}
-
-.web-search-preview-card {
-  height: 100%;
-  min-height: 0;
-  border: 1px solid #dbe4f3;
-  border-radius: 14px;
-  background: #ffffff;
-  padding: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.web-search-preview-head {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.web-search-preview-head strong {
-  color: #0f172a;
-  font-size: 14px;
-  line-height: 1.35;
-}
-
-.web-search-preview-head span,
-.web-search-preview-description {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.45;
-  margin: 0;
-}
-
-.web-search-preview-link {
-  color: #1058ff;
-  font-size: 12px;
-  line-height: 1.45;
-  text-decoration: none;
-  word-break: break-word;
-}
-
-.web-search-preview-link:hover {
-  text-decoration: underline;
-}
-
-.web-search-preview-text {
-  flex: 1;
-  min-height: 0;
-  margin: 0;
-  border-radius: 12px;
-  background: #f8fafc;
-  color: #1e293b;
-  font-family: inherit;
-  font-size: 12px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow: auto;
-  padding: 12px;
-  user-select: text;
-}
-
 @media (max-width: 900px) {
-  .web-search-dock {
-    position: absolute;
-    inset: 0;
-  }
-
   .web-search-trigger {
     top: auto;
     right: calc(10px + env(safe-area-inset-right, 0px));
@@ -1117,20 +1064,17 @@ onBeforeUnmount(() => {
     transform: none;
     width: 46px;
     height: 46px;
-    border-radius: 999px;
-    padding: 0;
   }
 
   .web-search-panel {
     border-radius: 0;
-    min-width: 0;
   }
 
   .web-search-header {
     padding-top: max(12px, env(safe-area-inset-top, 0px));
   }
 
-  .web-search-preview-section {
+  .web-search-summary-wrap {
     padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
   }
 }
