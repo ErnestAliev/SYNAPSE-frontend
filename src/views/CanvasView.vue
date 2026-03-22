@@ -1431,6 +1431,10 @@ const nodeSearchResults = computed<CanvasNodeSearchItem[]>(() => {
 });
 
 let loadVersion = 0;
+let projectRefreshVersion = 0;
+let projectRefreshPromise: Promise<void> | null = null;
+const loadedProjectId = ref('');
+const isProjectServerStateFresh = ref(false);
 const lastAppliedProjectCanvasVersion = ref('');
 const lastAppliedProjectCanvasContentVersion = ref('');
 const lastAppliedProjectUpdatedAt = ref('');
@@ -1929,6 +1933,54 @@ function getCurrentProjectSnapshotFromStore() {
     projectUpdatedAt: typeof project.updatedAt === 'string' ? project.updatedAt : '',
     canvasData: normalizeCanvasData(project.canvas_data),
   };
+}
+
+async function refreshProjectFromServer(projectId = loadedProjectId.value) {
+  const normalizedProjectId = String(projectId || '').trim();
+  if (!normalizedProjectId) return;
+
+  const refreshVersion = ++projectRefreshVersion;
+  isProjectServerStateFresh.value = false;
+  let didRefresh = false;
+
+  try {
+    await entitiesStore.fetchEntityById(normalizedProjectId, { silent: true });
+    didRefresh = true;
+  } finally {
+    if (refreshVersion !== projectRefreshVersion) return;
+    if (didRefresh && loadedProjectId.value === normalizedProjectId) {
+      isProjectServerStateFresh.value = true;
+    }
+  }
+}
+
+function scheduleProjectFreshSync(projectId = routeProjectId.value) {
+  const normalizedProjectId = String(projectId || '').trim();
+  if (!normalizedProjectId) return;
+  if (projectRefreshPromise) return;
+
+  isProjectServerStateFresh.value = false;
+  projectRefreshPromise = (async () => {
+    try {
+      await refreshProjectFromServer(normalizedProjectId);
+    } catch {
+      // Keep writes blocked until a fresh project snapshot is fetched.
+    } finally {
+      projectRefreshPromise = null;
+    }
+  })();
+}
+
+function onProjectVisibilityChange() {
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+    isProjectServerStateFresh.value = false;
+    return;
+  }
+  scheduleProjectFreshSync();
+}
+
+function onProjectResumeSync() {
+  scheduleProjectFreshSync();
 }
 
 function hasPendingLocalCanvasSync(projectId: string) {
@@ -4870,6 +4922,10 @@ function queueCanvasSync(options?: { immediate?: boolean; projectId?: string }) 
   const serverCanvasData = buildCanvasDataSnapshot({ includeViewport: false });
   writeCanvasCache(projectId, localCanvasData, lastAppliedProjectCanvasVersion.value);
 
+  if (projectId === loadedProjectId.value && !isProjectServerStateFresh.value) {
+    return;
+  }
+
   entitiesStore.queueEntityUpdate(
     projectId,
     {
@@ -4877,7 +4933,6 @@ function queueCanvasSync(options?: { immediate?: boolean; projectId?: string }) 
     },
     {
       delay: options?.immediate ? 0 : CANVAS_SYNC_DELAY,
-      expectedCanvasVersion: lastAppliedProjectCanvasContentVersion.value,
       useUpdatedAtConflictCheck: false,
     },
   );
@@ -4925,6 +4980,8 @@ async function addNodeAtWorldPosition(worldX: number, worldY: number, name = get
 }
 
 async function loadProjectCanvas(projectId: string) {
+  loadedProjectId.value = projectId;
+  isProjectServerStateFresh.value = false;
   clearViewportSyncTimer();
   clearPendingRemoteCanvasApplyTimer();
   pendingRemoteCanvasSnapshot.value = null;
@@ -4957,6 +5014,8 @@ async function loadProjectCanvas(projectId: string) {
     if (!entitiesStore.initialized) {
       await entitiesStore.bootstrap();
     }
+
+    await refreshProjectFromServer(projectId);
 
     const project = entitiesStore.byId(projectId);
     if (!project || project.type !== 'project') {
@@ -4994,6 +5053,9 @@ async function loadProjectCanvas(projectId: string) {
     lastAppliedProjectCanvasVersion.value = projectCanvasVersion;
     lastAppliedProjectCanvasContentVersion.value = buildProjectCanvasContentVersion(canvasData);
     lastAppliedProjectUpdatedAt.value = typeof project.updatedAt === 'string' ? project.updatedAt : '';
+    if (currentVersion === loadVersion) {
+      isProjectServerStateFresh.value = true;
+    }
 
     await nextTick();
 
@@ -5041,6 +5103,7 @@ async function loadProjectCanvas(projectId: string) {
 
     if (currentVersion === loadVersion) {
       maybeShowNodeMenuHint(projectId);
+      isProjectServerStateFresh.value = true;
     }
   } catch (error) {
     const fallback = 'Не удалось загрузить холст проекта';
@@ -6392,7 +6455,7 @@ watch(
     Boolean(touchGesture.value),
     Boolean(tensionDrag.value),
     hasTensionOffsets.value,
-    routeProjectId.value ? entitiesStore.hasPendingEntityUpdate(routeProjectId.value) : false,
+    entitiesStore.pendingUpdateEpoch,
   ],
   () => {
     if (!isCanvasInteractionActive()) {
@@ -6544,6 +6607,9 @@ onMounted(() => {
   window.visualViewport?.addEventListener('resize', syncDeviceLayoutMetrics);
   window.visualViewport?.addEventListener('scroll', syncDeviceLayoutMetrics);
   window.addEventListener('blur', resetTransientStates);
+  document.addEventListener('visibilitychange', onProjectVisibilityChange);
+  window.addEventListener('pageshow', onProjectResumeSync);
+  window.addEventListener('online', onProjectResumeSync);
   window.addEventListener(PROJECT_CHAT_MONITOR_UPDATED_EVENT, handleProjectChatMonitorUpdated as EventListener);
 });
 
@@ -6572,6 +6638,9 @@ onBeforeUnmount(() => {
   window.visualViewport?.removeEventListener('resize', syncDeviceLayoutMetrics);
   window.visualViewport?.removeEventListener('scroll', syncDeviceLayoutMetrics);
   window.removeEventListener('blur', resetTransientStates);
+  document.removeEventListener('visibilitychange', onProjectVisibilityChange);
+  window.removeEventListener('pageshow', onProjectResumeSync);
+  window.removeEventListener('online', onProjectResumeSync);
   window.removeEventListener(PROJECT_CHAT_MONITOR_UPDATED_EVENT, handleProjectChatMonitorUpdated as EventListener);
 });
 

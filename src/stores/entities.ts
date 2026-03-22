@@ -55,6 +55,7 @@ interface EntitiesState {
   loading: boolean;
   error: string | null;
   initialized: boolean;
+  pendingUpdateEpoch: number;
   flashStates: Partial<Record<EntityType, number | null>>;
   lastCreatedIdByType: Partial<Record<EntityType, string | null>>;
   loadedTypes: Partial<Record<EntityType, boolean>>;
@@ -323,6 +324,7 @@ export const useEntitiesStore = defineStore('entities', {
     loading: false,
     error: null,
     initialized: false,
+    pendingUpdateEpoch: 0,
     flashStates: createInitialFlashState(),
     lastCreatedIdByType: ENTITY_TYPES.reduce((acc, type) => {
       acc[type] = null;
@@ -341,6 +343,10 @@ export const useEntitiesStore = defineStore('entities', {
   },
 
   actions: {
+    touchPendingEntityUpdates() {
+      this.pendingUpdateEpoch += 1;
+    },
+
     hasPendingEntityUpdate(id: string) {
       const normalizedId = String(id || '').trim();
       if (!normalizedId) return false;
@@ -355,18 +361,23 @@ export const useEntitiesStore = defineStore('entities', {
     clearBufferedPatchState(id: string) {
       const normalizedId = normalizeEntityId(id);
       if (!normalizedId) return;
+      let touched = false;
 
       const timer = bufferedEntityPatchTimers.get(normalizedId);
       if (timer) {
         clearTimeout(timer);
         bufferedEntityPatchTimers.delete(normalizedId);
+        touched = true;
       }
 
-      bufferedEntityPatches.delete(normalizedId);
-      bufferedEntityPatchInFlight.delete(normalizedId);
-      bufferedEntityPatchRetryCounts.delete(normalizedId);
-      bufferedEntityPatchBaseUpdatedAt.delete(normalizedId);
-      bufferedEntityPatchBaseCanvasVersion.delete(normalizedId);
+      if (bufferedEntityPatches.delete(normalizedId)) touched = true;
+      if (bufferedEntityPatchInFlight.delete(normalizedId)) touched = true;
+      if (bufferedEntityPatchRetryCounts.delete(normalizedId)) touched = true;
+      if (bufferedEntityPatchBaseUpdatedAt.delete(normalizedId)) touched = true;
+      if (bufferedEntityPatchBaseCanvasVersion.delete(normalizedId)) touched = true;
+      if (touched) {
+        this.touchPendingEntityUpdates();
+      }
     },
 
     setEntityAiPending(id: string, pending: boolean) {
@@ -770,6 +781,55 @@ export const useEntitiesStore = defineStore('entities', {
       }
     },
 
+    async fetchEntityById(id: string, options?: { silent?: boolean }) {
+      const normalizedId = normalizeEntityId(id);
+      if (!normalizedId) {
+        throw new Error('Entity id is required');
+      }
+
+      const silent = options?.silent ?? false;
+      if (!silent) {
+        this.loading = true;
+      }
+      this.error = null;
+
+      try {
+        const { data } = await apiClient.get<Entity>(`/entities/${normalizedId}`, {
+          timeout: ENTITIES_FETCH_TIMEOUT_MS,
+        });
+        const entity = normalizeEntityForStore(data);
+        if (!entity) {
+          return null;
+        }
+
+        cleanupExpiredRecentlyDeleted();
+        clearRecentlyDeleted([entity._id]);
+        this.setEntityAiPending(entity._id, normalizeAiPendingFlag(entity));
+
+        const existing = this.byId(entity._id);
+        const nextEntity =
+          existing && !this.hasPendingEntityUpdate(entity._id)
+            ? mergeFetchedEntityWithCurrent(entity, existing)
+            : existing || entity;
+
+        if (existing) {
+          this.items = this.items.map((item) => (item._id === entity._id ? nextEntity : item));
+        } else {
+          this.items = dedupeEntitiesById([nextEntity, ...this.items]);
+        }
+        this.loadedTypes[entity.type] = true;
+
+        return nextEntity;
+      } catch (error: unknown) {
+        this.error = this.formatApiError(error);
+        throw error;
+      } finally {
+        if (!silent) {
+          this.loading = false;
+        }
+      }
+    },
+
     async bootstrap(options?: { deferConnection?: boolean }) {
       if (this.initialized) {
         this.startRealtimeSync();
@@ -870,6 +930,7 @@ export const useEntitiesStore = defineStore('entities', {
       }, delay);
 
       bufferedEntityPatchTimers.set(normalizedId, nextTimer);
+      this.touchPendingEntityUpdates();
     },
 
     async flushQueuedEntityUpdate(id: string) {
@@ -880,6 +941,7 @@ export const useEntitiesStore = defineStore('entities', {
       if (timer) {
         clearTimeout(timer);
         bufferedEntityPatchTimers.delete(normalizedId);
+        this.touchPendingEntityUpdates();
       }
 
       if (bufferedEntityPatchInFlight.has(normalizedId)) {
@@ -891,6 +953,7 @@ export const useEntitiesStore = defineStore('entities', {
 
       bufferedEntityPatches.delete(normalizedId);
       bufferedEntityPatchInFlight.add(normalizedId);
+      this.touchPendingEntityUpdates();
 
       try {
         const expectedUpdatedAt = bufferedEntityPatchBaseUpdatedAt.get(normalizedId) || '';
@@ -922,7 +985,7 @@ export const useEntitiesStore = defineStore('entities', {
         const nextRetryCount = (bufferedEntityPatchRetryCounts.get(normalizedId) || 0) + 1;
         bufferedEntityPatchRetryCounts.set(normalizedId, nextRetryCount);
       } finally {
-        bufferedEntityPatchInFlight.delete(normalizedId);
+        const hadInFlight = bufferedEntityPatchInFlight.delete(normalizedId);
 
         if (bufferedEntityPatches.has(normalizedId)) {
           const retryCount = bufferedEntityPatchRetryCounts.get(normalizedId) || 0;
@@ -931,6 +994,9 @@ export const useEntitiesStore = defineStore('entities', {
             void this.flushQueuedEntityUpdate(normalizedId);
           }, retryDelay);
           bufferedEntityPatchTimers.set(normalizedId, retryTimer);
+        }
+        if (hadInFlight || bufferedEntityPatchTimers.has(normalizedId) || !bufferedEntityPatches.has(normalizedId)) {
+          this.touchPendingEntityUpdates();
         }
       }
     },
