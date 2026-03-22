@@ -932,13 +932,26 @@ const contextStatusMessage = computed(() => {
   }
   return '';
 });
-const searchFieldStateVersion = computed(
-  () =>
-    syncedSearchState.value.fieldSuggestion.updatedAt ||
-    syncedSearchState.value.updatedAt ||
-    syncedSearchState.value.completedAt ||
+const searchFieldStateVersion = computed(() => {
+  const fieldSignature = activeSearchFields.value
+    .map((field) => {
+      const values = syncedSearchState.value.fieldSuggestion.fields[field.key] || [];
+      return `${field.key}:${values.slice(0, 8).join(',')}`;
+    })
+    .join('|')
+    .slice(0, 320);
+
+  return [
+    syncedSearchState.value.fieldSuggestion.updatedAt,
+    syncedSearchState.value.fieldSuggestion.model,
+    fieldSignature,
+    syncedSearchState.value.updatedAt,
+    syncedSearchState.value.completedAt,
     syncedSearchState.value.query,
-);
+  ]
+    .filter(Boolean)
+    .join('|');
+});
 const hasEditableSearchFields = computed(() =>
   activeSearchFields.value.some((field) => (editableSearchFieldValues.value[field.key] || []).length > 0),
 );
@@ -1794,7 +1807,7 @@ onBeforeUnmount(() => {
   position: absolute;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   border-radius: 18px;
   border: 1px solid #dbe4f3;
   background: rgba(255, 255, 255, 0.98);
@@ -1803,6 +1816,8 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   min-width: 320px;
   min-height: 320px;
+  box-sizing: border-box;
+  padding-bottom: 16px;
   backdrop-filter: blur(10px);
   pointer-events: auto;
 }
@@ -1958,7 +1973,7 @@ onBeforeUnmount(() => {
 .web-search-summary-wrap {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   padding: 0 16px;
   flex: 0 0 auto;
   min-height: 0;
@@ -1969,6 +1984,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .web-search-section-toggle {
@@ -2015,8 +2031,8 @@ onBeforeUnmount(() => {
 .web-search-section-body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding-top: 6px;
+  gap: 8px;
+  padding-top: 4px;
 }
 
 .web-search-section-head h3 {
@@ -2035,14 +2051,16 @@ onBeforeUnmount(() => {
 .web-search-images-wrap {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   padding: 0 16px;
+  flex: 0 0 auto;
+  min-height: 0;
 }
 
 .web-search-images-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  gap: 10px;
 }
 
 .web-search-image-card {
@@ -2138,13 +2156,12 @@ onBeforeUnmount(() => {
 .web-search-summary {
   flex: 0 0 auto;
   min-height: 0;
-  max-height: 280px;
   border: 1px solid #e5ebf5;
   border-radius: 14px;
   background: #f8fafc;
   color: #1e293b;
   padding: 14px;
-  overflow: auto;
+  overflow: visible;
   white-space: pre-wrap;
   font-size: 13px;
   line-height: 1.6;
@@ -2158,9 +2175,10 @@ onBeforeUnmount(() => {
 .web-search-fields-wrap {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 0 16px 16px;
+  gap: 8px;
+  padding: 0 16px;
   min-height: 0;
+  flex: 0 0 auto;
 }
 
 .web-search-apply-fields-btn {
@@ -2194,8 +2212,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 8px;
   min-height: 0;
-  max-height: 224px;
-  overflow: auto;
+  overflow: visible;
 }
 
 .web-search-field-row {
@@ -2331,18 +2348,15 @@ onBeforeUnmount(() => {
 
   .web-search-panel {
     border-radius: 0;
+    padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
   }
 
   .web-search-header {
     padding-top: max(12px, env(safe-area-inset-top, 0px));
   }
 
-  .web-search-summary-wrap {
-    padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
-  }
-
-  .web-search-summary {
-    max-height: 240px;
+  .web-search-images-grid {
+    grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
   }
 
   .web-search-images-grid {
