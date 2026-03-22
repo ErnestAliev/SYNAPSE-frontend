@@ -410,20 +410,6 @@ const effectiveErrorMessage = computed(() => {
   return '';
 });
 
-const syncMetaText = computed(() => {
-  const state = syncedSearchState.value;
-  if (isBusy.value) {
-    return 'Поиск: web -> сверка -> сводка • синхронизация между устройствами';
-  }
-  if (state.status === 'ready' && state.sourceCount > 0) {
-    return `Сводка из ${state.sourceCount} веб-источников • синхронизируется между устройствами`;
-  }
-  if (state.status === 'failed') {
-    return 'Последняя ошибка синхронизирована между устройствами';
-  }
-  return 'Результаты поиска сохраняются в проекте и доступны на всех устройствах';
-});
-
 async function copySummary() {
   if (!summaryCopyText.value) return;
   await writeTextToClipboard(summaryCopyText.value);
@@ -614,9 +600,7 @@ onBeforeUnmount(() => {
           class="web-search-title-wrap"
           @pointerdown="onPanelResizeHandlePointerDown"
         >
-          <div class="web-search-title">Веб-поиск</div>
-          <div class="web-search-subtitle">{{ projectName }}</div>
-          <div class="web-search-meta">{{ syncMetaText }}</div>
+          <div class="web-search-title">Веб-поиск: <span>{{ projectName }}</span></div>
         </div>
         <div class="web-search-header-actions">
           <button
@@ -664,47 +648,39 @@ onBeforeUnmount(() => {
         </button>
       </form>
 
-      <p v-if="copyNotice" class="web-search-copy-notice">{{ copyNotice }}</p>
+      <p v-if="isBusy" class="web-search-status loading">
+        <span class="web-search-loading-glow">{{ loadingLabel }}</span>
+      </p>
+      <p v-else-if="effectiveErrorMessage" class="web-search-status error">{{ effectiveErrorMessage }}</p>
+      <p v-else-if="copyNotice" class="web-search-copy-notice">{{ copyNotice }}</p>
 
       <section class="web-search-summary-wrap">
         <div class="web-search-section-head">
           <h3>Сводка</h3>
         </div>
 
-        <div v-if="isBusy" class="web-search-loading-card">
-          <p class="web-search-loading-title">
-            <span class="web-search-loading-glow">{{ loadingLabel }}</span>
-          </p>
-          <p class="web-search-loading-text">
-            Результат появится в этом окне автоматически и синхронизируется между устройствами.
-          </p>
-        </div>
-
-        <p v-else-if="effectiveErrorMessage" class="web-search-status error">{{ effectiveErrorMessage }}</p>
-
-        <div
-          v-else-if="syncedSearchState.summary"
-          class="web-search-summary"
-          aria-label="Сводка с источниками"
-        >
-          <template v-for="segment in answerSegments" :key="segment.key">
-            <span v-if="segment.type === 'text'">{{ segment.text }}</span>
-            <a
-              v-else
-              class="web-search-citation"
-              :href="segment.citation.url"
-              target="_blank"
-              rel="noopener noreferrer"
-              :title="segment.citation.title || segment.citation.url"
-            >
-              [{{ segment.citation.sourceIndex }}]
-            </a>
+        <div class="web-search-summary" aria-label="Сводка с источниками">
+          <template v-if="syncedSearchState.summary">
+            <template v-for="segment in answerSegments" :key="segment.key">
+              <span v-if="segment.type === 'text'">{{ segment.text }}</span>
+              <a
+                v-else
+                class="web-search-citation"
+                :href="segment.citation.url"
+                target="_blank"
+                rel="noopener noreferrer"
+                :title="segment.citation.title || segment.citation.url"
+              >
+                [{{ segment.citation.sourceIndex }}]
+              </a>
+            </template>
           </template>
-        </div>
-
-        <div v-else class="web-search-summary muted">
-          Введите запрос и получите одну расширенную сводку. Ссылки останутся внутри текста в виде меток `[1]`, `[2]`,
-          `[3]`.
+          <div v-else-if="isBusy" class="web-search-summary-empty">
+            Идет поиск и сборка сводки...
+          </div>
+          <div v-else class="web-search-summary-empty">
+            Введите запрос и получите одну сводку. Ссылки останутся внутри текста в виде меток `[1]`, `[2]`, `[3]`.
+          </div>
         </div>
       </section>
     </section>
@@ -763,7 +739,7 @@ onBeforeUnmount(() => {
   position: absolute;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   border-radius: 18px;
   border: 1px solid #dbe4f3;
   background: rgba(255, 255, 255, 0.98);
@@ -777,17 +753,15 @@ onBeforeUnmount(() => {
 
 .web-search-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 14px 16px 0;
 }
 
 .web-search-title-wrap {
+  flex: 1;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
   cursor: nwse-resize;
   user-select: none;
   -webkit-user-select: none;
@@ -797,18 +771,15 @@ onBeforeUnmount(() => {
   color: #0f172a;
   font-size: 15px;
   font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.web-search-subtitle {
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.web-search-meta {
-  color: #94a3b8;
-  font-size: 11px;
-  line-height: 1.35;
+.web-search-title span {
+  color: #475569;
+  font-weight: 700;
 }
 
 .web-search-header-actions {
@@ -920,6 +891,10 @@ onBeforeUnmount(() => {
   color: #475569;
 }
 
+.web-search-status.loading {
+  min-height: 18px;
+}
+
 .web-search-status.error {
   color: #b91c1c;
 }
@@ -943,66 +918,26 @@ onBeforeUnmount(() => {
 .web-search-section-head h3 {
   margin: 0;
   color: #0f172a;
-  font-size: 12px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.web-search-loading-card,
-.web-search-summary {
-  flex: 1;
-  min-height: 0;
-  border: 1px solid #e5ebf5;
-  border-radius: 14px;
-  background: #f8fafc;
-  color: #1e293b;
-  padding: 14px;
-}
-
-.web-search-loading-card {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 10px;
-}
-
-.web-search-loading-title,
-.web-search-loading-text {
-  margin: 0;
-}
-
-.web-search-loading-title {
-  color: #0f172a;
   font-size: 14px;
   font-weight: 800;
-  line-height: 1.45;
 }
 
 .web-search-loading-glow {
   display: inline-block;
-  max-width: 100%;
-  color: rgba(15, 23, 42, 0.28);
   background-image: linear-gradient(
     90deg,
-    rgba(15, 23, 42, 0.24) 0%,
-    rgba(15, 23, 42, 0.24) 34%,
-    rgba(16, 88, 255, 0.96) 50%,
-    rgba(15, 23, 42, 0.24) 66%,
-    rgba(15, 23, 42, 0.24) 100%
+    rgba(100, 116, 139, 0.45) 0%,
+    rgba(100, 116, 139, 0.45) 38%,
+    rgba(16, 88, 255, 0.95) 50%,
+    rgba(100, 116, 139, 0.45) 62%,
+    rgba(100, 116, 139, 0.45) 100%
   );
-  background-size: 220% 100%;
+  background-size: 180% 100%;
   background-position: 100% 0;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: web-search-glow-sweep 2s linear infinite;
-}
-
-.web-search-loading-text {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.55;
+  animation: web-search-glow-sweep 1.9s linear infinite;
 }
 
 @keyframes web-search-glow-sweep {
@@ -1016,6 +951,13 @@ onBeforeUnmount(() => {
 }
 
 .web-search-summary {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid #e5ebf5;
+  border-radius: 14px;
+  background: #f8fafc;
+  color: #1e293b;
+  padding: 14px;
   overflow: auto;
   white-space: pre-wrap;
   font-size: 13px;
@@ -1023,7 +965,7 @@ onBeforeUnmount(() => {
   user-select: text;
 }
 
-.web-search-summary.muted {
+.web-search-summary-empty {
   color: #64748b;
 }
 
