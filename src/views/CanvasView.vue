@@ -6636,6 +6636,7 @@ interface CanvasNodeTooltipState {
 }
 const canvasTooltip = ref<CanvasNodeTooltipState | null>(null);
 const canvasTooltipCloseTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+const canvasTooltipDescriptionRef = ref<HTMLElement | null>(null);
 
 const CANVAS_NODE_TOOLTIP_FIELDS: Partial<Record<EntityType, Array<{ key: string; label: string }>>> = {
   goal:       [{ key: 'priority', label: 'Приоритет' }, { key: 'metrics', label: 'Метрики' }, { key: 'owners', label: 'Ответственные' }, { key: 'status', label: 'Статус' }, { key: 'tags', label: 'Теги' }, { key: 'markers', label: 'Маркеры' }],
@@ -6768,6 +6769,21 @@ function onCanvasTooltipPointerLeave() {
   closeCanvasTooltip();
 }
 
+function onCanvasTooltipWheel(event: WheelEvent) {
+  if (!isPhotoTooltipPlayMode.value) return;
+
+  const descriptionEl = canvasTooltipDescriptionRef.value;
+  if (!descriptionEl) return;
+
+  const hasScrollableOverflow = descriptionEl.scrollHeight > descriptionEl.clientHeight + 1;
+  if (!hasScrollableOverflow) return;
+
+  descriptionEl.scrollTop += event.deltaY;
+  clearCanvasTooltipCloseTimer();
+  event.preventDefault();
+  event.stopPropagation();
+}
+
 const canvasTooltipMass = computed(() => {
   const nodeId = canvasTooltip.value?.nodeId;
   if (!nodeId) return DEFAULT_NODE_MASS;
@@ -6838,6 +6854,9 @@ const canvasTooltipStyle = computed<Partial<Record<string, string>>>(() => {
         : (isPhotoTooltipPlayMode.value ? 0.74 : 0.68)
     ),
   );
+  const effectiveHeight = isPhotoTooltipPlayMode.value
+    ? Math.min(maxH, isTouchDevice ? 430 : 520)
+    : maxH;
 
   let left = rect.right + GAP;
   if (left + W > vw - GAP) {
@@ -6846,10 +6865,24 @@ const canvasTooltipStyle = computed<Partial<Record<string, string>>>(() => {
   }
 
   let top = rect.top;
-  if (top + maxH > effectiveVH - GAP) top = Math.max(GAP, effectiveVH - maxH - GAP);
+  if (top + effectiveHeight > effectiveVH - GAP) {
+    top = Math.max(GAP, effectiveVH - effectiveHeight - GAP);
+  }
   if (top < GAP) top = GAP;
 
-  return { left: `${Math.round(left)}px`, top: `${Math.round(top)}px`, width: `${W}px` };
+  const style: Partial<Record<string, string>> = {
+    left: `${Math.round(left)}px`,
+    top: `${Math.round(top)}px`,
+    width: `${W}px`,
+  };
+
+  if (isPhotoTooltipPlayMode.value) {
+    style.height = `${effectiveHeight}px`;
+  } else {
+    style.maxHeight = `${effectiveHeight}px`;
+  }
+
+  return style;
 });
 
 function onNodePlayEnter(payload: { nodeId: string; rect: DOMRect }) {
@@ -7701,6 +7734,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
         :style="canvasTooltipStyle"
         @pointerenter="onCanvasTooltipPointerEnter"
         @pointerleave="onCanvasTooltipPointerLeave"
+        @wheel="onCanvasTooltipWheel"
         @pointerdown.stop
         @click.stop
       >
@@ -7721,6 +7755,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           <div class="entity-card-tooltip-photo-copy">
             <div class="entity-card-tooltip-name">{{ canvasTooltip.entity.name || 'Без названия' }}</div>
             <p
+              ref="canvasTooltipDescriptionRef"
               class="entity-card-tooltip-desc entity-card-tooltip-photo-desc"
               :class="{ 'is-empty': !canvasTooltipDescription }"
             >
