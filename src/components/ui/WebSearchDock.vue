@@ -57,6 +57,30 @@ const SEARCH_IMPORTANCE_LEVEL_MAP: Record<string, string> = {
   critical: 'Высокая',
 };
 const SEARCH_LINK_CHIP_FALLBACK_LABEL = 'Website';
+const SEARCH_QUERY_PLACEHOLDERS: Record<EntityType, string> = {
+  connection: 'Тема + страна + город + контекст',
+  person: 'Имя + страна + город + должность',
+  company: 'Компания + страна + город + отрасль',
+  event: 'Событие + страна + город + дата',
+  goal: 'Цель + страна + город + контекст',
+  result: 'Результат + страна + город + контекст',
+  resource: 'Ресурс + страна + город + контекст',
+  shape: 'Название + страна + город + контекст',
+  task: 'Задача + страна + город + контекст',
+  project: 'Тема + страна + город + контекст',
+};
+const SEARCH_QUERY_HINTS: Record<EntityType, string> = {
+  connection: 'Уточнение через +: тема + страна + город + контекст',
+  person: 'Уточнение через +: имя + страна + город + должность',
+  company: 'Уточнение через +: компания + страна + город + отрасль',
+  event: 'Уточнение через +: событие + страна + город + дата',
+  goal: 'Уточнение через +: цель + страна + город + контекст',
+  result: 'Уточнение через +: результат + страна + город + контекст',
+  resource: 'Уточнение через +: ресурс + страна + город + контекст',
+  shape: 'Уточнение через +: название + страна + город + контекст',
+  task: 'Уточнение через +: задача + страна + город + контекст',
+  project: 'Уточнение через +: тема + страна + город + контекст',
+};
 const SEARCH_LINK_CHIP_LABELS: Array<{ label: string; domains: string[] }> = [
   { label: 'Instagram', domains: ['instagram.com'] },
   { label: 'Facebook', domains: ['facebook.com', 'fb.com'] },
@@ -246,6 +270,8 @@ const isQueryFocused = ref(false);
 const localErrorMessage = ref('');
 const copyNotice = ref('');
 const copyNoticeTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+const runtimeTickTimer = ref<ReturnType<typeof setInterval> | null>(null);
+const nowTimestamp = ref(Date.now());
 const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1366);
 const viewportHeight = ref(typeof window !== 'undefined' ? window.innerHeight : 768);
 const panelSize = ref<{ width: number; height: number } | null>(loadStoredPanelSize());
@@ -391,6 +417,51 @@ function getSearchFieldMaxLength(fieldKey: string) {
   if (fieldKey === 'phones') return SEARCH_PHONE_DISPLAY_MAX_LENGTH;
   if (fieldKey === 'links') return SEARCH_LINK_MAX_LENGTH;
   return SEARCH_FIELD_MAX_LENGTH;
+}
+
+function parseSearchTimestamp(value: string) {
+  if (!value) return 0;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function formatSearchDuration(valueMs: number) {
+  const durationMs = Math.max(0, Math.floor(valueMs));
+  if (!durationMs) return '0 сек';
+
+  const totalSeconds = Math.max(1, Math.round(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts: string[] = [];
+
+  if (hours > 0) parts.push(`${hours} ч`);
+  if (minutes > 0) parts.push(`${minutes} мин`);
+  if (seconds > 0 && hours === 0) parts.push(`${seconds} сек`);
+
+  return parts.join(' ');
+}
+
+function clearRuntimeTickTimer() {
+  if (!runtimeTickTimer.value) return;
+  clearInterval(runtimeTickTimer.value);
+  runtimeTickTimer.value = null;
+}
+
+function syncRuntimeTickTimer() {
+  const state = syncedSearchState.value;
+  const shouldTick = state.status === 'searching' && Boolean(parseSearchTimestamp(state.startedAt));
+
+  if (!shouldTick) {
+    clearRuntimeTickTimer();
+    return;
+  }
+
+  nowTimestamp.value = Date.now();
+  if (runtimeTickTimer.value || typeof window === 'undefined') return;
+  runtimeTickTimer.value = window.setInterval(() => {
+    nowTimestamp.value = Date.now();
+  }, 1000);
 }
 
 function searchFieldValueDedupeKey(fieldKey: string, value: string) {
@@ -707,6 +778,12 @@ const syncedSearchState = computed(() =>
   ),
 );
 const activeSearchFields = computed(() => getSearchContextFields(activeSearchEntityType.value));
+const searchInputPlaceholder = computed(
+  () => SEARCH_QUERY_PLACEHOLDERS[activeSearchEntityType.value] || SEARCH_QUERY_PLACEHOLDERS.shape,
+);
+const searchInputHint = computed(
+  () => SEARCH_QUERY_HINTS[activeSearchEntityType.value] || SEARCH_QUERY_HINTS.shape,
+);
 
 const isPhoneViewport = computed(() => viewportWidth.value <= NARROW_VIEWPORT_PX);
 const panelConstraints = computed(() => {
@@ -976,6 +1053,39 @@ const editableSearchFieldValueCount = computed(() =>
 const summarySectionCount = computed(() => {
   if (!syncedSearchState.value.summary) return 0;
   return Math.max(1, syncedSearchState.value.citations.length || syncedSearchState.value.sourceCount || 1);
+});
+const searchStatsPageCount = computed(() => {
+  const state = syncedSearchState.value;
+  if (state.sourceCount > 0) return state.sourceCount;
+
+  const citationSourceIndexes = new Set(
+    state.citations
+      .map((citation) => Number(citation.sourceIndex) || 0)
+      .filter((value) => value > 0),
+  );
+  return citationSourceIndexes.size;
+});
+const searchStatsDurationLabel = computed(() => {
+  const state = syncedSearchState.value;
+  const startedAtMs = parseSearchTimestamp(state.startedAt);
+  if (!startedAtMs) return '—';
+
+  const completedAtMs = parseSearchTimestamp(state.completedAt);
+  const endAtMs =
+    completedAtMs ||
+    (state.status === 'searching' ? nowTimestamp.value : parseSearchTimestamp(state.updatedAt));
+  if (!endAtMs || endAtMs < startedAtMs) return '—';
+  return formatSearchDuration(endAtMs - startedAtMs);
+});
+const shouldShowSearchStats = computed(() => {
+  const state = syncedSearchState.value;
+  return Boolean(
+    state.query ||
+    state.summary ||
+    state.status === 'searching' ||
+    state.status === 'ready' ||
+    state.status === 'failed',
+  );
 });
 
 function areStringListsEqual(left: string[], right: string[]) {
@@ -1467,9 +1577,18 @@ watch(panelSize, () => {
   persistPanelSize();
 });
 
+watch(
+  () => [syncedSearchState.value.status, syncedSearchState.value.startedAt, syncedSearchState.value.completedAt],
+  () => {
+    syncRuntimeTickTimer();
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   updateViewportSize();
   panelSize.value = resolvedPanelSize.value;
+  syncRuntimeTickTimer();
   if (typeof window === 'undefined') return;
   window.addEventListener('resize', updateViewportSize);
   window.addEventListener('orientationchange', updateViewportSize);
@@ -1478,6 +1597,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearCopyNoticeTimer();
+  clearRuntimeTickTimer();
   stopPanelResize();
   resetReservedWidthVar();
   if (typeof window === 'undefined') return;
@@ -1554,7 +1674,7 @@ onBeforeUnmount(() => {
           type="search"
           class="web-search-input"
           :disabled="isSubmitting || isLoadingEntityState || !hasActiveEntityContext"
-          placeholder="Компания, человек, событие, тема..."
+          :placeholder="searchInputPlaceholder"
           @focus="isQueryFocused = true"
           @blur="isQueryFocused = false"
         />
@@ -1566,6 +1686,7 @@ onBeforeUnmount(() => {
           {{ isBusy ? 'Сбор...' : 'Найти' }}
         </button>
       </form>
+      <p class="web-search-query-hint">{{ searchInputHint }}</p>
 
       <p v-if="isBusy" class="web-search-status loading">
         <span class="web-search-loading-glow">{{ loadingLabel }}</span>
@@ -1734,6 +1855,17 @@ onBeforeUnmount(() => {
         </button>
 
         <div v-show="isSummarySectionExpanded" class="web-search-section-body">
+          <div v-if="shouldShowSearchStats" class="web-search-stats-panel" aria-label="Статистика веб-поиска">
+            <div class="web-search-stats-item">
+              <span class="web-search-stats-label">Страниц изучено</span>
+              <strong class="web-search-stats-value">{{ searchStatsPageCount }}</strong>
+            </div>
+            <div class="web-search-stats-item">
+              <span class="web-search-stats-label">Время сбора</span>
+              <strong class="web-search-stats-value">{{ searchStatsDurationLabel }}</strong>
+            </div>
+          </div>
+
           <div class="web-search-summary" aria-label="Сводка с источниками">
             <template v-if="syncedSearchState.summary">
               <template v-for="segment in answerSegments" :key="segment.key">
@@ -1922,6 +2054,14 @@ onBeforeUnmount(() => {
   padding: 0 16px;
 }
 
+.web-search-query-hint {
+  margin: 6px 0 0;
+  padding: 0 16px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #64748b;
+}
+
 .web-search-input {
   width: 100%;
   min-width: 0;
@@ -2045,6 +2185,37 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 8px;
   padding-top: 4px;
+}
+
+.web-search-stats-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.web-search-stats-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid #dbe4f3;
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 10px 11px;
+}
+
+.web-search-stats-label {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.web-search-stats-value {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.2;
 }
 
 .web-search-section-head h3 {
