@@ -1225,6 +1225,22 @@ const activeMenuEntity = computed<Entity | null>(() => {
   return entitiesStore.byId(activeMenuNode.value.entityId) || null;
 });
 
+const activeWebSearchEntityId = computed(() => {
+  const modalEntityId =
+    typeof entityInfoModal.value?.entityId === 'string' ? entityInfoModal.value.entityId.trim() : '';
+  if (modalEntityId) return modalEntityId;
+
+  if (selectedNodeIds.value.length === 1) {
+    const nodeEntityId = getNodeById(selectedNodeIds.value[0] || '')?.entityId;
+    if (typeof nodeEntityId === 'string' && nodeEntityId.trim()) {
+      return nodeEntityId.trim();
+    }
+  }
+
+  const menuEntityId = typeof activeMenuEntity.value?._id === 'string' ? activeMenuEntity.value._id.trim() : '';
+  return menuEntityId;
+});
+
 const activeMenuEntityType = computed<EntityType>(() => {
   return activeMenuEntity.value?.type || 'shape';
 });
@@ -7752,7 +7768,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
         <path d="m16.2 12.9-2.3 3" />
       </svg>
     </button>
-    <WebSearchDock />
+    <WebSearchDock :active-entity-id="activeWebSearchEntityId" />
 
     <div
       v-if="canvasPlayHintVisible && isPlayMode"

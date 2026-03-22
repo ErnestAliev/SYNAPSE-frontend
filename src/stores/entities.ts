@@ -60,6 +60,8 @@ interface EntitiesState {
   lastCreatedIdByType: Partial<Record<EntityType, string | null>>;
   loadedTypes: Partial<Record<EntityType, boolean>>;
   aiAnalyzePendingById: Record<string, boolean>;
+  webSearchStateByEntityId: Record<string, Record<string, unknown>>;
+  webSearchLoadedByEntityId: Record<string, boolean>;
 }
 
 interface FetchEntitiesOptions {
@@ -332,6 +334,8 @@ export const useEntitiesStore = defineStore('entities', {
     }, {} as Partial<Record<EntityType, string | null>>),
     loadedTypes: createInitialLoadedTypeState(),
     aiAnalyzePendingById: {},
+    webSearchStateByEntityId: {},
+    webSearchLoadedByEntityId: {},
   }),
 
   getters: {
@@ -340,6 +344,16 @@ export const useEntitiesStore = defineStore('entities', {
     countByType: (state) => (type: EntityType) =>
       state.items.filter((item) => item.type === type).length,
     isEntityAiPending: (state) => (id: string) => Boolean(state.aiAnalyzePendingById[id]),
+    getEntityWebSearchState: (state) => (id: string) => {
+      const normalizedId = normalizeEntityId(id);
+      if (!normalizedId) return null;
+      return state.webSearchStateByEntityId[normalizedId] || null;
+    },
+    hasLoadedEntityWebSearchState: (state) => (id: string) => {
+      const normalizedId = normalizeEntityId(id);
+      if (!normalizedId) return false;
+      return Boolean(state.webSearchLoadedByEntityId[normalizedId]);
+    },
   },
 
   actions: {
@@ -388,6 +402,26 @@ export const useEntitiesStore = defineStore('entities', {
       } else {
         delete this.aiAnalyzePendingById[normalizedId];
       }
+    },
+
+    setEntityWebSearchState(id: string, state: Record<string, unknown> | null | undefined) {
+      const normalizedId = normalizeEntityId(id);
+      if (!normalizedId) return;
+
+      if (state && typeof state === 'object' && !Array.isArray(state)) {
+        this.webSearchStateByEntityId[normalizedId] = { ...state };
+      } else {
+        this.webSearchStateByEntityId[normalizedId] = {};
+      }
+
+      this.webSearchLoadedByEntityId[normalizedId] = true;
+    },
+
+    clearEntityWebSearchState(id: string) {
+      const normalizedId = normalizeEntityId(id);
+      if (!normalizedId) return;
+      delete this.webSearchStateByEntityId[normalizedId];
+      delete this.webSearchLoadedByEntityId[normalizedId];
     },
 
     applyLocalEntityPatch(id: string, payload: Partial<Entity>) {
@@ -553,6 +587,7 @@ export const useEntitiesStore = defineStore('entities', {
       for (const removedEntityId of removedEntityIds) {
         this.clearBufferedPatchState(removedEntityId);
         this.setEntityAiPending(removedEntityId, false);
+        this.clearEntityWebSearchState(removedEntityId);
       }
 
       markRecentlyDeleted(removedEntityIds);
@@ -611,38 +646,20 @@ export const useEntitiesStore = defineStore('entities', {
       }
     },
 
-    handleRealtimeProjectWebSearchEvent(rawData: string) {
+    handleRealtimeEntityWebSearchEvent(rawData: string) {
       const payload = parseEntityEventPayload(rawData);
       if (!payload) return;
 
-      const projectId = normalizeEntityId(payload.projectId);
-      if (!projectId) return;
+      const entityId = normalizeEntityId(payload.entityId);
+      if (!entityId) return;
 
-      const existing = this.byId(projectId);
-      if (!existing || existing.type !== 'project') return;
-
-      const nextUpdatedAt = typeof payload.updatedAt === 'string' ? payload.updatedAt.trim() : '';
       const nextWebSearch =
         payload.webSearch && typeof payload.webSearch === 'object' && !Array.isArray(payload.webSearch)
           ? (payload.webSearch as Record<string, unknown>)
           : null;
       if (!nextWebSearch) return;
 
-      const currentMeta =
-        existing.ai_metadata && typeof existing.ai_metadata === 'object' && !Array.isArray(existing.ai_metadata)
-          ? (existing.ai_metadata as Record<string, unknown>)
-          : {};
-
-      const nextEntity: Entity = {
-        ...existing,
-        ...(nextUpdatedAt ? { updatedAt: nextUpdatedAt } : {}),
-        ai_metadata: {
-          ...currentMeta,
-          web_search: nextWebSearch,
-        },
-      };
-
-      this.items = this.items.map((item) => (item._id === projectId ? nextEntity : item));
+      this.setEntityWebSearchState(entityId, nextWebSearch);
     },
 
     startRealtimeSync() {
@@ -693,8 +710,8 @@ export const useEntitiesStore = defineStore('entities', {
         this.handleRealtimeEntityEvent('entity.deleted', event.data);
       });
 
-      source.addEventListener('project.web_search.updated', (event: MessageEvent<string>) => {
-        this.handleRealtimeProjectWebSearchEvent(event.data);
+      source.addEventListener('entity.web_search.updated', (event: MessageEvent<string>) => {
+        this.handleRealtimeEntityWebSearchEvent(event.data);
       });
 
       source.onerror = () => {

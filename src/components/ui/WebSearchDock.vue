@@ -20,7 +20,7 @@ interface WebSearchCitation {
   endIndex: number;
 }
 
-interface ProjectWebSearchState {
+interface WebSearchStateEntry {
   status: 'idle' | 'searching' | 'ready' | 'failed';
   query: string;
   summary: string;
@@ -33,6 +33,10 @@ interface ProjectWebSearchState {
   model: string;
   sourceCount: number;
   searchQueries: string[];
+}
+
+interface WebSearchState extends WebSearchStateEntry {
+  history: WebSearchStateEntry[];
 }
 
 type AnswerSegment =
@@ -48,6 +52,7 @@ type AnswerSegment =
     };
 
 const PANEL_SIZE_STORAGE_KEY = 'synapse12.web-search.panel-size.v3';
+const PANEL_CONTEXT_STORAGE_PREFIX = 'synapse12.web-search.context.v1';
 const RESERVED_WIDTH_CSS_VAR = '--synapse-web-search-reserved-width';
 const PANEL_TOP_OFFSET_PX = 60;
 const PANEL_EDGE_MARGIN_PX = 14;
@@ -59,9 +64,13 @@ const NARROW_VIEWPORT_PX = 900;
 
 const route = useRoute();
 const entitiesStore = useEntitiesStore();
+const props = defineProps<{
+  activeEntityId?: string;
+}>();
 
 const isOpen = ref(false);
 const isSubmitting = ref(false);
+const isLoadingEntityState = ref(false);
 const queryDraft = ref('');
 const searchInputRef = ref<HTMLInputElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
@@ -80,6 +89,8 @@ const resizeStart = ref<{
   width: number;
   height: number;
 } | null>(null);
+const restoredSessionEntityId = ref('');
+const pendingStateLoads = new Map<string, Promise<void>>();
 
 function toProfile(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -111,11 +122,11 @@ function normalizeWebUrl(rawValue: unknown) {
   }
 }
 
-function normalizeWebSearchState(rawValue: unknown): ProjectWebSearchState {
+function normalizeWebSearchStateEntry(rawValue: unknown): WebSearchStateEntry {
   const row = toProfile(rawValue);
   const statusRaw = typeof row.status === 'string' ? row.status.trim().toLowerCase() : '';
-  const status: ProjectWebSearchState['status'] = ['searching', 'ready', 'failed'].includes(statusRaw)
-    ? (statusRaw as ProjectWebSearchState['status'])
+  const status: WebSearchStateEntry['status'] = ['searching', 'ready', 'failed'].includes(statusRaw)
+    ? (statusRaw as WebSearchStateEntry['status'])
     : 'idle';
   const rawCitations = Array.isArray(row.citations) ? row.citations : [];
   const rawImages = Array.isArray(row.images) ? row.images : [];
@@ -173,6 +184,17 @@ function normalizeWebSearchState(rawValue: unknown): ProjectWebSearchState {
   };
 }
 
+function normalizeWebSearchState(rawValue: unknown): WebSearchState {
+  const row = toProfile(rawValue);
+  return {
+    ...normalizeWebSearchStateEntry(row.current || row),
+    history: (Array.isArray(row.history) ? row.history : [])
+      .map((item) => normalizeWebSearchStateEntry(item))
+      .filter((item) => item.query || item.summary || item.status !== 'idle')
+      .slice(0, 12),
+  };
+}
+
 function loadStoredPanelSize() {
   if (typeof window === 'undefined') return null;
 
@@ -201,19 +223,62 @@ function persistPanelSize() {
   }
 }
 
+function buildPanelContextStorageKey(projectIdValue: string) {
+  return `${PANEL_CONTEXT_STORAGE_PREFIX}:${projectIdValue}`;
+}
+
+function loadStoredPanelContext(projectIdValue: string) {
+  if (typeof window === 'undefined' || !projectIdValue) {
+    return { entityId: '', isOpen: false };
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(buildPanelContextStorageKey(projectIdValue));
+    if (!raw) {
+      return { entityId: '', isOpen: false };
+    }
+
+    const parsed = JSON.parse(raw) as { entityId?: unknown; isOpen?: unknown };
+    return {
+      entityId: typeof parsed.entityId === 'string' ? parsed.entityId.trim() : '',
+      isOpen: Boolean(parsed.isOpen),
+    };
+  } catch {
+    return { entityId: '', isOpen: false };
+  }
+}
+
+function persistPanelContext(projectIdValue: string, entityIdValue: string, open: boolean) {
+  if (typeof window === 'undefined' || !projectIdValue) return;
+
+  try {
+    window.sessionStorage.setItem(
+      buildPanelContextStorageKey(projectIdValue),
+      JSON.stringify({
+        entityId: entityIdValue,
+        isOpen: open,
+      }),
+    );
+  } catch {
+    // Ignore session storage write errors.
+  }
+}
+
 const projectId = computed(() => normalizeRouteParam(route.params.id));
-const projectEntity = computed(() => {
-  if (!projectId.value) return null;
-  const entity = entitiesStore.byId(projectId.value);
-  if (!entity || entity.type !== 'project') return null;
-  return entity;
-});
-const projectName = computed(() => projectEntity.value?.name?.trim() || 'Канва проекта');
 const isCanvasRoute = computed(() => route.name === 'project-canvas' && Boolean(projectId.value));
-const syncedSearchState = computed(() => {
-  const metadata = toProfile(projectEntity.value?.ai_metadata);
-  return normalizeWebSearchState(metadata.web_search);
+const explicitActiveEntityId = computed(() => normalizeRouteParam(props.activeEntityId));
+const effectiveActiveEntityId = computed(
+  () => explicitActiveEntityId.value || restoredSessionEntityId.value,
+);
+const activeSearchEntity = computed(() => {
+  if (!effectiveActiveEntityId.value) return null;
+  return entitiesStore.byId(effectiveActiveEntityId.value) || null;
 });
+const activeSearchEntityName = computed(() => activeSearchEntity.value?.name?.trim() || 'Сущность');
+const hasActiveEntityContext = computed(() => Boolean(effectiveActiveEntityId.value));
+const syncedSearchState = computed(() =>
+  normalizeWebSearchState(entitiesStore.getEntityWebSearchState(effectiveActiveEntityId.value)),
+);
 
 const isPhoneViewport = computed(() => viewportWidth.value <= NARROW_VIEWPORT_PX);
 const panelConstraints = computed(() => {
@@ -435,6 +500,60 @@ const effectiveErrorMessage = computed(() => {
   if (syncedSearchState.value.status === 'failed') return syncedSearchState.value.errorMessage;
   return '';
 });
+const contextStatusMessage = computed(() => {
+  if (!hasActiveEntityContext.value) {
+    return 'Откройте сущность или выделите одну ноду, чтобы загрузить ее историю веб-поиска.';
+  }
+  if (isLoadingEntityState.value) {
+    return 'Загружаю историю поиска для выбранной сущности...';
+  }
+  return '';
+});
+
+async function loadEntityWebSearchState(entityIdValue: string, force = false) {
+  const entityId = normalizeRouteParam(entityIdValue);
+  if (!entityId) return;
+
+  if (!force && entitiesStore.hasLoadedEntityWebSearchState(entityId)) {
+    return;
+  }
+
+  const existingRequest = pendingStateLoads.get(entityId);
+  if (existingRequest) {
+    await existingRequest;
+    return;
+  }
+
+  const request = (async () => {
+    isLoadingEntityState.value = true;
+    try {
+      const { data } = await apiClient.get('/ai/web-search-state', {
+        params: { entityId },
+        timeout: 30000,
+      });
+      const nextState =
+        data?.webSearch && typeof data.webSearch === 'object' && !Array.isArray(data.webSearch)
+          ? (data.webSearch as Record<string, unknown>)
+          : {};
+      entitiesStore.setEntityWebSearchState(entityId, nextState);
+      if (effectiveActiveEntityId.value === entityId) {
+        localErrorMessage.value = '';
+      }
+    } catch (error) {
+      if (effectiveActiveEntityId.value === entityId) {
+        localErrorMessage.value = extractApiErrorMessage(error, 'Не удалось загрузить историю веб-поиска.');
+      }
+    } finally {
+      pendingStateLoads.delete(entityId);
+      if (!pendingStateLoads.size) {
+        isLoadingEntityState.value = false;
+      }
+    }
+  })();
+
+  pendingStateLoads.set(entityId, request);
+  await request;
+}
 
 async function copySummary() {
   if (!summaryCopyText.value) return;
@@ -462,7 +581,8 @@ function onImageDragStart(event: DragEvent, image: WebSearchImageResult) {
 
 async function submitSearch() {
   const query = queryDraft.value.trim();
-  if (!query || !projectId.value || isSubmitting.value) return;
+  const entityId = effectiveActiveEntityId.value;
+  if (!query || !projectId.value || !entityId || isSubmitting.value || isLoadingEntityState.value) return;
 
   isSubmitting.value = true;
   localErrorMessage.value = '';
@@ -471,6 +591,7 @@ async function submitSearch() {
       '/ai/web-search',
       {
         projectId: projectId.value,
+        entityId,
         query,
       },
       {
@@ -551,6 +672,31 @@ function closePanel() {
 }
 
 watch(
+  projectId,
+  (nextProjectId) => {
+    const context = loadStoredPanelContext(nextProjectId);
+    restoredSessionEntityId.value = context.entityId;
+    if (isCanvasRoute.value) {
+      isOpen.value = context.isOpen;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  [projectId, explicitActiveEntityId, isOpen],
+  ([nextProjectId, nextEntityId, nextIsOpen]) => {
+    if (!nextProjectId) return;
+    const entityId = nextEntityId || restoredSessionEntityId.value;
+    persistPanelContext(nextProjectId, entityId, nextIsOpen);
+    if (nextEntityId) {
+      restoredSessionEntityId.value = nextEntityId;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
   [isOpen, isCanvasRoute, resolvedPanelSize, isPhoneViewport],
   () => {
     syncReservedWidthVar();
@@ -572,10 +718,27 @@ watch(
 );
 
 watch(
+  effectiveActiveEntityId,
+  (nextEntityId) => {
+    localErrorMessage.value = '';
+    clearCopyNoticeTimer();
+    copyNotice.value = '';
+    queryDraft.value = normalizeWebSearchState(entitiesStore.getEntityWebSearchState(nextEntityId)).query;
+
+    if (!nextEntityId) {
+      isLoadingEntityState.value = false;
+      return;
+    }
+
+    void loadEntityWebSearchState(nextEntityId, true);
+  },
+  { immediate: true },
+);
+
+watch(
   () => syncedSearchState.value.query,
   (nextQuery) => {
-    if (!nextQuery) return;
-    if (!queryDraft.value.trim() || !isQueryFocused.value) {
+    if (!isQueryFocused.value) {
       queryDraft.value = nextQuery;
     }
   },
@@ -644,7 +807,7 @@ onBeforeUnmount(() => {
           class="web-search-title-wrap"
           @pointerdown="onPanelResizeHandlePointerDown"
         >
-          <div class="web-search-title">Веб-поиск: <span>{{ projectName }}</span></div>
+          <div class="web-search-title">Веб-поиск: <span>{{ activeSearchEntityName }}</span></div>
         </div>
         <div class="web-search-header-actions">
           <button
@@ -678,7 +841,7 @@ onBeforeUnmount(() => {
           v-model.trim="queryDraft"
           type="search"
           class="web-search-input"
-          :disabled="isSubmitting"
+          :disabled="isSubmitting || isLoadingEntityState || !hasActiveEntityContext"
           placeholder="Компания, человек, событие, тема..."
           @focus="isQueryFocused = true"
           @blur="isQueryFocused = false"
@@ -686,7 +849,7 @@ onBeforeUnmount(() => {
         <button
           type="submit"
           class="web-search-submit"
-          :disabled="isSubmitting || !queryDraft.trim()"
+          :disabled="isSubmitting || isLoadingEntityState || !hasActiveEntityContext || !queryDraft.trim()"
         >
           {{ isBusy ? 'Сбор...' : 'Найти' }}
         </button>
@@ -695,6 +858,7 @@ onBeforeUnmount(() => {
       <p v-if="isBusy" class="web-search-status loading">
         <span class="web-search-loading-glow">{{ loadingLabel }}</span>
       </p>
+      <p v-else-if="contextStatusMessage" class="web-search-status">{{ contextStatusMessage }}</p>
       <p v-else-if="effectiveErrorMessage" class="web-search-status error">{{ effectiveErrorMessage }}</p>
       <p v-else-if="copyNotice" class="web-search-copy-notice">{{ copyNotice }}</p>
 
@@ -742,6 +906,9 @@ onBeforeUnmount(() => {
           <div v-else-if="isBusy" class="web-search-images-empty">
             Подбираю релевантные фото...
           </div>
+          <div v-else-if="!hasActiveEntityContext" class="web-search-images-empty">
+            Выберите сущность на канве, чтобы увидеть ее подборку фото.
+          </div>
           <div v-else class="web-search-images-empty">
             Фото по запросу появятся здесь.
           </div>
@@ -771,6 +938,9 @@ onBeforeUnmount(() => {
           </template>
           <div v-else-if="isBusy" class="web-search-summary-empty">
             Идет поиск и сборка сводки...
+          </div>
+          <div v-else-if="!hasActiveEntityContext" class="web-search-summary-empty">
+            Откройте карточку сущности или выделите одну ноду. Для каждой сущности хранится собственная история веб-поиска.
           </div>
           <div v-else class="web-search-summary-empty">
             Введите запрос и получите одну сводку. Ссылки останутся внутри текста в виде меток `[1]`, `[2]`, `[3]`.
