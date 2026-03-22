@@ -50,12 +50,6 @@ const PANEL_MAX_WIDTH_PX = 760;
 const PANEL_MIN_HEIGHT_PX = 360;
 const PANEL_DEFAULT_WIDTH_PX = 520;
 const NARROW_VIEWPORT_PX = 900;
-const SEARCH_STEPS = [
-  'Ищу релевантные источники',
-  'Сверяю даты и факты',
-  'Отсекаю шум и дубли',
-  'Собираю расширенную сводку',
-] as const;
 
 const route = useRoute();
 const entitiesStore = useEntitiesStore();
@@ -80,8 +74,6 @@ const resizeStart = ref<{
   width: number;
   height: number;
 } | null>(null);
-const animatedStepIndex = ref(0);
-const animatedStepTimer = ref<ReturnType<typeof setInterval> | null>(null);
 
 function toProfile(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -405,7 +397,13 @@ const summaryCopyText = computed(() => {
 });
 
 const isBusy = computed(() => isSubmitting.value || syncedSearchState.value.status === 'searching');
-const activeStepLabel = computed(() => SEARCH_STEPS[animatedStepIndex.value] || SEARCH_STEPS[0]);
+const loadingLabel = computed(() => {
+  const query = syncedSearchState.value.query || queryDraft.value.trim();
+  if (!query) {
+    return 'Ищу информацию и собираю сводку';
+  }
+  return `Ищу информацию и собираю сводку по запросу: ${query}`;
+});
 const effectiveErrorMessage = computed(() => {
   if (localErrorMessage.value.trim()) return localErrorMessage.value.trim();
   if (syncedSearchState.value.status === 'failed') return syncedSearchState.value.errorMessage;
@@ -426,20 +424,6 @@ const syncMetaText = computed(() => {
   return 'Результаты поиска сохраняются в проекте и доступны на всех устройствах';
 });
 
-function stopAnimatedSteps() {
-  if (!animatedStepTimer.value) return;
-  clearInterval(animatedStepTimer.value);
-  animatedStepTimer.value = null;
-}
-
-function startAnimatedSteps() {
-  stopAnimatedSteps();
-  animatedStepIndex.value = 0;
-  animatedStepTimer.value = setInterval(() => {
-    animatedStepIndex.value = (animatedStepIndex.value + 1) % SEARCH_STEPS.length;
-  }, 960);
-}
-
 async function copySummary() {
   if (!summaryCopyText.value) return;
   await writeTextToClipboard(summaryCopyText.value);
@@ -453,11 +437,21 @@ async function submitSearch() {
   isSubmitting.value = true;
   localErrorMessage.value = '';
   try {
-    await apiClient.post('/ai/web-search', {
-      projectId: projectId.value,
-      query,
-    });
+    await apiClient.post(
+      '/ai/web-search',
+      {
+        projectId: projectId.value,
+        query,
+      },
+      {
+        timeout: 0,
+      },
+    );
   } catch (error) {
+    if (axios.isAxiosError(error) && error.code === 'ECONNABORTED' && syncedSearchState.value.status === 'searching') {
+      localErrorMessage.value = '';
+      return;
+    }
     localErrorMessage.value = extractApiErrorMessage(error, 'Не удалось выполнить веб-поиск.');
   } finally {
     isSubmitting.value = false;
@@ -558,18 +552,6 @@ watch(
   { immediate: true },
 );
 
-watch(
-  isBusy,
-  (nextValue) => {
-    if (nextValue) {
-      startAnimatedSteps();
-      return;
-    }
-    stopAnimatedSteps();
-  },
-  { immediate: true },
-);
-
 watch(panelConstraints, () => {
   if (isResizingPanel.value) return;
   panelSize.value = clampPanelSize(panelSize.value || getDefaultPanelSize());
@@ -591,7 +573,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearCopyNoticeTimer();
-  stopAnimatedSteps();
   stopPanelResize();
   resetReservedWidthVar();
   if (typeof window === 'undefined') return;
@@ -691,18 +672,11 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="isBusy" class="web-search-loading-card">
-          <div class="web-search-loading-bars" aria-hidden="true">
-            <span
-              v-for="(step, index) in SEARCH_STEPS"
-              :key="step"
-              class="web-search-loading-bar"
-              :class="{ active: index === animatedStepIndex }"
-            />
-          </div>
-          <p class="web-search-loading-title">{{ activeStepLabel }}</p>
+          <p class="web-search-loading-title">
+            <span class="web-search-loading-glow">{{ loadingLabel }}</span>
+          </p>
           <p class="web-search-loading-text">
-            Ищу веб-источники, сверяю факты, убираю шум и собираю расширенную сводку. Результат автоматически
-            синхронизируется между устройствами.
+            Результат появится в этом окне автоматически и синхронизируется между устройствами.
           </p>
         </div>
 
@@ -990,29 +964,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 12px;
-}
-
-.web-search-loading-bars {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.web-search-loading-bar {
-  height: 8px;
-  border-radius: 999px;
-  background: rgba(191, 213, 255, 0.6);
-  transition:
-    background-color 0.2s ease,
-    transform 0.2s ease,
-    box-shadow 0.2s ease;
-}
-
-.web-search-loading-bar.active {
-  background: linear-gradient(90deg, #1058ff 0%, #4f8dff 100%);
-  box-shadow: 0 0 0 1px rgba(16, 88, 255, 0.14);
-  transform: scaleY(1.15);
+  gap: 10px;
 }
 
 .web-search-loading-title,
@@ -1024,12 +976,43 @@ onBeforeUnmount(() => {
   color: #0f172a;
   font-size: 14px;
   font-weight: 800;
+  line-height: 1.45;
+}
+
+.web-search-loading-glow {
+  display: inline-block;
+  max-width: 100%;
+  color: rgba(15, 23, 42, 0.28);
+  background-image: linear-gradient(
+    90deg,
+    rgba(15, 23, 42, 0.24) 0%,
+    rgba(15, 23, 42, 0.24) 34%,
+    rgba(16, 88, 255, 0.96) 50%,
+    rgba(15, 23, 42, 0.24) 66%,
+    rgba(15, 23, 42, 0.24) 100%
+  );
+  background-size: 220% 100%;
+  background-position: 100% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: web-search-glow-sweep 2s linear infinite;
 }
 
 .web-search-loading-text {
   color: #64748b;
   font-size: 12px;
   line-height: 1.55;
+}
+
+@keyframes web-search-glow-sweep {
+  0% {
+    background-position: 100% 0;
+  }
+
+  100% {
+    background-position: -120% 0;
+  }
 }
 
 .web-search-summary {
