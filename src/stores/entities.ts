@@ -611,6 +611,40 @@ export const useEntitiesStore = defineStore('entities', {
       }
     },
 
+    handleRealtimeProjectWebSearchEvent(rawData: string) {
+      const payload = parseEntityEventPayload(rawData);
+      if (!payload) return;
+
+      const projectId = normalizeEntityId(payload.projectId);
+      if (!projectId) return;
+
+      const existing = this.byId(projectId);
+      if (!existing || existing.type !== 'project') return;
+
+      const nextUpdatedAt = typeof payload.updatedAt === 'string' ? payload.updatedAt.trim() : '';
+      const nextWebSearch =
+        payload.webSearch && typeof payload.webSearch === 'object' && !Array.isArray(payload.webSearch)
+          ? (payload.webSearch as Record<string, unknown>)
+          : null;
+      if (!nextWebSearch) return;
+
+      const currentMeta =
+        existing.ai_metadata && typeof existing.ai_metadata === 'object' && !Array.isArray(existing.ai_metadata)
+          ? (existing.ai_metadata as Record<string, unknown>)
+          : {};
+
+      const nextEntity: Entity = {
+        ...existing,
+        ...(nextUpdatedAt ? { updatedAt: nextUpdatedAt } : {}),
+        ai_metadata: {
+          ...currentMeta,
+          web_search: nextWebSearch,
+        },
+      };
+
+      this.items = this.items.map((item) => (item._id === projectId ? nextEntity : item));
+    },
+
     startRealtimeSync() {
       if (typeof window === 'undefined') return;
       if (typeof EventSource === 'undefined') return;
@@ -657,6 +691,10 @@ export const useEntitiesStore = defineStore('entities', {
 
       source.addEventListener('entity.deleted', (event: MessageEvent<string>) => {
         this.handleRealtimeEntityEvent('entity.deleted', event.data);
+      });
+
+      source.addEventListener('project.web_search.updated', (event: MessageEvent<string>) => {
+        this.handleRealtimeProjectWebSearchEvent(event.data);
       });
 
       source.onerror = () => {

@@ -1492,41 +1492,7 @@ function buildProjectCanvasContentVersion(canvasData: ProjectCanvasData | undefi
 
 function resolveProjectCanvasVersion(project: Entity | null | undefined) {
   if (!project || project.type !== 'project') return '';
-
-  const updatedAt = typeof project.updatedAt === 'string' ? project.updatedAt : '';
-  const createdAt = typeof project.createdAt === 'string' ? project.createdAt : '';
-  const canvas = normalizeCanvasData(project.canvas_data);
-  const nodesCount = Array.isArray(canvas.nodes) ? canvas.nodes.length : 0;
-  const edgesCount = Array.isArray(canvas.edges) ? canvas.edges.length : 0;
-  const viewportKey = canvas.viewport
-    ? `${canvas.viewport.x}:${canvas.viewport.y}:${canvas.viewport.zoom}:${canvas.viewport.width}:${canvas.viewport.height}`
-    : 'no-viewport';
-  let fingerprint = 2166136261;
-  const hashChunk = (value: string) => {
-    for (let index = 0; index < value.length; index += 1) {
-      fingerprint ^= value.charCodeAt(index);
-      fingerprint = Math.imul(fingerprint, 16777619);
-    }
-  };
-
-  for (const node of canvas.nodes) {
-    hashChunk(
-      `${node.id}|${node.entityId}|${Math.round(node.x * 100)}|${Math.round(node.y * 100)}|${Math.round(
-        normalizeNodeScale(node.scale) * 1000,
-      )};`,
-    );
-  }
-  for (const edge of canvas.edges) {
-    hashChunk(
-      `${edge.id}|${edge.source}|${edge.target}|${edge.label || ''}|${edge.color || ''}|${
-        edge.arrowLeft ? 1 : 0
-      }|${edge.arrowRight ? 1 : 0};`,
-    );
-  }
-
-  return [updatedAt || createdAt || project._id, nodesCount, edgesCount, viewportKey, canvas.background || ''].join(
-    '|',
-  ).concat(`|${String(fingerprint >>> 0)}`);
+  return `${project._id}|${buildProjectCanvasContentVersion(project.canvas_data)}`;
 }
 
 const monitorCanvasTopologySignature = computed(() => {
