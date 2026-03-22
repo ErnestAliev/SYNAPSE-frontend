@@ -9,6 +9,164 @@ import {
 } from '../../constants/webSearch';
 import { apiClient } from '../../services/api';
 import { useEntitiesStore } from '../../stores/entities';
+import type { EntityType } from '../../types/entity';
+
+type SearchMetadataFieldKey =
+  | 'tags'
+  | 'markers'
+  | 'phones'
+  | 'skills'
+  | 'importance'
+  | 'links'
+  | 'roles'
+  | 'industry'
+  | 'departments'
+  | 'stage'
+  | 'risks'
+  | 'date'
+  | 'location'
+  | 'participants'
+  | 'outcomes'
+  | 'resources'
+  | 'priority'
+  | 'status'
+  | 'owners'
+  | 'metrics';
+
+interface SearchMetadataFieldConfig {
+  key: SearchMetadataFieldKey;
+  label: string;
+}
+
+const SEARCH_FIELD_MAX_LENGTH = 32;
+const SEARCH_LINK_MAX_LENGTH = 2048;
+const SEARCH_PHONE_DISPLAY_MAX_LENGTH = 20;
+const SEARCH_PHONE_DIGITS_MAX_LENGTH = 15;
+const SEARCH_IMPORTANCE_LEVEL_MAP: Record<string, string> = {
+  низкая: 'Низкая',
+  low: 'Низкая',
+  l: 'Низкая',
+  средняя: 'Средняя',
+  medium: 'Средняя',
+  med: 'Средняя',
+  m: 'Средняя',
+  высокая: 'Высокая',
+  high: 'Высокая',
+  h: 'Высокая',
+  критично: 'Высокая',
+  critical: 'Высокая',
+};
+const SEARCH_LINK_CHIP_FALLBACK_LABEL = 'Website';
+const SEARCH_LINK_CHIP_LABELS: Array<{ label: string; domains: string[] }> = [
+  { label: 'Instagram', domains: ['instagram.com'] },
+  { label: 'Facebook', domains: ['facebook.com', 'fb.com'] },
+  { label: 'LinkedIn', domains: ['linkedin.com'] },
+  { label: 'Telegram', domains: ['t.me', 'telegram.me', 'telegram.org'] },
+  { label: 'WhatsApp', domains: ['wa.me', 'whatsapp.com', 'chat.whatsapp.com'] },
+  { label: 'YouTube', domains: ['youtube.com', 'youtu.be'] },
+  { label: 'TikTok', domains: ['tiktok.com'] },
+  { label: 'X', domains: ['x.com', 'twitter.com'] },
+  { label: 'VK', domains: ['vk.com', 'vkontakte.ru'] },
+  { label: 'GitHub', domains: ['github.com'] },
+];
+const SEARCH_ENTITY_CONTEXT_FIELDS: Record<EntityType, SearchMetadataFieldConfig[]> = {
+  connection: [
+    { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
+    { key: 'phones', label: 'Телефоны' },
+    { key: 'roles', label: 'Роли' },
+    { key: 'status', label: 'Статусы' },
+    { key: 'links', label: 'Ссылки' },
+    { key: 'importance', label: 'Значимость' },
+  ],
+  person: [
+    { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
+    { key: 'skills', label: 'Навыки' },
+    { key: 'importance', label: 'Значимость' },
+    { key: 'phones', label: 'Телефоны' },
+    { key: 'links', label: 'Ссылки' },
+    { key: 'roles', label: 'Роли' },
+  ],
+  company: [
+    { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
+    { key: 'industry', label: 'Отрасли' },
+    { key: 'departments', label: 'Отделы' },
+    { key: 'stage', label: 'Стадии' },
+    { key: 'risks', label: 'Риски' },
+    { key: 'phones', label: 'Телефоны' },
+    { key: 'links', label: 'Ссылки' },
+  ],
+  event: [
+    { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
+    { key: 'date', label: 'Даты' },
+    { key: 'location', label: 'Локации' },
+    { key: 'participants', label: 'Участники' },
+    { key: 'outcomes', label: 'Итоги' },
+    { key: 'phones', label: 'Телефоны' },
+    { key: 'links', label: 'Ссылки' },
+  ],
+  resource: [
+    { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
+    { key: 'resources', label: 'Ресурсы' },
+    { key: 'status', label: 'Статусы' },
+    { key: 'importance', label: 'Значимость' },
+    { key: 'owners', label: 'Владельцы' },
+    { key: 'phones', label: 'Телефоны' },
+    { key: 'links', label: 'Ссылки' },
+  ],
+  goal: [
+    { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
+    { key: 'priority', label: 'Приоритеты' },
+    { key: 'metrics', label: 'Метрики' },
+    { key: 'owners', label: 'Ответственные' },
+    { key: 'status', label: 'Статусы' },
+    { key: 'phones', label: 'Телефоны' },
+    { key: 'links', label: 'Ссылки' },
+  ],
+  result: [
+    { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
+    { key: 'outcomes', label: 'Результаты' },
+    { key: 'metrics', label: 'Метрики' },
+    { key: 'importance', label: 'Значимость' },
+    { key: 'owners', label: 'Ответственные' },
+    { key: 'phones', label: 'Телефоны' },
+    { key: 'links', label: 'Ссылки' },
+  ],
+  task: [
+    { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
+    { key: 'priority', label: 'Приоритеты' },
+    { key: 'status', label: 'Статусы' },
+    { key: 'owners', label: 'Ответственные' },
+    { key: 'date', label: 'Даты' },
+    { key: 'phones', label: 'Телефоны' },
+    { key: 'links', label: 'Ссылки' },
+  ],
+  project: [
+    { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
+    { key: 'stage', label: 'Стадии' },
+    { key: 'priority', label: 'Приоритеты' },
+    { key: 'risks', label: 'Риски' },
+    { key: 'owners', label: 'Ответственные' },
+    { key: 'phones', label: 'Телефоны' },
+    { key: 'links', label: 'Ссылки' },
+  ],
+  shape: [
+    { key: 'tags', label: 'Теги' },
+    { key: 'markers', label: 'Метки' },
+    { key: 'importance', label: 'Значимость' },
+    { key: 'status', label: 'Статусы' },
+    { key: 'phones', label: 'Телефоны' },
+    { key: 'links', label: 'Ссылки' },
+  ],
+};
 
 interface WebSearchCitation {
   id: string;
@@ -18,6 +176,13 @@ interface WebSearchCitation {
   domain: string;
   startIndex: number;
   endIndex: number;
+}
+
+interface WebSearchFieldSuggestion {
+  status: 'idle' | 'ready';
+  fields: Record<string, string[]>;
+  updatedAt: string;
+  model: string;
 }
 
 interface WebSearchStateEntry {
@@ -33,6 +198,7 @@ interface WebSearchStateEntry {
   model: string;
   sourceCount: number;
   searchQueries: string[];
+  fieldSuggestion: WebSearchFieldSuggestion;
 }
 
 interface WebSearchState extends WebSearchStateEntry {
@@ -53,6 +219,7 @@ type AnswerSegment =
 
 const PANEL_SIZE_STORAGE_KEY = 'synapse12.web-search.panel-size.v3';
 const PANEL_CONTEXT_STORAGE_PREFIX = 'synapse12.web-search.context.v1';
+const PANEL_FIELDS_DRAFT_STORAGE_PREFIX = 'synapse12.web-search.fields-draft.v1';
 const RESERVED_WIDTH_CSS_VAR = '--synapse-web-search-reserved-width';
 const PANEL_TOP_OFFSET_PX = 60;
 const PANEL_EDGE_MARGIN_PX = 14;
@@ -91,6 +258,9 @@ const resizeStart = ref<{
 } | null>(null);
 const restoredSessionEntityId = ref('');
 const pendingStateLoads = new Map<string, Promise<void>>();
+const searchFieldValueDrafts = ref<Record<string, string>>({});
+const editableSearchFieldValues = ref<Record<string, string[]>>({});
+const editingSearchFieldValue = ref<{ fieldKey: string; originalValue: string } | null>(null);
 
 function toProfile(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -122,7 +292,190 @@ function normalizeWebUrl(rawValue: unknown) {
   }
 }
 
-function normalizeWebSearchStateEntry(rawValue: unknown): WebSearchStateEntry {
+function getSearchContextFields(type: EntityType) {
+  return SEARCH_ENTITY_CONTEXT_FIELDS[type] || [];
+}
+
+function buildSearchFieldDrafts(type: EntityType) {
+  const drafts: Record<string, string> = {};
+  for (const field of getSearchContextFields(type)) {
+    drafts[field.key] = '';
+  }
+  return drafts;
+}
+
+function normalizeSearchPhoneDigits(value: string) {
+  let digits = value.replace(/\D/g, '');
+  if (!digits) return '';
+
+  if (digits.length === 10 && !digits.startsWith('7')) {
+    digits = `7${digits}`;
+  }
+  if (digits.startsWith('8') && digits.length === 11) {
+    digits = `7${digits.slice(1)}`;
+  }
+
+  const maxLength = digits.startsWith('7') ? 11 : SEARCH_PHONE_DIGITS_MAX_LENGTH;
+  return digits.length > maxLength ? digits.slice(0, maxLength) : digits;
+}
+
+function formatSearchPhoneValue(value: string) {
+  const digits = normalizeSearchPhoneDigits(value);
+  if (!digits) return '';
+
+  if (digits.startsWith('7')) {
+    const countryCode = digits.slice(0, 1);
+    const local = digits.slice(1);
+    const parts = [local.slice(0, 3), local.slice(3, 6), local.slice(6, 8), local.slice(8, 10)].filter(Boolean);
+    return parts.length ? `+ ${countryCode} ${parts.join(' ')}` : `+ ${countryCode}`;
+  }
+
+  return `+${digits}`;
+}
+
+function normalizeSearchImportanceLabel(value: string) {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return '';
+  return SEARCH_IMPORTANCE_LEVEL_MAP[normalized] || '';
+}
+
+function normalizeSearchLinkValue(rawValue: string) {
+  const raw = rawValue.trim();
+  if (!raw) return '';
+  const hasExplicitScheme = /^https?:\/\//i.test(raw);
+  const hasWwwPrefix = /^www\./i.test(raw);
+  const hasDotHint = raw.includes('.');
+  if (!hasExplicitScheme && !hasWwwPrefix && !hasDotHint) {
+    return '';
+  }
+
+  const withProtocol = hasExplicitScheme ? raw : `https://${raw}`;
+  try {
+    const url = new URL(withProtocol);
+    if (!url.hostname || !url.protocol.startsWith('http')) return '';
+    const host = url.hostname.toLowerCase();
+    if (!host.includes('.') || host === 'localhost' || host.includes(':')) return '';
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) return '';
+
+    const hostParts = host.split('.').filter(Boolean);
+    const tld = hostParts[hostParts.length - 1] || '';
+    const hasLetterTld = /[a-z]/i.test(tld) && tld.length >= 2;
+    if (!hasExplicitScheme && !hasWwwPrefix && !hasLetterTld) return '';
+
+    return url.toString().slice(0, SEARCH_LINK_MAX_LENGTH);
+  } catch {
+    return '';
+  }
+}
+
+function normalizeSearchFieldValue(fieldKey: string, value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (fieldKey === 'phones') {
+    return formatSearchPhoneValue(trimmed);
+  }
+  if (fieldKey === 'links') {
+    return normalizeSearchLinkValue(trimmed);
+  }
+  if (fieldKey === 'importance') {
+    return normalizeSearchImportanceLabel(trimmed);
+  }
+  return trimmed;
+}
+
+function getSearchFieldMaxLength(fieldKey: string) {
+  if (fieldKey === 'phones') return SEARCH_PHONE_DISPLAY_MAX_LENGTH;
+  if (fieldKey === 'links') return SEARCH_LINK_MAX_LENGTH;
+  return SEARCH_FIELD_MAX_LENGTH;
+}
+
+function searchFieldValueDedupeKey(fieldKey: string, value: string) {
+  if (fieldKey === 'phones') {
+    return normalizeSearchPhoneDigits(value);
+  }
+  return value.trim().toLowerCase();
+}
+
+function normalizeSearchFieldValues(fieldKey: string, values: string[]) {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+
+  for (const rawValue of values) {
+    const nextValue = normalizeSearchFieldValue(fieldKey, rawValue);
+    if (!nextValue) continue;
+    const key = searchFieldValueDedupeKey(fieldKey, nextValue);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(nextValue);
+  }
+
+  if (fieldKey === 'importance') {
+    return normalized.slice(0, 1);
+  }
+
+  return normalized;
+}
+
+function formatSearchFieldValueForDisplay(fieldKey: string, value: string) {
+  if (fieldKey === 'phones') {
+    return formatSearchPhoneValue(value) || value;
+  }
+  return value;
+}
+
+function hasSearchFieldValue(fieldKey: string, values: string[], target: string) {
+  const targetKey = searchFieldValueDedupeKey(fieldKey, target);
+  if (!targetKey) return false;
+  return values.some((item) => searchFieldValueDedupeKey(fieldKey, item) === targetKey);
+}
+
+function normalizeSearchFieldSuggestion(rawValue: unknown, entityType: EntityType): WebSearchFieldSuggestion {
+  const row = toProfile(rawValue);
+  const statusRaw = typeof row.status === 'string' ? row.status.trim().toLowerCase() : '';
+  const status: WebSearchFieldSuggestion['status'] = statusRaw === 'ready' ? 'ready' : 'idle';
+  const fieldsSource = toProfile(row.fields);
+  const fields: Record<string, string[]> = {};
+
+  for (const field of getSearchContextFields(entityType)) {
+    const rawValues = Array.isArray(fieldsSource[field.key])
+      ? (fieldsSource[field.key] as unknown[]).filter((item): item is string => typeof item === 'string')
+      : [];
+    fields[field.key] = normalizeSearchFieldValues(field.key, rawValues).slice(0, 24);
+  }
+
+  return {
+    status,
+    fields,
+    updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt.trim() : '',
+    model: typeof row.model === 'string' ? row.model.trim() : '',
+  };
+}
+
+function normalizeSearchLinkForOpen(value: string) {
+  const raw = value.trim();
+  if (!raw) return '';
+  if (/^(https?:\/\/|mailto:|tel:)/i.test(raw)) {
+    return raw;
+  }
+  return `https://${raw}`;
+}
+
+function getSearchLinkChipLabel(value: string) {
+  const normalized = normalizeSearchLinkForOpen(value);
+  if (!normalized) return SEARCH_LINK_CHIP_FALLBACK_LABEL;
+
+  try {
+    const host = new URL(normalized).hostname.toLowerCase().replace(/^www\./, '');
+    const mapped = SEARCH_LINK_CHIP_LABELS.find(({ domains }) =>
+      domains.some((domain) => host === domain || host.endsWith(`.${domain}`)),
+    );
+    return mapped?.label || SEARCH_LINK_CHIP_FALLBACK_LABEL;
+  } catch {
+    return SEARCH_LINK_CHIP_FALLBACK_LABEL;
+  }
+}
+
+function normalizeWebSearchStateEntry(rawValue: unknown, entityType: EntityType): WebSearchStateEntry {
   const row = toProfile(rawValue);
   const statusRaw = typeof row.status === 'string' ? row.status.trim().toLowerCase() : '';
   const status: WebSearchStateEntry['status'] = ['searching', 'ready', 'failed'].includes(statusRaw)
@@ -181,15 +534,16 @@ function normalizeWebSearchStateEntry(rawValue: unknown): WebSearchStateEntry {
       .map((item) => (typeof item === 'string' ? item.trim() : ''))
       .filter(Boolean)
       .slice(0, 12),
+    fieldSuggestion: normalizeSearchFieldSuggestion(row.fieldSuggestion, entityType),
   };
 }
 
-function normalizeWebSearchState(rawValue: unknown): WebSearchState {
+function normalizeWebSearchState(rawValue: unknown, entityType: EntityType): WebSearchState {
   const row = toProfile(rawValue);
   return {
-    ...normalizeWebSearchStateEntry(row.current || row),
+    ...normalizeWebSearchStateEntry(row.current || row, entityType),
     history: (Array.isArray(row.history) ? row.history : [])
-      .map((item) => normalizeWebSearchStateEntry(item))
+      .map((item) => normalizeWebSearchStateEntry(item, entityType))
       .filter((item) => item.query || item.summary || item.status !== 'idle')
       .slice(0, 12),
   };
@@ -264,6 +618,45 @@ function persistPanelContext(projectIdValue: string, entityIdValue: string, open
   }
 }
 
+function buildFieldDraftStorageKey(projectIdValue: string, entityIdValue: string, stateVersion: string) {
+  return `${PANEL_FIELDS_DRAFT_STORAGE_PREFIX}:${projectIdValue}:${entityIdValue}:${stateVersion}`;
+}
+
+function loadStoredSearchFieldDraft(projectIdValue: string, entityIdValue: string, stateVersion: string) {
+  if (typeof window === 'undefined' || !projectIdValue || !entityIdValue || !stateVersion) {
+    return null;
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(
+      buildFieldDraftStorageKey(projectIdValue, entityIdValue, stateVersion),
+    );
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistSearchFieldDraft(
+  projectIdValue: string,
+  entityIdValue: string,
+  stateVersion: string,
+  fields: Record<string, string[]>,
+) {
+  if (typeof window === 'undefined' || !projectIdValue || !entityIdValue || !stateVersion) return;
+
+  try {
+    window.sessionStorage.setItem(
+      buildFieldDraftStorageKey(projectIdValue, entityIdValue, stateVersion),
+      JSON.stringify(fields),
+    );
+  } catch {
+    // Ignore session storage write errors.
+  }
+}
+
 const projectId = computed(() => normalizeRouteParam(route.params.id));
 const isCanvasRoute = computed(() => route.name === 'project-canvas' && Boolean(projectId.value));
 const explicitActiveEntityId = computed(() => normalizeRouteParam(props.activeEntityId));
@@ -274,11 +667,16 @@ const activeSearchEntity = computed(() => {
   if (!effectiveActiveEntityId.value) return null;
   return entitiesStore.byId(effectiveActiveEntityId.value) || null;
 });
+const activeSearchEntityType = computed<EntityType>(() => activeSearchEntity.value?.type || 'shape');
 const activeSearchEntityName = computed(() => activeSearchEntity.value?.name?.trim() || 'Сущность');
 const hasActiveEntityContext = computed(() => Boolean(effectiveActiveEntityId.value));
 const syncedSearchState = computed(() =>
-  normalizeWebSearchState(entitiesStore.getEntityWebSearchState(effectiveActiveEntityId.value)),
+  normalizeWebSearchState(
+    entitiesStore.getEntityWebSearchState(effectiveActiveEntityId.value),
+    activeSearchEntityType.value,
+  ),
 );
+const activeSearchFields = computed(() => getSearchContextFields(activeSearchEntityType.value));
 
 const isPhoneViewport = computed(() => viewportWidth.value <= NARROW_VIEWPORT_PX);
 const panelConstraints = computed(() => {
@@ -509,6 +907,232 @@ const contextStatusMessage = computed(() => {
   }
   return '';
 });
+const searchFieldStateVersion = computed(
+  () =>
+    syncedSearchState.value.fieldSuggestion.updatedAt ||
+    syncedSearchState.value.updatedAt ||
+    syncedSearchState.value.completedAt ||
+    syncedSearchState.value.query,
+);
+const hasEditableSearchFields = computed(() =>
+  activeSearchFields.value.some((field) => (editableSearchFieldValues.value[field.key] || []).length > 0),
+);
+
+function areStringListsEqual(left: string[], right: string[]) {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+function syncEditableSearchFieldsFromState() {
+  const baseFields: Record<string, string[]> = {};
+  for (const field of activeSearchFields.value) {
+    baseFields[field.key] = normalizeSearchFieldValues(
+      field.key,
+      syncedSearchState.value.fieldSuggestion.fields[field.key] || [],
+    ).slice(0, 24);
+  }
+
+  const storedDraft = loadStoredSearchFieldDraft(
+    projectId.value,
+    effectiveActiveEntityId.value,
+    searchFieldStateVersion.value,
+  );
+  const nextFields: Record<string, string[]> = {};
+
+  for (const field of activeSearchFields.value) {
+    const storedValues = Array.isArray(storedDraft?.[field.key])
+      ? (storedDraft?.[field.key] as unknown[]).filter((item): item is string => typeof item === 'string')
+      : null;
+    nextFields[field.key] = storedValues
+      ? normalizeSearchFieldValues(field.key, storedValues).slice(0, 24)
+      : (baseFields[field.key] || []);
+  }
+
+  editableSearchFieldValues.value = nextFields;
+  searchFieldValueDrafts.value = buildSearchFieldDrafts(activeSearchEntityType.value);
+  editingSearchFieldValue.value = null;
+}
+
+function getEditableSearchFieldValues(fieldKey: string) {
+  return editableSearchFieldValues.value[fieldKey] || [];
+}
+
+function getSearchFieldPlaceholder(field: SearchMetadataFieldConfig) {
+  const count = getEditableSearchFieldValues(field.key).length;
+  return `${field.label}: ${count}`;
+}
+
+function onSearchFieldDraftInput(fieldKey: string, event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  if (!input) return;
+  const rawValue = fieldKey === 'phones' ? formatSearchPhoneValue(input.value) : input.value;
+  const nextDraft = rawValue.slice(0, getSearchFieldMaxLength(fieldKey));
+  searchFieldValueDrafts.value[fieldKey] = nextDraft;
+  if (input.value !== nextDraft) {
+    input.value = nextDraft;
+  }
+}
+
+function onSearchFieldDraftKeydown(fieldKey: string, event: KeyboardEvent) {
+  if (event.key !== 'Escape') return;
+  event.preventDefault();
+  searchFieldValueDrafts.value[fieldKey] = '';
+  if (editingSearchFieldValue.value?.fieldKey === fieldKey) {
+    editingSearchFieldValue.value = null;
+  }
+}
+
+function startEditSearchFieldValue(fieldKey: string, value: string) {
+  editingSearchFieldValue.value = { fieldKey, originalValue: value };
+  searchFieldValueDrafts.value[fieldKey] = normalizeSearchFieldValue(fieldKey, value).slice(
+    0,
+    getSearchFieldMaxLength(fieldKey),
+  );
+}
+
+function addSearchFieldValue(fieldKey: string) {
+  const nextValue = normalizeSearchFieldValue(fieldKey, searchFieldValueDrafts.value[fieldKey] || '').slice(
+    0,
+    getSearchFieldMaxLength(fieldKey),
+  );
+  const currentValues = [...getEditableSearchFieldValues(fieldKey)];
+  const editing = editingSearchFieldValue.value;
+
+  if (editing && editing.fieldKey === fieldKey) {
+    if (!nextValue) {
+      searchFieldValueDrafts.value[fieldKey] = '';
+      editingSearchFieldValue.value = null;
+      return;
+    }
+
+    if (fieldKey === 'importance') {
+      editableSearchFieldValues.value[fieldKey] = nextValue ? [nextValue] : [];
+      searchFieldValueDrafts.value[fieldKey] = '';
+      editingSearchFieldValue.value = null;
+      return;
+    }
+
+    const originalIndex = currentValues.findIndex(
+      (item) => searchFieldValueDedupeKey(fieldKey, item) === searchFieldValueDedupeKey(fieldKey, editing.originalValue),
+    );
+
+    if (originalIndex >= 0) {
+      if (hasSearchFieldValue(fieldKey, currentValues, nextValue)) {
+        currentValues.splice(originalIndex, 1);
+      } else {
+        currentValues[originalIndex] = nextValue;
+      }
+    } else if (!hasSearchFieldValue(fieldKey, currentValues, nextValue)) {
+      currentValues.push(nextValue);
+    }
+
+    editableSearchFieldValues.value[fieldKey] = normalizeSearchFieldValues(fieldKey, currentValues).slice(0, 24);
+    searchFieldValueDrafts.value[fieldKey] = '';
+    editingSearchFieldValue.value = null;
+    return;
+  }
+
+  if (!nextValue) return;
+  if (fieldKey === 'importance') {
+    editableSearchFieldValues.value[fieldKey] = [nextValue];
+    searchFieldValueDrafts.value[fieldKey] = '';
+    return;
+  }
+
+  if (!hasSearchFieldValue(fieldKey, currentValues, nextValue)) {
+    editableSearchFieldValues.value[fieldKey] = normalizeSearchFieldValues(fieldKey, [...currentValues, nextValue]).slice(0, 24);
+  }
+  searchFieldValueDrafts.value[fieldKey] = '';
+}
+
+function removeSearchFieldValue(fieldKey: string, value: string) {
+  const removeKey = searchFieldValueDedupeKey(fieldKey, value);
+  editableSearchFieldValues.value[fieldKey] = getEditableSearchFieldValues(fieldKey).filter(
+    (item) => searchFieldValueDedupeKey(fieldKey, item) !== removeKey,
+  );
+  if (
+    editingSearchFieldValue.value &&
+    editingSearchFieldValue.value.fieldKey === fieldKey &&
+    editingSearchFieldValue.value.originalValue === value
+  ) {
+    editingSearchFieldValue.value = null;
+    searchFieldValueDrafts.value[fieldKey] = '';
+  }
+}
+
+function openSearchFieldLink(value: string) {
+  if (typeof window === 'undefined') return;
+  const url = normalizeSearchLinkForOpen(value);
+  if (!url) return;
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+async function applySearchFieldsToEntity() {
+  const entity = activeSearchEntity.value;
+  if (!entity) {
+    localErrorMessage.value = 'Не удалось определить активную сущность для заполнения полей.';
+    return;
+  }
+
+  const currentMetadata = toProfile(entity.ai_metadata);
+  const nextMetadata: Record<string, unknown> = { ...currentMetadata };
+  let hasChanges = false;
+
+  for (const field of activeSearchFields.value) {
+    const selectedValues = normalizeSearchFieldValues(field.key, getEditableSearchFieldValues(field.key)).slice(0, 24);
+    if (!selectedValues.length) {
+      continue;
+    }
+
+    if (field.key === 'importance') {
+      const importanceSource =
+        typeof currentMetadata.importance_source === 'string'
+          ? currentMetadata.importance_source.trim().toLowerCase()
+          : '';
+      if (importanceSource === 'manual') {
+        continue;
+      }
+
+      const existingImportance = normalizeSearchFieldValues(
+        field.key,
+        Array.isArray(currentMetadata[field.key])
+          ? (currentMetadata[field.key] as unknown[]).filter((item): item is string => typeof item === 'string')
+          : [],
+      ).slice(0, 1);
+
+      if (!areStringListsEqual(existingImportance, selectedValues.slice(0, 1))) {
+        nextMetadata[field.key] = selectedValues.slice(0, 1);
+        nextMetadata.importance_source = 'llm';
+        hasChanges = true;
+      }
+      continue;
+    }
+
+    const existingValues = normalizeSearchFieldValues(
+      field.key,
+      Array.isArray(currentMetadata[field.key])
+        ? (currentMetadata[field.key] as unknown[]).filter((item): item is string => typeof item === 'string')
+        : [],
+    ).slice(0, 24);
+    const mergedValues = normalizeSearchFieldValues(field.key, [...existingValues, ...selectedValues]).slice(0, 24);
+
+    if (!areStringListsEqual(existingValues, mergedValues)) {
+      nextMetadata[field.key] = mergedValues;
+      hasChanges = true;
+    }
+  }
+
+  if (!hasChanges) {
+    showCopyNotice('Новых полей для переноса нет');
+    return;
+  }
+
+  localErrorMessage.value = '';
+  await entitiesStore.updateEntity(entity._id, {
+    ai_metadata: nextMetadata,
+  });
+  showCopyNotice('Поля перенесены в сущность');
+}
 
 async function loadEntityWebSearchState(entityIdValue: string, force = false) {
   const entityId = normalizeRouteParam(entityIdValue);
@@ -723,7 +1347,10 @@ watch(
     localErrorMessage.value = '';
     clearCopyNoticeTimer();
     copyNotice.value = '';
-    queryDraft.value = normalizeWebSearchState(entitiesStore.getEntityWebSearchState(nextEntityId)).query;
+    queryDraft.value = normalizeWebSearchState(
+      entitiesStore.getEntityWebSearchState(nextEntityId),
+      activeSearchEntityType.value,
+    ).query;
 
     if (!nextEntityId) {
       isLoadingEntityState.value = false;
@@ -736,6 +1363,14 @@ watch(
 );
 
 watch(
+  [effectiveActiveEntityId, activeSearchEntityType, searchFieldStateVersion],
+  () => {
+    syncEditableSearchFieldsFromState();
+  },
+  { immediate: true },
+);
+
+watch(
   () => syncedSearchState.value.query,
   (nextQuery) => {
     if (!isQueryFocused.value) {
@@ -743,6 +1378,20 @@ watch(
     }
   },
   { immediate: true },
+);
+
+watch(
+  editableSearchFieldValues,
+  (nextValue) => {
+    if (!projectId.value || !effectiveActiveEntityId.value || !searchFieldStateVersion.value) return;
+    persistSearchFieldDraft(
+      projectId.value,
+      effectiveActiveEntityId.value,
+      searchFieldStateVersion.value,
+      nextValue,
+    );
+  },
+  { deep: true },
 );
 
 watch(panelConstraints, () => {
@@ -862,6 +1511,75 @@ onBeforeUnmount(() => {
       <p v-else-if="effectiveErrorMessage" class="web-search-status error">{{ effectiveErrorMessage }}</p>
       <p v-else-if="copyNotice" class="web-search-copy-notice">{{ copyNotice }}</p>
 
+      <section class="web-search-fields-wrap">
+        <div class="web-search-section-head">
+          <h3>Поля из поиска</h3>
+          <button
+            type="button"
+            class="web-search-apply-fields-btn"
+            :disabled="!hasEditableSearchFields || !activeSearchEntity"
+            @click="void applySearchFieldsToEntity()"
+          >
+            Заполнить поля сущности
+          </button>
+        </div>
+
+        <div class="web-search-fields-list">
+          <template v-if="hasEditableSearchFields">
+            <div
+              v-for="field in activeSearchFields"
+              :key="field.key"
+              class="web-search-field-row"
+            >
+              <div class="web-search-field-scroll">
+                <input
+                  v-model="searchFieldValueDrafts[field.key]"
+                  type="text"
+                  class="web-search-field-input"
+                  :maxlength="getSearchFieldMaxLength(field.key)"
+                  :placeholder="getSearchFieldPlaceholder(field)"
+                  @input="onSearchFieldDraftInput(field.key, $event)"
+                  @keydown.enter.prevent="addSearchFieldValue(field.key)"
+                  @keydown="onSearchFieldDraftKeydown(field.key, $event)"
+                />
+                <div
+                  v-for="value in getEditableSearchFieldValues(field.key)"
+                  :key="`${field.key}:${value}`"
+                  class="web-search-field-chip"
+                >
+                  <button
+                    type="button"
+                    class="web-search-field-chip-main"
+                    :class="{ link: field.key === 'links' }"
+                    :title="field.key === 'links' ? value : 'Редактировать'"
+                    @click="field.key === 'links' ? openSearchFieldLink(value) : startEditSearchFieldValue(field.key, value)"
+                  >
+                    {{ field.key === 'links' ? getSearchLinkChipLabel(value) : formatSearchFieldValueForDisplay(field.key, value) }}
+                  </button>
+                  <button
+                    type="button"
+                    class="web-search-field-chip-remove"
+                    title="Удалить"
+                    @click.stop="removeSearchFieldValue(field.key, value)"
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+            </div>
+          </template>
+          <div v-else-if="isBusy" class="web-search-fields-empty">
+            Собираю кандидаты для полей сущности...
+          </div>
+          <div v-else-if="!hasActiveEntityContext" class="web-search-fields-empty">
+            Выберите сущность на канве, чтобы готовить для нее поля.
+          </div>
+          <div v-else class="web-search-fields-empty">
+            После поиска здесь появятся теги, роли, ссылки и другие поля. Их можно отредактировать и очистить перед переносом в сущность.
+          </div>
+        </div>
+      </section>
+
       <section class="web-search-images-wrap">
         <div class="web-search-section-head">
           <h3>Фото</h3>
@@ -947,6 +1665,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </section>
+
     </section>
   </div>
 </template>
@@ -1008,7 +1727,8 @@ onBeforeUnmount(() => {
   border: 1px solid #dbe4f3;
   background: rgba(255, 255, 255, 0.98);
   box-shadow: 0 26px 52px rgba(15, 23, 42, 0.24);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   min-width: 320px;
   min-height: 320px;
   backdrop-filter: blur(10px);
@@ -1167,8 +1887,8 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 0 16px 16px;
-  flex: 1;
+  padding: 0 16px;
+  flex: 0 0 auto;
   min-height: 0;
 }
 
@@ -1296,8 +2016,9 @@ onBeforeUnmount(() => {
 }
 
 .web-search-summary {
-  flex: 1;
+  flex: 0 0 auto;
   min-height: 0;
+  max-height: 280px;
   border: 1px solid #e5ebf5;
   border-radius: 14px;
   background: #f8fafc;
@@ -1312,6 +2033,154 @@ onBeforeUnmount(() => {
 
 .web-search-summary-empty {
   color: #64748b;
+}
+
+.web-search-fields-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 16px 16px;
+  min-height: 0;
+}
+
+.web-search-apply-fields-btn {
+  border: 1px solid #dbe4f3;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 7px 10px;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.web-search-apply-fields-btn:hover:not(:disabled) {
+  border-color: #bfd5ff;
+  color: #1058ff;
+  background: #eef4ff;
+}
+
+.web-search-apply-fields-btn:disabled {
+  opacity: 0.56;
+  cursor: default;
+}
+
+.web-search-fields-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  max-height: 224px;
+  overflow: auto;
+}
+
+.web-search-field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.web-search-field-scroll {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.web-search-field-input {
+  min-width: 132px;
+  flex: 0 0 132px;
+  border: 1px solid #dbe4f3;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.35;
+  padding: 9px 11px;
+  outline: none;
+}
+
+.web-search-field-input:focus {
+  border-color: #bfdbfe;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.14);
+}
+
+.web-search-field-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  border-radius: 999px;
+  border: 1px solid #dbe4f3;
+  background: #f8fafc;
+  padding: 2px;
+}
+
+.web-search-field-chip-main {
+  max-width: 168px;
+  border: none;
+  background: transparent;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 6px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.web-search-field-chip-main.link {
+  color: #1058ff;
+}
+
+.web-search-field-chip-remove {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.16s ease,
+    color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.web-search-field-chip:hover .web-search-field-chip-remove,
+.web-search-field-chip:focus-within .web-search-field-chip-remove {
+  opacity: 1;
+}
+
+.web-search-field-chip-remove:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.web-search-fields-empty {
+  border: 1px dashed #dbe4f3;
+  border-radius: 12px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 12px;
 }
 
 .web-search-citation {
@@ -1350,6 +2219,10 @@ onBeforeUnmount(() => {
 
   .web-search-summary-wrap {
     padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
+  }
+
+  .web-search-summary {
+    max-height: 240px;
   }
 
   .web-search-images-grid {
