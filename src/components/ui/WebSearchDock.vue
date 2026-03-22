@@ -570,9 +570,13 @@ watch(
   { immediate: true },
 );
 
-watch(resolvedPanelSize, () => {
+watch(panelConstraints, () => {
   if (isResizingPanel.value) return;
-  panelSize.value = resolvedPanelSize.value;
+  panelSize.value = clampPanelSize(panelSize.value || getDefaultPanelSize());
+});
+
+watch(panelSize, () => {
+  if (!panelSize.value || isResizingPanel.value) return;
   persistPanelSize();
 });
 
