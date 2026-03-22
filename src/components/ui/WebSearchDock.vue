@@ -706,26 +706,38 @@ onBeforeUnmount(() => {
 
         <div class="web-search-images-grid">
           <template v-if="syncedSearchState.images.length">
-            <button
+            <div
               v-for="image in syncedSearchState.images"
               :key="image.id"
-              type="button"
               class="web-search-image-card"
-              draggable="true"
-              :title="image.title || 'Перетащите фото в аватарку сущности'"
-              @dragstart="onImageDragStart($event, image)"
             >
-              <img
-                class="web-search-image-thumb"
-                :src="image.thumbnailUrl"
-                :alt="image.title || 'Фото по запросу'"
-                loading="lazy"
-                decoding="async"
-                referrerpolicy="no-referrer"
-                draggable="false"
-              />
-              <span class="web-search-image-domain">{{ image.domain || 'Источник' }}</span>
-            </button>
+              <div
+                class="web-search-image-drag-zone"
+                draggable="true"
+                :title="image.title || 'Перетащите фото в аватарку сущности'"
+                @dragstart="onImageDragStart($event, image)"
+              >
+                <img
+                  class="web-search-image-thumb"
+                  :src="image.thumbnailUrl"
+                  :alt="image.title || 'Фото по запросу'"
+                  loading="lazy"
+                  decoding="async"
+                  referrerpolicy="no-referrer"
+                  draggable="false"
+                />
+              </div>
+              <a
+                class="web-search-image-link"
+                :href="image.sourcePageUrl || image.imageUrl"
+                target="_blank"
+                rel="noopener noreferrer"
+                :title="image.title || image.sourcePageUrl || image.imageUrl"
+                @dragstart.stop
+              >
+                {{ image.domain || 'Открыть источник' }}
+              </a>
+            </div>
           </template>
           <div v-else-if="isBusy" class="web-search-images-empty">
             Подбираю релевантные фото...
@@ -1029,23 +1041,22 @@ onBeforeUnmount(() => {
   background: #f8fafc;
   padding: 0;
   overflow: hidden;
-  cursor: grab;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  transition:
-    border-color 0.16s ease,
-    box-shadow 0.16s ease,
-    transform 0.16s ease;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
 }
 
 .web-search-image-card:hover {
   border-color: #bfd5ff;
   box-shadow: 0 8px 18px rgba(16, 88, 255, 0.12);
-  transform: translateY(-1px);
 }
 
-.web-search-image-card:active {
+.web-search-image-drag-zone {
+  cursor: grab;
+}
+
+.web-search-image-drag-zone:active {
   cursor: grabbing;
 }
 
@@ -1057,7 +1068,7 @@ onBeforeUnmount(() => {
   background: #e2e8f0;
 }
 
-.web-search-image-domain {
+.web-search-image-link {
   display: block;
   padding: 6px 7px 7px;
   color: #64748b;
@@ -1067,6 +1078,12 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   text-align: left;
+  text-decoration: none;
+}
+
+.web-search-image-link:hover {
+  color: #1058ff;
+  text-decoration: underline;
 }
 
 .web-search-images-empty {
