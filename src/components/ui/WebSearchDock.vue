@@ -187,6 +187,7 @@ interface WebSearchFieldSuggestion {
 
 interface WebSearchStateEntry {
   status: 'idle' | 'searching' | 'ready' | 'failed';
+  phase: '' | 'summary' | 'images' | 'fields' | 'ready' | 'failed';
   query: string;
   summary: string;
   citations: WebSearchCitation[];
@@ -511,6 +512,10 @@ function normalizeWebSearchStateEntry(rawValue: unknown, entityType: EntityType)
 
   return {
     status,
+    phase:
+      typeof row.phase === 'string' && ['summary', 'images', 'fields', 'ready', 'failed'].includes(row.phase.trim().toLowerCase())
+        ? (row.phase.trim().toLowerCase() as WebSearchStateEntry['phase'])
+        : '',
     query: typeof row.query === 'string' ? row.query.trim() : '',
     summary: typeof row.summary === 'string' ? row.summary.trim() : '',
     citations: rawCitations
@@ -913,10 +918,17 @@ const summaryCopyText = computed(() => {
 const isBusy = computed(() => isSubmitting.value || syncedSearchState.value.status === 'searching');
 const loadingLabel = computed(() => {
   const query = syncedSearchState.value.query || queryDraft.value.trim();
-  if (!query) {
-    return 'Ищу информацию и собираю сводку';
+  const phase = syncedSearchState.value.phase;
+  if (phase === 'images') {
+    return query ? `Подбираю фото по запросу: ${query}` : 'Подбираю фото';
   }
-  return `Ищу информацию и собираю сводку по запросу: ${query}`;
+  if (phase === 'fields') {
+    return query ? `Формирую поля из описания: ${query}` : 'Формирую поля из описания';
+  }
+  if (phase === 'summary' || !syncedSearchState.value.summary) {
+    return query ? `Ищу описание по запросу: ${query}` : 'Ищу описание';
+  }
+  return query ? `Обрабатываю результаты по запросу: ${query}` : 'Обрабатываю результаты';
 });
 const effectiveErrorMessage = computed(() => {
   if (localErrorMessage.value.trim()) return localErrorMessage.value.trim();
@@ -2210,65 +2222,81 @@ onBeforeUnmount(() => {
 .web-search-fields-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  min-height: 0;
-  overflow: visible;
+  gap: 6px;
+  max-height: 170px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+}
+
+.web-search-fields-list::-webkit-scrollbar {
+  width: 6px;
 }
 
 .web-search-field-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  border: 1px solid #dbe4f3;
+  border-radius: 10px;
+  background: #ffffff;
 }
 
 .web-search-field-scroll {
   display: flex;
   align-items: center;
-  gap: 6px;
+  flex-wrap: nowrap;
+  gap: 4px;
   min-width: 0;
-  width: 100%;
   overflow-x: auto;
-  padding-bottom: 2px;
+  overflow-y: hidden;
+  padding: 4px 6px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.web-search-field-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 .web-search-field-input {
-  min-width: 132px;
-  flex: 0 0 132px;
-  border: 1px solid #dbe4f3;
-  border-radius: 10px;
-  background: #ffffff;
+  flex: 0 0 126px;
+  min-width: 108px;
+  max-width: 180px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
   color: #0f172a;
-  font-size: 12px;
-  line-height: 1.35;
-  padding: 9px 11px;
+  font-size: 11px;
+  font-weight: 600;
   outline: none;
+  padding: 4px 6px;
+  order: -1;
 }
 
 .web-search-field-input:focus {
-  border-color: #bfdbfe;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.14);
+  background: #f8fafc;
 }
 
 .web-search-field-chip {
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  max-width: 100%;
+  gap: 3px;
+  border: 1px solid #bfd5ff;
   border-radius: 999px;
-  border: 1px solid #dbe4f3;
-  background: #f8fafc;
-  padding: 2px;
+  background: #eff6ff;
+  padding: 1px 3px 1px 6px;
 }
 
 .web-search-field-chip-main {
-  max-width: 168px;
   border: none;
   background: transparent;
-  color: #334155;
-  font-size: 11px;
+  color: #1e40af;
+  font-size: 10px;
   font-weight: 700;
-  padding: 6px 10px;
-  border-radius: 999px;
+  line-height: 1.25;
+  max-width: 220px;
+  padding: 2px 0;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
@@ -2276,38 +2304,37 @@ onBeforeUnmount(() => {
 }
 
 .web-search-field-chip-main.link {
-  color: #1058ff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .web-search-field-chip-remove {
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
   border: none;
-  border-radius: 999px;
-  background: transparent;
-  color: #94a3b8;
-  font-size: 14px;
+  border-radius: 50%;
+  background: rgba(30, 64, 175, 0.14);
+  color: #1e3a8a;
+  font-size: 11px;
   line-height: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  padding: 0;
   cursor: pointer;
   opacity: 0;
-  transition:
-    opacity 0.16s ease,
-    color 0.16s ease,
-    background-color 0.16s ease;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
 }
 
 .web-search-field-chip:hover .web-search-field-chip-remove,
 .web-search-field-chip:focus-within .web-search-field-chip-remove {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .web-search-field-chip-remove:hover {
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.1);
+  background: rgba(30, 64, 175, 0.24);
 }
 
 .web-search-fields-empty {
