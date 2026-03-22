@@ -499,13 +499,17 @@ onBeforeUnmount(() => {
       class="web-search-trigger"
       :class="{ active: isOpen }"
       aria-label="Открыть веб-поиск"
+      title="Веб-поиск"
       @click="void togglePanel()"
     >
       <svg viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="11" cy="11" r="6.5" />
-        <path d="m16 16 4 4" />
+        <circle cx="10" cy="10" r="4.8" />
+        <path d="M10 5.2c1.6 1.2 2.5 3 2.5 4.8s-.9 3.6-2.5 4.8" />
+        <path d="M10 5.2C8.4 6.4 7.5 8.2 7.5 10s.9 3.6 2.5 4.8" />
+        <path d="M5.2 10h9.6" />
+        <path d="M16 16l3.8 3.8" />
+        <circle cx="15.7" cy="15.7" r="3.1" />
       </svg>
-      <span>Вебпоиск</span>
     </button>
 
     <section v-if="isOpen" class="web-search-panel" :style="panelStyle" @pointerdown.stop>
@@ -555,11 +559,16 @@ onBeforeUnmount(() => {
             <h3>Сводка</h3>
             <button
               type="button"
-              class="web-search-inline-btn"
+              class="web-search-inline-btn icon-only"
               :disabled="!summaryCopyText"
+              title="Копировать сводку"
+              aria-label="Копировать сводку"
               @click="void copyText(summaryCopyText, 'Сводка скопирована')"
             >
-              Копировать
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="9" y="9" width="10" height="10" rx="2" />
+                <path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" />
+              </svg>
             </button>
           </div>
 
@@ -596,12 +605,12 @@ onBeforeUnmount(() => {
               :class="{ active: selectedSourceUrl === source.url }"
             >
               <button type="button" class="web-search-source-main" @click="void openSourcePreview(source)">
-                <span class="web-search-source-index">[{{ source.index }}]</span>
-                <span class="web-search-source-body">
+                <div class="web-search-source-index">[{{ source.index }}]</div>
+                <div class="web-search-source-body">
                   <strong>{{ source.title }}</strong>
-                  <span>{{ source.domain || source.url }}</span>
-                  <span v-if="source.snippet">{{ source.snippet }}</span>
-                </span>
+                  <div class="web-search-source-domain">{{ source.domain || source.url }}</div>
+                  <p v-if="source.snippet" class="web-search-source-snippet">{{ source.snippet }}</p>
+                </div>
               </button>
               <div class="web-search-source-actions">
                 <button type="button" class="web-search-inline-btn" @click="void openSourcePreview(source)">
@@ -620,11 +629,16 @@ onBeforeUnmount(() => {
             <h3>Reader</h3>
             <button
               type="button"
-              class="web-search-inline-btn"
+              class="web-search-inline-btn icon-only"
               :disabled="!previewCopyText"
+              title="Копировать текст источника"
+              aria-label="Копировать текст источника"
               @click="void copyText(previewCopyText, 'Текст источника скопирован')"
             >
-              Копировать
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="9" y="9" width="10" height="10" rx="2" />
+                <path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" />
+              </svg>
             </button>
           </div>
 
@@ -668,19 +682,16 @@ onBeforeUnmount(() => {
   top: 50%;
   right: 14px;
   transform: translateY(-50%);
-  min-width: 52px;
-  min-height: 138px;
+  width: 44px;
+  height: 44px;
   border: 1px solid #bfd5ff;
-  border-right: none;
-  border-radius: 16px 0 0 16px;
+  border-radius: 999px;
   background: linear-gradient(180deg, #1058ff 0%, #0b4bdd 100%);
   color: #ffffff;
   display: inline-flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  padding: 14px 10px;
+  padding: 0;
   box-shadow: 0 18px 34px rgba(16, 88, 255, 0.28);
   cursor: pointer;
   pointer-events: auto;
@@ -697,21 +708,13 @@ onBeforeUnmount(() => {
 }
 
 .web-search-trigger svg {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 2;
+  stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
-}
-
-.web-search-trigger span {
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
 }
 
 .web-search-panel {
@@ -812,6 +815,7 @@ onBeforeUnmount(() => {
 
 .web-search-submit,
 .web-search-inline-btn {
+  appearance: none;
   border: 1px solid #dbe4f3;
   border-radius: 10px;
   background: #ffffff;
@@ -828,6 +832,30 @@ onBeforeUnmount(() => {
 .web-search-submit {
   min-width: 80px;
   padding: 0 14px;
+}
+
+.web-search-inline-btn {
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+.web-search-inline-btn.icon-only {
+  width: 32px;
+  min-width: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.web-search-inline-btn.icon-only svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .web-search-submit:disabled,
@@ -956,14 +984,18 @@ onBeforeUnmount(() => {
 }
 
 .web-search-source-main {
+  appearance: none;
   width: 100%;
+  padding: 11px 12px;
   border: none;
   background: transparent;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
+  align-items: flex-start;
   gap: 10px;
-  padding: 11px 12px;
   text-align: left;
+  font: inherit;
+  color: inherit;
   cursor: pointer;
 }
 
@@ -971,6 +1003,8 @@ onBeforeUnmount(() => {
   color: #1058ff;
   font-size: 12px;
   font-weight: 800;
+  line-height: 1.35;
+  padding-top: 1px;
 }
 
 .web-search-source-body {
@@ -981,15 +1015,26 @@ onBeforeUnmount(() => {
 }
 
 .web-search-source-body strong {
+  display: block;
   color: #0f172a;
   font-size: 13px;
   line-height: 1.35;
+  word-break: break-word;
 }
 
-.web-search-source-body span {
+.web-search-source-domain {
   color: #64748b;
   font-size: 11px;
   line-height: 1.4;
+  word-break: break-word;
+}
+
+.web-search-source-snippet {
+  margin: 0;
+  color: #475569;
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: break-word;
 }
 
 .web-search-source-actions {
@@ -1070,17 +1115,10 @@ onBeforeUnmount(() => {
     right: calc(10px + env(safe-area-inset-right, 0px));
     bottom: calc(10px + env(safe-area-inset-bottom, 0px) + var(--synapse-vv-bottom-offset, 0px));
     transform: none;
-    min-width: 46px;
-    min-height: 46px;
     width: 46px;
     height: 46px;
     border-radius: 999px;
-    border-right: 1px solid #bfd5ff;
     padding: 0;
-  }
-
-  .web-search-trigger span {
-    display: none;
   }
 
   .web-search-panel {
