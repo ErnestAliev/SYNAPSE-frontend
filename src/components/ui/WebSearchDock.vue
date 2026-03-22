@@ -2,6 +2,11 @@
 import axios from 'axios';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
+import {
+  WEB_SEARCH_IMAGE_DRAG_MIME,
+  type WebSearchDraggedImagePayload,
+  type WebSearchImageResult,
+} from '../../constants/webSearch';
 import { apiClient } from '../../services/api';
 import { useEntitiesStore } from '../../stores/entities';
 
@@ -20,6 +25,7 @@ interface ProjectWebSearchState {
   query: string;
   summary: string;
   citations: WebSearchCitation[];
+  images: WebSearchImageResult[];
   errorMessage: string;
   startedAt: string;
   completedAt: string;
@@ -112,6 +118,7 @@ function normalizeWebSearchState(rawValue: unknown): ProjectWebSearchState {
     ? (statusRaw as ProjectWebSearchState['status'])
     : 'idle';
   const rawCitations = Array.isArray(row.citations) ? row.citations : [];
+  const rawImages = Array.isArray(row.images) ? row.images : [];
 
   return {
     status,
@@ -134,6 +141,25 @@ function normalizeWebSearchState(rawValue: unknown): ProjectWebSearchState {
       })
       .filter((item): item is WebSearchCitation => Boolean(item))
       .slice(0, 80),
+    images: rawImages
+      .map((item, index) => {
+        const image = toProfile(item);
+        const imageUrl = normalizeWebUrl(image.imageUrl);
+        const thumbnailUrl = normalizeWebUrl(image.thumbnailUrl || image.imageUrl);
+        if (!imageUrl || !thumbnailUrl) return null;
+        return {
+          id: typeof image.id === 'string' && image.id.trim() ? image.id.trim() : `image-${index + 1}`,
+          imageUrl,
+          thumbnailUrl,
+          title: typeof image.title === 'string' ? image.title.trim() : '',
+          domain: typeof image.domain === 'string' ? image.domain.trim() : '',
+          sourcePageUrl: typeof image.sourcePageUrl === 'string' ? image.sourcePageUrl.trim() : '',
+          width: Math.max(0, Number(image.width) || 0),
+          height: Math.max(0, Number(image.height) || 0),
+        } satisfies WebSearchImageResult;
+      })
+      .filter((item): item is WebSearchImageResult => Boolean(item))
+      .slice(0, 10),
     errorMessage: typeof row.errorMessage === 'string' ? row.errorMessage.trim() : '',
     startedAt: typeof row.startedAt === 'string' ? row.startedAt.trim() : '',
     completedAt: typeof row.completedAt === 'string' ? row.completedAt.trim() : '',
@@ -416,6 +442,24 @@ async function copySummary() {
   showCopyNotice('Сводка скопирована');
 }
 
+function onImageDragStart(event: DragEvent, image: WebSearchImageResult) {
+  const dataTransfer = event.dataTransfer;
+  if (!dataTransfer) return;
+
+  const payload: WebSearchDraggedImagePayload = {
+    id: image.id,
+    imageUrl: image.imageUrl,
+    thumbnailUrl: image.thumbnailUrl,
+    title: image.title,
+    domain: image.domain,
+    sourcePageUrl: image.sourcePageUrl,
+  };
+
+  dataTransfer.setData(WEB_SEARCH_IMAGE_DRAG_MIME, JSON.stringify(payload));
+  dataTransfer.setData('text/plain', image.imageUrl || image.sourcePageUrl || image.title || 'image');
+  dataTransfer.effectAllowed = 'copy';
+}
+
 async function submitSearch() {
   const query = queryDraft.value.trim();
   if (!query || !projectId.value || isSubmitting.value) return;
@@ -653,6 +697,44 @@ onBeforeUnmount(() => {
       </p>
       <p v-else-if="effectiveErrorMessage" class="web-search-status error">{{ effectiveErrorMessage }}</p>
       <p v-else-if="copyNotice" class="web-search-copy-notice">{{ copyNotice }}</p>
+
+      <section class="web-search-images-wrap">
+        <div class="web-search-section-head">
+          <h3>Фото</h3>
+          <span class="web-search-section-note">Перетащите в аватарку</span>
+        </div>
+
+        <div class="web-search-images-grid">
+          <template v-if="syncedSearchState.images.length">
+            <button
+              v-for="image in syncedSearchState.images"
+              :key="image.id"
+              type="button"
+              class="web-search-image-card"
+              draggable="true"
+              :title="image.title || 'Перетащите фото в аватарку сущности'"
+              @dragstart="onImageDragStart($event, image)"
+            >
+              <img
+                class="web-search-image-thumb"
+                :src="image.thumbnailUrl"
+                :alt="image.title || 'Фото по запросу'"
+                loading="lazy"
+                decoding="async"
+                referrerpolicy="no-referrer"
+                draggable="false"
+              />
+              <span class="web-search-image-domain">{{ image.domain || 'Источник' }}</span>
+            </button>
+          </template>
+          <div v-else-if="isBusy" class="web-search-images-empty">
+            Подбираю релевантные фото...
+          </div>
+          <div v-else class="web-search-images-empty">
+            Фото по запросу появятся здесь.
+          </div>
+        </div>
+      </section>
 
       <section class="web-search-summary-wrap">
         <div class="web-search-section-head">
@@ -900,12 +982,12 @@ onBeforeUnmount(() => {
 }
 
 .web-search-summary-wrap {
-  flex: 1;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding: 0 16px 16px;
+  flex: 1;
+  min-height: 0;
 }
 
 .web-search-section-head {
@@ -920,6 +1002,82 @@ onBeforeUnmount(() => {
   color: #0f172a;
   font-size: 14px;
   font-weight: 800;
+}
+
+.web-search-section-note {
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.web-search-images-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 16px;
+}
+
+.web-search-images-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.web-search-image-card {
+  border: 1px solid #e5ebf5;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 0;
+  overflow: hidden;
+  cursor: grab;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+.web-search-image-card:hover {
+  border-color: #bfd5ff;
+  box-shadow: 0 8px 18px rgba(16, 88, 255, 0.12);
+  transform: translateY(-1px);
+}
+
+.web-search-image-card:active {
+  cursor: grabbing;
+}
+
+.web-search-image-thumb {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  display: block;
+  background: #e2e8f0;
+}
+
+.web-search-image-domain {
+  display: block;
+  padding: 6px 7px 7px;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+
+.web-search-images-empty {
+  grid-column: 1 / -1;
+  border: 1px dashed #dbe4f3;
+  border-radius: 12px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 12px;
 }
 
 .web-search-loading-glow {
@@ -1005,6 +1163,10 @@ onBeforeUnmount(() => {
 
   .web-search-summary-wrap {
     padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
+  }
+
+  .web-search-images-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 </style>

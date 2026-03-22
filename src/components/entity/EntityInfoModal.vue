@@ -22,6 +22,8 @@ import {
   readCustomLogos,
   type LogoLibraryItem,
 } from '../../data/logoLibrary';
+import { WEB_SEARCH_IMAGE_DRAG_MIME, type WebSearchDraggedImagePayload } from '../../constants/webSearch';
+import { apiClient } from '../../services/api';
 import type {
   CanvasEdgeProjection,
   CanvasGroupProjection,
@@ -361,6 +363,8 @@ const footerCropPointer = ref<{
   originY: number;
 } | null>(null);
 const isFooterCropBusy = ref(false);
+const isAvatarSearchDropActive = ref(false);
+const isAvatarSearchImportBusy = ref(false);
 const fieldInputRefs = ref<Record<string, HTMLInputElement | null>>({});
 const editingFieldValue = ref<{ fieldKey: string; originalValue: string } | null>(null);
 const descriptionHeightPx = ref<number | null>(null);
@@ -2486,6 +2490,95 @@ function queueEntityNameUpdate(nextName: string) {
   }
 }
 
+function isWebSearchImageDragPayload(dataTransfer: DataTransfer | null) {
+  if (!dataTransfer) return false;
+  return Array.from(dataTransfer.types || []).includes(WEB_SEARCH_IMAGE_DRAG_MIME);
+}
+
+function readWebSearchImageDragPayload(dataTransfer: DataTransfer | null): WebSearchDraggedImagePayload | null {
+  if (!isWebSearchImageDragPayload(dataTransfer)) return null;
+
+  try {
+    const raw = dataTransfer?.getData(WEB_SEARCH_IMAGE_DRAG_MIME) || '';
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<WebSearchDraggedImagePayload>;
+    const imageUrl = typeof parsed.imageUrl === 'string' ? parsed.imageUrl.trim() : '';
+    const thumbnailUrl = typeof parsed.thumbnailUrl === 'string' ? parsed.thumbnailUrl.trim() : '';
+    if (!imageUrl && !thumbnailUrl) return null;
+
+    return {
+      id: typeof parsed.id === 'string' ? parsed.id.trim() : '',
+      imageUrl,
+      thumbnailUrl,
+      title: typeof parsed.title === 'string' ? parsed.title.trim() : '',
+      domain: typeof parsed.domain === 'string' ? parsed.domain.trim() : '',
+      sourcePageUrl: typeof parsed.sourcePageUrl === 'string' ? parsed.sourcePageUrl.trim() : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function onAvatarDragEnter(event: DragEvent) {
+  if (!isWebSearchImageDragPayload(event.dataTransfer) || isAvatarSearchImportBusy.value) return;
+  event.preventDefault();
+  isAvatarSearchDropActive.value = true;
+}
+
+function onAvatarDragOver(event: DragEvent) {
+  if (!isWebSearchImageDragPayload(event.dataTransfer) || isAvatarSearchImportBusy.value) return;
+  event.preventDefault();
+  isAvatarSearchDropActive.value = true;
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'copy';
+  }
+}
+
+function onAvatarDragLeave(event: DragEvent) {
+  const currentTarget = event.currentTarget as HTMLElement | null;
+  const relatedTarget = event.relatedTarget as Node | null;
+  if (currentTarget && relatedTarget && currentTarget.contains(relatedTarget)) {
+    return;
+  }
+  isAvatarSearchDropActive.value = false;
+}
+
+async function onAvatarDrop(event: DragEvent) {
+  const payload = readWebSearchImageDragPayload(event.dataTransfer);
+  isAvatarSearchDropActive.value = false;
+  if (!payload || isAvatarSearchImportBusy.value) return;
+
+  event.preventDefault();
+  profileFooterOpen.value = true;
+  footerEmojiOpen.value = false;
+  footerLogoOpen.value = false;
+  footerCropOpen.value = true;
+  footerCropError.value = '';
+  isAvatarSearchImportBusy.value = true;
+
+  try {
+    const { data } = await apiClient.post('/ai/web-image-import', {
+      imageUrl: payload.imageUrl,
+      thumbnailUrl: payload.thumbnailUrl,
+    });
+    const image = typeof data?.image === 'string' ? data.image.trim() : '';
+    if (!image) {
+      throw new Error('Не удалось загрузить фото из веб-поиска.');
+    }
+    await initFooterCrop(image);
+  } catch (error) {
+    footerCropImageSrc.value = '';
+    footerCropNaturalWidth.value = 0;
+    footerCropNaturalHeight.value = 0;
+    footerCropError.value =
+      error instanceof Error && error.message.trim()
+        ? error.message.trim()
+        : 'Не удалось загрузить фото из веб-поиска.';
+  } finally {
+    isAvatarSearchImportBusy.value = false;
+  }
+}
+
 async function loadImageElement(src: string) {
   return await new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
@@ -3045,7 +3138,15 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="profile-progress-content"
+            :class="{
+              'is-drop-active': isAvatarSearchDropActive,
+              'is-import-busy': isAvatarSearchImportBusy,
+            }"
             title="Открыть быстрое меню"
+            @dragenter.prevent="onAvatarDragEnter"
+            @dragover.prevent="onAvatarDragOver"
+            @dragleave.prevent="onAvatarDragLeave"
+            @drop.prevent="void onAvatarDrop($event)"
             @click="toggleProfileFooter"
           >
             <ProfileProgressRing :value="profileProgress" :size="72" :stroke-width="5">
@@ -3067,6 +3168,12 @@ onBeforeUnmount(() => {
                 />
                 <span v-else-if="modalIcon.emoji" class="entity-info-icon-emoji">{{ modalIcon.emoji }}</span>
                 <AppIcon v-else :name="modalIcon.type" class="entity-info-icon-symbol" />
+              </span>
+              <span
+                v-if="isAvatarSearchDropActive || isAvatarSearchImportBusy"
+                class="entity-info-avatar-drop-hint"
+              >
+                {{ isAvatarSearchImportBusy ? 'Загружаю...' : 'Отпустите фото' }}
               </span>
             </ProfileProgressRing>
           </button>
@@ -3853,6 +3960,7 @@ onBeforeUnmount(() => {
 }
 
 .profile-progress-content {
+  position: relative;
   width: 72px;
   height: 72px;
   padding: 0;
@@ -3868,6 +3976,15 @@ onBeforeUnmount(() => {
 
 .profile-progress-content:hover {
   transform: translateY(-1px);
+}
+
+.profile-progress-content.is-drop-active {
+  transform: translateY(-1px) scale(1.03);
+}
+
+.profile-progress-content.is-drop-active .entity-info-icon,
+.profile-progress-content.is-import-busy .entity-info-icon {
+  box-shadow: 0 0 0 4px rgba(16, 88, 255, 0.18);
 }
 
 .entity-info-icon {
@@ -3896,6 +4013,23 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.entity-info-avatar-drop-hint {
+  position: absolute;
+  inset: 6px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.46);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 8px;
+  pointer-events: none;
 }
 
 .entity-info-icon-logo {
