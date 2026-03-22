@@ -6694,11 +6694,12 @@ function onCanvasPlayButtonLeave() {
   canvasPlayHintVisible.value = false;
 }
 
-function getCanvasTooltipDescription(entity: Entity): string {
+function getCanvasTooltipDescription(entity: Entity, maxLength = 240): string {
   const meta = entity.ai_metadata as Record<string, unknown> | null | undefined;
   if (!meta) return '';
   const desc = typeof meta.description === 'string' ? meta.description.trim() : '';
-  return desc.length > 240 ? `${desc.slice(0, 240)}…` : desc;
+  if (maxLength <= 0) return desc;
+  return desc.length > maxLength ? `${desc.slice(0, maxLength)}…` : desc;
 }
 
 function imageFromProfile(profile: Record<string, unknown>) {
@@ -6794,7 +6795,7 @@ const canvasTooltipMass = computed(() => {
 const canvasTooltipDescription = computed(() => {
   const entity = canvasTooltip.value?.entity;
   if (!entity) return '';
-  return getCanvasTooltipDescription(entity);
+  return getCanvasTooltipDescription(entity, isPhotoTooltipPlayMode.value ? 0 : 240);
 });
 const canvasTooltipFields = computed(() => {
   const entity = canvasTooltip.value?.entity;
