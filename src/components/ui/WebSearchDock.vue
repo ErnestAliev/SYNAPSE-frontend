@@ -2536,10 +2536,10 @@ onBeforeUnmount(() => {
 
 @media (max-width: 900px) {
   .web-search-trigger {
-    top: auto;
+    top: 50%;
     right: calc(10px + env(safe-area-inset-right, 0px));
-    bottom: calc(10px + env(safe-area-inset-bottom, 0px) + var(--synapse-vv-bottom-offset, 0px));
-    transform: none;
+    bottom: auto;
+    transform: translateY(-50%);
     width: 46px;
     height: 46px;
   }
