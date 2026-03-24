@@ -56,7 +56,7 @@ a {
   padding: 12px;
   max-width: 264px;
   word-break: break-word;
-  max-height: 68vh;
+  max-height: 78vh;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -67,12 +67,12 @@ a {
     -webkit-overflow-scrolling: touch;
     /* Slightly wider to be easier to tap */
     max-width: 288px;
-    max-height: 50vh;
+    max-height: 62vh;
   }
 
   .entity-card-tooltip-photo-mode {
     max-width: min(304px, calc(100vw - 12px));
-    max-height: 58vh;
+    max-height: 70vh;
   }
 
   .entity-card-tooltip-photo-media {

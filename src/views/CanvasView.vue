@@ -6746,12 +6746,11 @@ function onCanvasPlayButtonLeave() {
   canvasPlayHintVisible.value = false;
 }
 
-function getCanvasTooltipDescription(entity: Entity, maxLength = 240): string {
+function getCanvasTooltipDescription(entity: Entity): string {
   const meta = entity.ai_metadata as Record<string, unknown> | null | undefined;
   if (!meta) return '';
   const desc = typeof meta.description === 'string' ? meta.description.trim() : '';
-  if (maxLength <= 0) return desc;
-  return desc.length > maxLength ? `${desc.slice(0, maxLength)}…` : desc;
+  return desc;
 }
 
 function imageFromProfile(profile: Record<string, unknown>) {
@@ -6847,7 +6846,7 @@ const canvasTooltipMass = computed(() => {
 const canvasTooltipDescription = computed(() => {
   const entity = canvasTooltip.value?.entity;
   if (!entity) return '';
-  return getCanvasTooltipDescription(entity, isPhotoTooltipPlayMode.value ? 0 : 240);
+  return getCanvasTooltipDescription(entity);
 });
 const canvasTooltipFields = computed(() => {
   const entity = canvasTooltip.value?.entity;
@@ -6903,12 +6902,12 @@ const canvasTooltipStyle = computed<Partial<Record<string, string>>>(() => {
   const maxH = Math.round(
     vh * (
       isTouchDevice
-        ? (isPhotoTooltipPlayMode.value ? 0.58 : 0.5)
-        : (isPhotoTooltipPlayMode.value ? 0.74 : 0.68)
+        ? (isPhotoTooltipPlayMode.value ? 0.7 : 0.62)
+        : (isPhotoTooltipPlayMode.value ? 0.82 : 0.78)
     ),
   );
   const effectiveHeight = isPhotoTooltipPlayMode.value
-    ? Math.min(maxH, isTouchDevice ? 430 : 520)
+    ? Math.min(maxH, isTouchDevice ? 520 : 640)
     : maxH;
 
   let left = rect.right + GAP;
@@ -6917,16 +6916,23 @@ const canvasTooltipStyle = computed<Partial<Record<string, string>>>(() => {
     if (left < GAP) left = GAP;
   }
 
-  let top = rect.top;
-  if (top + effectiveHeight > effectiveVH - GAP) {
-    top = Math.max(GAP, effectiveVH - effectiveHeight - GAP);
+  const centerY = rect.top + rect.height / 2;
+  const wouldOverflowTop = centerY - effectiveHeight / 2 < GAP;
+  const wouldOverflowBottom = centerY + effectiveHeight / 2 > effectiveVH - GAP;
+
+  let top = centerY;
+  let transform = 'translateY(-50%)';
+
+  if (wouldOverflowTop || wouldOverflowBottom) {
+    transform = 'none';
+    top = Math.max(GAP, Math.min(centerY - effectiveHeight / 2, effectiveVH - effectiveHeight - GAP));
   }
-  if (top < GAP) top = GAP;
 
   const style: Partial<Record<string, string>> = {
     left: `${Math.round(left)}px`,
     top: `${Math.round(top)}px`,
     width: `${W}px`,
+    transform,
   };
 
   if (isPhotoTooltipPlayMode.value) {
