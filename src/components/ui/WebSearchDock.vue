@@ -230,17 +230,11 @@ interface WebSearchState extends WebSearchStateEntry {
   history: WebSearchStateEntry[];
 }
 
-type AnswerSegment =
-  | {
-      key: string;
-      type: 'text';
-      text: string;
-    }
-  | {
-      key: string;
-      type: 'citation';
-      citation: WebSearchCitation;
-    };
+interface AnswerParagraph {
+  key: string;
+  text: string;
+  citations: WebSearchCitation[];
+}
 
 const PANEL_SIZE_STORAGE_KEY = 'synapse12.web-search.panel-size.v3';
 const PANEL_CONTEXT_STORAGE_PREFIX = 'synapse12.web-search.context.v1';
@@ -927,57 +921,77 @@ async function writeTextToClipboard(text: string) {
   }
 }
 
-function buildAnswerSegments(answer: string, citations: WebSearchCitation[]) {
-  const text = typeof answer === 'string' ? answer : '';
+function buildAnswerParagraphs(answer: string, citations: WebSearchCitation[]) {
+  const text = typeof answer === 'string' ? answer.replace(/\r\n/g, '\n') : '';
+  if (!text.trim()) return [];
+
   const safeCitations = Array.isArray(citations)
     ? [...citations].sort((left, right) => {
         if (left.endIndex !== right.endIndex) return left.endIndex - right.endIndex;
         return left.sourceIndex - right.sourceIndex;
       })
     : [];
-  const grouped = new Map<number, WebSearchCitation[]>();
 
-  for (const citation of safeCitations) {
-    const safeEnd = Math.max(0, Math.min(text.length, Number(citation.endIndex) || 0));
-    const bucket = grouped.get(safeEnd) || [];
-    bucket.push(citation);
-    grouped.set(safeEnd, bucket);
-  }
-
-  const segments: AnswerSegment[] = [];
+  const paragraphRanges: Array<{ start: number; end: number; text: string }> = [];
+  const paragraphSeparatorPattern = /\n{2,}/g;
   let cursor = 0;
-  for (const endIndex of Array.from(grouped.keys()).sort((left, right) => left - right)) {
-    if (endIndex > cursor) {
-      segments.push({
-        key: `text-${cursor}-${endIndex}`,
-        type: 'text',
-        text: text.slice(cursor, endIndex),
-      });
-      cursor = endIndex;
-    }
+  let match: RegExpExecArray | null = null;
 
-    for (const citation of grouped.get(endIndex) || []) {
-      segments.push({
-        key: `${citation.id}-${citation.sourceIndex}-${endIndex}`,
-        type: 'citation',
-        citation,
+  while ((match = paragraphSeparatorPattern.exec(text)) !== null) {
+    const rawText = text.slice(cursor, match.index);
+    if (rawText.trim()) {
+      paragraphRanges.push({
+        start: cursor,
+        end: match.index,
+        text: rawText.trim(),
       });
     }
+    cursor = match.index + match[0].length;
   }
 
-  if (cursor < text.length || !segments.length) {
-    segments.push({
-      key: `text-${cursor}-${text.length}`,
-      type: 'text',
-      text: text.slice(cursor),
+  const tail = text.slice(cursor);
+  if (tail.trim()) {
+    paragraphRanges.push({
+      start: cursor,
+      end: text.length,
+      text: tail.trim(),
     });
   }
 
-  return segments;
+  if (!paragraphRanges.length) {
+    paragraphRanges.push({
+      start: 0,
+      end: text.length,
+      text: text.trim(),
+    });
+  }
+
+  let citationIndex = 0;
+  return paragraphRanges.map((paragraph, index) => {
+    const paragraphCitations: WebSearchCitation[] = [];
+
+    while (citationIndex < safeCitations.length) {
+      const citation = safeCitations[citationIndex];
+      if (!citation) break;
+      const safeEnd = Math.max(0, Math.min(text.length, Number(citation.endIndex) || 0));
+      const isLastParagraph = index === paragraphRanges.length - 1;
+      if (!isLastParagraph && safeEnd > paragraph.end) {
+        break;
+      }
+      paragraphCitations.push(citation);
+      citationIndex += 1;
+    }
+
+    return {
+      key: `paragraph-${paragraph.start}-${paragraph.end}`,
+      text: paragraph.text,
+      citations: paragraphCitations,
+    };
+  });
 }
 
-const answerSegments = computed(() =>
-  buildAnswerSegments(syncedSearchState.value.summary, syncedSearchState.value.citations),
+const answerParagraphs = computed<AnswerParagraph[]>(() =>
+  buildAnswerParagraphs(syncedSearchState.value.summary, syncedSearchState.value.citations),
 );
 
 const summaryCopyText = computed(() => {
@@ -1868,19 +1882,24 @@ onBeforeUnmount(() => {
 
           <div class="web-search-summary" aria-label="Сводка с источниками">
             <template v-if="syncedSearchState.summary">
-              <template v-for="segment in answerSegments" :key="segment.key">
-                <span v-if="segment.type === 'text'">{{ segment.text }}</span>
+              <p
+                v-for="paragraph in answerParagraphs"
+                :key="paragraph.key"
+                class="web-search-summary-paragraph"
+              >
+                <span>{{ paragraph.text }}</span>
                 <a
-                  v-else
+                  v-for="citation in paragraph.citations"
+                  :key="`${paragraph.key}-${citation.id}`"
                   class="web-search-citation"
-                  :href="segment.citation.url"
+                  :href="citation.url"
                   target="_blank"
                   rel="noopener noreferrer"
-                  :title="segment.citation.title || segment.citation.url"
+                  :title="citation.title || citation.url"
                 >
-                  [{{ segment.citation.sourceIndex }}]
+                  [{{ citation.sourceIndex }}]
                 </a>
-              </template>
+              </p>
             </template>
             <div v-else-if="isBusy" class="web-search-summary-empty">
               Идет поиск и сборка сводки...
@@ -2349,6 +2368,10 @@ onBeforeUnmount(() => {
   font-size: 13px;
   line-height: 1.6;
   user-select: text;
+}
+
+.web-search-summary-paragraph {
+  margin: 0;
 }
 
 .web-search-summary-empty {
