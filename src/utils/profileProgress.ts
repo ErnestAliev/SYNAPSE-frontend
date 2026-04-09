@@ -1,4 +1,5 @@
 import type { Entity, EntityType } from '../types/entity';
+import { countPersonSkillItems } from './personSkills';
 
 type MetadataFieldKey =
   | 'tags'
@@ -60,6 +61,12 @@ function countFilledMetadataFields(type: EntityType, metadata: Record<string, un
   const fields = ENTITY_METADATA_FIELDS[type] || [];
   let filled = 0;
   for (const key of fields) {
+    if (type === 'person' && key === 'skills') {
+      if (countPersonSkillItems(metadata) > 0) {
+        filled += 1;
+      }
+      continue;
+    }
     if (toStringArray(metadata[key]).length > 0) {
       filled += 1;
     }

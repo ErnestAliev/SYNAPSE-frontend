@@ -24,6 +24,7 @@ import {
 } from '../../data/logoLibrary';
 import { WEB_SEARCH_IMAGE_DRAG_MIME, type WebSearchDraggedImagePayload } from '../../constants/webSearch';
 import { apiClient } from '../../services/api';
+import PersonSkillsLibraryModal from './PersonSkillsLibraryModal.vue';
 import type {
   CanvasEdgeProjection,
   CanvasGroupProjection,
@@ -32,6 +33,17 @@ import type {
   EntityType,
   ProjectCanvasData,
 } from '../../types/entity';
+import {
+  PERSON_SKILL_CUSTOM_GROUP,
+  PERSON_SKILL_DEFAULT_LEVEL,
+  extractAiPersonSkills,
+  normalizePersonManualSkills,
+  normalizePersonSkillLevel,
+  normalizePersonSkillName,
+  resolvePersonManualSkillEntry,
+  type PersonManualSkillEntry,
+  type PersonSkillCategory,
+} from '../../utils/personSkills';
 
 const props = defineProps<{
   entityId: string;
@@ -294,6 +306,8 @@ const draft = ref<{
   description: string;
   importanceSource: 'auto' | 'manual';
   metadataValues: Record<string, string[]>;
+  manualSkills: PersonManualSkillEntry[];
+  aiSkillSuggestions: string[];
   fieldDrafts: Record<string, string>;
   textInput: string;
   voiceInput: string;
@@ -372,6 +386,8 @@ const isDescriptionResizing = ref(false);
 const descriptionResizePointerId = ref<number | null>(null);
 const descriptionResizeStart = ref<{ clientY: number; height: number } | null>(null);
 const isFieldsListExpanded = ref(false);
+const isPersonSkillsLibraryOpen = ref(false);
+const manualPersonSkillsDirty = ref(false);
 
 const voiceInput = useUnifiedVoiceInput({
   language: 'ru',
@@ -652,6 +668,16 @@ function buildEntityFieldDrafts(type: EntityType) {
   return fieldDrafts;
 }
 
+function buildPersonManualSkillsSignature(skills: PersonManualSkillEntry[]) {
+  return skills
+    .map((skill) => `${skill.name.toLowerCase()}|${skill.level}|${skill.category}|${skill.group.toLowerCase()}`)
+    .join('||');
+}
+
+function isPersonSkillsField(fieldKey: string, type = draft.value?.type || currentEntity.value?.type) {
+  return type === 'person' && fieldKey === 'skills';
+}
+
 function buildEntityMetadataResetPayload(currentMetadata: Record<string, unknown> = {}) {
   const resetPayload: Record<string, unknown> = {
     description: '',
@@ -664,6 +690,7 @@ function buildEntityMetadataResetPayload(currentMetadata: Record<string, unknown
     importance_history: [],
     ai_last_analysis: {},
     importance_source: 'auto',
+    manual_skills: [],
   };
 
   const preserved = toProfile(currentMetadata);
@@ -873,6 +900,7 @@ function loadDraft(entityId: string) {
   clearResourceLinkPreview();
 
   const aiMetadata = toProfile(entity.ai_metadata);
+  const manualSkills = normalizePersonManualSkills(aiMetadata.manual_skills);
   const rawDocuments = Array.isArray(aiMetadata.documents) ? aiMetadata.documents : [];
   const documents = rawDocuments
     .map((doc, index) => {
@@ -899,6 +927,8 @@ function loadDraft(entityId: string) {
     description: typeof aiMetadata.description === 'string' ? aiMetadata.description : '',
     importanceSource: normalizeImportanceSource(aiMetadata.importance_source),
     metadataValues: buildEntityMetadataValues(entity.type, aiMetadata),
+    manualSkills,
+    aiSkillSuggestions: extractAiPersonSkills(aiMetadata.skills),
     fieldDrafts: buildEntityFieldDrafts(entity.type),
     textInput: '',
     voiceInput: typeof aiMetadata.voice_input === 'string' ? aiMetadata.voice_input : '',
@@ -913,6 +943,8 @@ function loadDraft(entityId: string) {
   isMineToggleBusy.value = false;
   editingFieldValue.value = null;
   isFieldsListExpanded.value = false;
+  isPersonSkillsLibraryOpen.value = false;
+  manualPersonSkillsDirty.value = false;
 
   pendingComposerHeightReset.value = true;
   void nextTick(() => {
@@ -957,10 +989,22 @@ function persistDraft(entityId: string) {
     })),
   };
   for (const field of getEntityContextFields(currentDraft.type)) {
+    if (isPersonSkillsField(field.key, currentDraft.type)) {
+      continue;
+    }
     nextMetadata[field.key] = normalizeMetadataValues(field.key, currentDraft.metadataValues[field.key] || []).slice(
       0,
       24,
     );
+  }
+
+  if (currentDraft.type === 'person') {
+    nextMetadata.manual_skills = currentDraft.manualSkills.map((skill) => ({
+      name: skill.name,
+      level: normalizePersonSkillLevel(skill.level),
+      category: skill.category,
+      group: skill.group,
+    }));
   }
 
   const hasImportanceField = getEntityContextFields(currentDraft.type).some(
@@ -1021,6 +1065,7 @@ function closeModal() {
   isDeleteConfirmOpen.value = false;
   isChatClearConfirmOpen.value = false;
   isMineToggleBusy.value = false;
+  isPersonSkillsLibraryOpen.value = false;
   closeChatToolsMenus();
   closeProfileFooter();
   emit('close');
@@ -1204,12 +1249,37 @@ function getFieldValues(fieldKey: string) {
   return draft.value.metadataValues[fieldKey] || [];
 }
 
+function getPersonManualSkills() {
+  if (!draft.value || draft.value.type !== 'person') return [] as PersonManualSkillEntry[];
+  return draft.value.manualSkills;
+}
+
+function getPersonAiSkillSuggestions() {
+  if (!draft.value || draft.value.type !== 'person') return [] as string[];
+  return draft.value.aiSkillSuggestions;
+}
+
+function getPersonDisplayedSkillCount() {
+  const dedupe = new Set<string>();
+  for (const skill of getPersonManualSkills()) {
+    dedupe.add(skill.name.toLowerCase());
+  }
+  for (const skillName of getPersonAiSkillSuggestions()) {
+    dedupe.add(skillName.toLowerCase());
+  }
+  return dedupe.size;
+}
+
 function getFieldDraft(fieldKey: string) {
   if (!draft.value) return '';
   return draft.value.fieldDrafts[fieldKey] || '';
 }
 
 function getFieldPlaceholder(field: MetadataFieldConfig) {
+  if (isPersonSkillsField(field.key)) {
+    const count = getPersonDisplayedSkillCount();
+    return `${field.label}: ${count}`;
+  }
   const count = draft.value ? (draft.value.metadataValues[field.key] || []).length : 0;
   return `${field.label}: ${count}`;
 }
@@ -1265,6 +1335,10 @@ function onFieldDraftKeydown(fieldKey: string, event: KeyboardEvent) {
 
 function startEditFieldValue(fieldKey: string, value: string) {
   if (!draft.value) return;
+  if (isPersonSkillsField(fieldKey)) {
+    isPersonSkillsLibraryOpen.value = true;
+    return;
+  }
   editingFieldValue.value = { fieldKey, originalValue: value };
   draft.value.fieldDrafts[fieldKey] = normalizeMetadataValue(fieldKey, value).slice(
     0,
@@ -1302,6 +1376,135 @@ function getLinkChipLabel(value: string) {
   } catch {
     return LINK_CHIP_FALLBACK_LABEL;
   }
+}
+
+function markManualSkillsChanged() {
+  manualPersonSkillsDirty.value = true;
+  scheduleSave();
+}
+
+function openPersonSkillsLibrary() {
+  if (!draft.value || draft.value.type !== 'person') return;
+  isPersonSkillsLibraryOpen.value = true;
+}
+
+function closePersonSkillsLibrary() {
+  isPersonSkillsLibraryOpen.value = false;
+}
+
+function addPersonManualSkillEntry(
+  payload: {
+    name: string;
+    category?: PersonSkillCategory;
+    group?: string;
+    level?: number;
+  },
+) {
+  if (!draft.value || draft.value.type !== 'person') return;
+
+  const resolved = resolvePersonManualSkillEntry(
+    {
+      name: payload.name,
+      category: payload.category,
+      group: payload.group,
+      level: payload.level ?? PERSON_SKILL_DEFAULT_LEVEL,
+    },
+    {
+      fallbackCategory: payload.category || 'hard',
+      fallbackGroup: payload.group || PERSON_SKILL_CUSTOM_GROUP,
+      fallbackLevel: payload.level ?? PERSON_SKILL_DEFAULT_LEVEL,
+    },
+  );
+  if (!resolved) return;
+
+  const nextSkills = [...draft.value.manualSkills];
+  const existingIndex = nextSkills.findIndex((skill) => skill.name.toLowerCase() === resolved.name.toLowerCase());
+  if (existingIndex >= 0) {
+    nextSkills[existingIndex] = {
+      ...nextSkills[existingIndex]!,
+      ...resolved,
+      level: normalizePersonSkillLevel(nextSkills[existingIndex]!.level),
+    };
+  } else {
+    nextSkills.push(resolved);
+  }
+
+  draft.value.manualSkills = nextSkills;
+  draft.value.fieldDrafts.skills = '';
+  markManualSkillsChanged();
+}
+
+function addCustomPersonSkillFromInput() {
+  if (!draft.value || draft.value.type !== 'person') return;
+  const normalizedName = normalizePersonSkillName(draft.value.fieldDrafts.skills);
+  if (!normalizedName) return;
+
+  addPersonManualSkillEntry({
+    name: normalizedName,
+    category: 'hard',
+    group: PERSON_SKILL_CUSTOM_GROUP,
+    level: PERSON_SKILL_DEFAULT_LEVEL,
+  });
+}
+
+function togglePersonManualSkill(payload: {
+  name: string;
+  category: PersonSkillCategory;
+  group: string;
+}) {
+  if (!draft.value || draft.value.type !== 'person') return;
+
+  const normalizedName = normalizePersonSkillName(payload.name);
+  if (!normalizedName) return;
+
+  const existingIndex = draft.value.manualSkills.findIndex((skill) => skill.name.toLowerCase() === normalizedName.toLowerCase());
+  if (existingIndex >= 0) {
+    draft.value.manualSkills = draft.value.manualSkills.filter((skill) => skill.name.toLowerCase() !== normalizedName.toLowerCase());
+    markManualSkillsChanged();
+    return;
+  }
+
+  addPersonManualSkillEntry({
+    name: normalizedName,
+    category: payload.category,
+    group: payload.group,
+    level: PERSON_SKILL_DEFAULT_LEVEL,
+  });
+}
+
+function setPersonManualSkillLevel(payload: { name: string; level: number }) {
+  if (!draft.value || draft.value.type !== 'person') return;
+
+  const normalizedName = normalizePersonSkillName(payload.name);
+  if (!normalizedName) return;
+
+  const nextLevel = normalizePersonSkillLevel(payload.level);
+  let changed = false;
+  draft.value.manualSkills = draft.value.manualSkills.map((skill) => {
+    if (skill.name.toLowerCase() !== normalizedName.toLowerCase()) {
+      return skill;
+    }
+    if (skill.level === nextLevel) return skill;
+    changed = true;
+    return {
+      ...skill,
+      level: nextLevel,
+    };
+  });
+
+  if (changed) {
+    markManualSkillsChanged();
+  }
+}
+
+function removePersonManualSkill(skillName: string) {
+  if (!draft.value || draft.value.type !== 'person') return;
+
+  const normalizedName = normalizePersonSkillName(skillName).toLowerCase();
+  const nextSkills = draft.value.manualSkills.filter((skill) => skill.name.toLowerCase() !== normalizedName);
+  if (nextSkills.length === draft.value.manualSkills.length) return;
+  draft.value.manualSkills = nextSkills;
+  markManualSkillsChanged();
 }
 
 function addFieldValue(fieldKey: string) {
@@ -2385,6 +2588,12 @@ const entityProfileFilledFieldCount = computed(() => {
   }
 
   for (const field of activeFields.value) {
+    if (isPersonSkillsField(field.key, currentDraft.type)) {
+      if (currentDraft.manualSkills.length > 0 || currentDraft.aiSkillSuggestions.length > 0) {
+        filled += 1;
+      }
+      continue;
+    }
     if ((currentDraft.metadataValues[field.key] || []).length > 0) {
       filled += 1;
     }
@@ -2431,6 +2640,15 @@ const progressEntity = computed<Entity | null>(() => {
   } as Record<string, unknown>;
 
   for (const field of activeFields.value) {
+    if (isPersonSkillsField(field.key, draft.value.type)) {
+      metadata.manual_skills = draft.value.manualSkills.map((skill) => ({
+        name: skill.name,
+        level: skill.level,
+        category: skill.category,
+        group: skill.group,
+      }));
+      continue;
+    }
     metadata[field.key] = draft.value.metadataValues[field.key] || [];
   }
 
@@ -3039,7 +3257,31 @@ watch(
           }
         }
 
+        if (draft.value.type === 'person') {
+          const remoteManualSkills = normalizePersonManualSkills(remoteMeta.manual_skills);
+          const remoteManualSkillsSignature = buildPersonManualSkillsSignature(remoteManualSkills);
+          const localManualSkillsSignature = buildPersonManualSkillsSignature(draft.value.manualSkills);
+
+          if (manualPersonSkillsDirty.value) {
+            if (remoteManualSkillsSignature === localManualSkillsSignature) {
+              manualPersonSkillsDirty.value = false;
+            }
+          } else if (remoteManualSkillsSignature !== localManualSkillsSignature) {
+            draft.value.manualSkills = remoteManualSkills;
+          }
+
+          const remoteAiSkills = extractAiPersonSkills(remoteMeta.skills);
+          const localAiSkillsSignature = draft.value.aiSkillSuggestions.join('|').toLowerCase();
+          const remoteAiSkillsSignature = remoteAiSkills.join('|').toLowerCase();
+          if (remoteAiSkillsSignature !== localAiSkillsSignature) {
+            draft.value.aiSkillSuggestions = remoteAiSkills;
+          }
+        }
+
         for (const field of getEntityContextFields(draft.value.type)) {
+          if (isPersonSkillsField(field.key, draft.value.type)) {
+            continue;
+          }
           if (editingFieldValue.value?.fieldKey === field.key) continue;
 
           const rawRemote = remoteMeta[field.key];
@@ -3263,7 +3505,78 @@ onBeforeUnmount(() => {
                 :key="field.key"
                 class="entity-info-field-row"
               >
-                <div class="entity-info-field-scroll">
+                <div
+                  v-if="isPersonSkillsField(field.key)"
+                  class="entity-info-field-scroll entity-info-skill-scroll"
+                >
+                  <div class="entity-info-skill-input-shell">
+                    <input
+                      :ref="(el) => setFieldInputRef(field.key, el)"
+                      :value="getFieldDraft(field.key)"
+                      type="text"
+                      class="entity-info-tag-input entity-info-skill-input"
+                      :maxlength="getMetadataFieldMaxLength(field.key)"
+                      :placeholder="getFieldPlaceholder(field)"
+                      @input="onFieldDraftInput(field.key, $event)"
+                      @keydown.enter.prevent="addCustomPersonSkillFromInput"
+                      @keydown="onFieldDraftKeydown(field.key, $event)"
+                    />
+                    <button
+                      type="button"
+                      class="entity-info-skill-library-btn"
+                      title="Открыть базу навыков"
+                      @click="openPersonSkillsLibrary"
+                    >
+                      +
+                    </button>
+                  </div>
+
+                  <div
+                    v-for="skill in getPersonManualSkills()"
+                    :key="`person-skill:${skill.name}`"
+                    class="entity-info-tag entity-info-skill-tag"
+                  >
+                    <button
+                      type="button"
+                      class="entity-info-tag-main entity-info-skill-tag-main"
+                      title="Открыть базу навыков"
+                      @click="openPersonSkillsLibrary"
+                    >
+                      <span class="entity-info-skill-tag-name">{{ skill.name }}</span>
+                      <span class="entity-info-skill-tag-level">{{ skill.level }}/10</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="entity-info-tag-remove"
+                      title="Удалить"
+                      @click.stop="removePersonManualSkill(skill.name)"
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  <span
+                    v-if="getPersonAiSkillSuggestions().length"
+                    class="entity-info-skill-ai-badge"
+                  >
+                    AI
+                  </span>
+
+                  <div
+                    v-for="skillName in getPersonAiSkillSuggestions()"
+                    :key="`person-skill-ai:${skillName}`"
+                    class="entity-info-tag entity-info-tag-ai"
+                  >
+                    <span class="entity-info-tag-main entity-info-skill-ai-text">
+                      {{ skillName }}
+                    </span>
+                  </div>
+                </div>
+
+                <div
+                  v-else
+                  class="entity-info-field-scroll"
+                >
                   <input
                     :ref="(el) => setFieldInputRef(field.key, el)"
                     :value="getFieldDraft(field.key)"
@@ -3878,6 +4191,16 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+
+    <PersonSkillsLibraryModal
+      v-if="draft"
+      :open="isPersonSkillsLibraryOpen"
+      :selected-skills="draft.manualSkills"
+      @close="closePersonSkillsLibrary"
+      @toggle-skill="togglePersonManualSkill"
+      @set-skill-level="setPersonManualSkillLevel"
+      @add-custom-skill="addPersonManualSkillEntry"
+    />
   </div>
 </template>
 
@@ -4469,6 +4792,99 @@ onBeforeUnmount(() => {
   width: 0;
   height: 0;
   display: none;
+}
+
+.entity-info-skill-scroll {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.entity-info-skill-input-shell {
+  flex: 0 0 auto;
+  min-width: 174px;
+  max-width: 230px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid #dbe4f3;
+  border-radius: 999px;
+  background: #f8fafc;
+  padding: 2px 3px 2px 6px;
+  order: -1;
+}
+
+.entity-info-skill-input {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+  padding-right: 2px;
+}
+
+.entity-info-skill-library-btn {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 999px;
+  background: #1058ff;
+  color: #ffffff;
+  font-size: 16px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+}
+
+.entity-info-skill-tag {
+  padding-right: 4px;
+}
+
+.entity-info-skill-tag-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.entity-info-skill-tag-name {
+  max-width: 148px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.entity-info-skill-tag-level {
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: rgba(30, 64, 175, 0.14);
+  color: #1e3a8a;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 6px;
+}
+
+.entity-info-skill-ai-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #475569;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 5px 7px;
+}
+
+.entity-info-tag-ai {
+  border-color: #dbe4f3;
+  background: #f8fafc;
+}
+
+.entity-info-skill-ai-text {
+  color: #64748b;
+  cursor: default;
 }
 
 .entity-info-tag {
@@ -5160,6 +5576,11 @@ onBeforeUnmount(() => {
 
   .entity-info-field-scroll {
     padding: 4px 6px;
+  }
+
+  .entity-info-skill-input-shell {
+    min-width: 148px;
+    max-width: 210px;
   }
 
   .entity-info-tag-input {

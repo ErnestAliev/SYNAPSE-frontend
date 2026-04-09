@@ -15,6 +15,7 @@ import { useEntitiesStore } from '../stores/entities';
 import { useAuthStore } from '../stores/auth';
 import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../services/entityAi';
 import { calculateEntityProfileProgress } from '../utils/profileProgress';
+import { buildPersonSkillDisplayValues, countPersonSkillItems } from '../utils/personSkills';
 import {
   PROJECT_CHAT_MONITOR_UPDATED_EVENT,
   readProjectChatMonitorEntries,
@@ -1555,6 +1556,14 @@ function summarizeMonitorEntity(entity: Entity): AgentChatPreviewEntitySummary {
   let fieldsItemsTotal = 0;
 
   for (const [key, rawValue] of Object.entries(metadata)) {
+    if (entity.type === 'person' && (key === 'manual_skills' || key === 'skills')) {
+      if (fieldCounts.skills) continue;
+      const skillCount = countPersonSkillItems(metadata);
+      if (!skillCount) continue;
+      fieldCounts.skills = skillCount;
+      fieldsItemsTotal += skillCount;
+      continue;
+    }
     if (!Array.isArray(rawValue)) continue;
     const count = rawValue
       .map((value) => (typeof value === 'string' ? value.trim() : ''))
@@ -6783,6 +6792,11 @@ function getCanvasTooltipFields(entity: Entity): Array<{ label: string; values: 
   const fieldConfigs = CANVAS_NODE_TOOLTIP_FIELDS[entity.type as EntityType] ?? [];
   const result: Array<{ label: string; values: string[] }> = [];
   for (const { key, label } of fieldConfigs) {
+    if (entity.type === 'person' && key === 'skills') {
+      const values = buildPersonSkillDisplayValues(meta, { limit: 6 });
+      if (values.length) result.push({ label, values });
+      continue;
+    }
     const raw = meta[key];
     const values = Array.isArray(raw)
       ? (raw as unknown[]).filter((v): v is string => typeof v === 'string' && v.trim().length > 0).slice(0, 6)
