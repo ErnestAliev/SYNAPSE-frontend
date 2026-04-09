@@ -24,6 +24,7 @@ import {
 } from '../../data/logoLibrary';
 import { WEB_SEARCH_IMAGE_DRAG_MIME, type WebSearchDraggedImagePayload } from '../../constants/webSearch';
 import { apiClient } from '../../services/api';
+import PersonRolesLibraryModal from './PersonRolesLibraryModal.vue';
 import PersonSkillsLibraryModal from './PersonSkillsLibraryModal.vue';
 import type {
   CanvasEdgeProjection,
@@ -44,6 +45,15 @@ import {
   type PersonManualSkillEntry,
   type PersonSkillCategory,
 } from '../../utils/personSkills';
+import {
+  PERSON_ROLE_CUSTOM_GROUP,
+  extractAiPersonRoles,
+  normalizePersonManualRoles,
+  normalizePersonRoleName,
+  resolvePersonManualRoleEntry,
+  type PersonManualRoleEntry,
+  type PersonRoleCategory,
+} from '../../utils/personRoles';
 
 const props = defineProps<{
   entityId: string;
@@ -306,6 +316,8 @@ const draft = ref<{
   description: string;
   importanceSource: 'auto' | 'manual';
   metadataValues: Record<string, string[]>;
+  manualRoles: PersonManualRoleEntry[];
+  aiRoleSuggestions: string[];
   manualSkills: PersonManualSkillEntry[];
   aiSkillSuggestions: string[];
   fieldDrafts: Record<string, string>;
@@ -388,6 +400,8 @@ const descriptionResizeStart = ref<{ clientY: number; height: number } | null>(n
 const isFieldsListExpanded = ref(false);
 const isPersonSkillsLibraryOpen = ref(false);
 const manualPersonSkillsDirty = ref(false);
+const isPersonRolesLibraryOpen = ref(false);
+const manualPersonRolesDirty = ref(false);
 
 const voiceInput = useUnifiedVoiceInput({
   language: 'ru',
@@ -674,8 +688,18 @@ function buildPersonManualSkillsSignature(skills: PersonManualSkillEntry[]) {
     .join('||');
 }
 
+function buildPersonManualRolesSignature(roles: PersonManualRoleEntry[]) {
+  return roles
+    .map((role) => `${role.name.toLowerCase()}|${role.category}|${role.group.toLowerCase()}`)
+    .join('||');
+}
+
 function isPersonSkillsField(fieldKey: string, type = draft.value?.type || currentEntity.value?.type) {
   return type === 'person' && fieldKey === 'skills';
+}
+
+function isPersonRolesField(fieldKey: string, type = draft.value?.type || currentEntity.value?.type) {
+  return type === 'person' && fieldKey === 'roles';
 }
 
 function buildEntityMetadataResetPayload(currentMetadata: Record<string, unknown> = {}) {
@@ -691,6 +715,7 @@ function buildEntityMetadataResetPayload(currentMetadata: Record<string, unknown
     ai_last_analysis: {},
     importance_source: 'auto',
     manual_skills: [],
+    manual_roles: [],
   };
 
   const preserved = toProfile(currentMetadata);
@@ -900,6 +925,7 @@ function loadDraft(entityId: string) {
   clearResourceLinkPreview();
 
   const aiMetadata = toProfile(entity.ai_metadata);
+  const manualRoles = normalizePersonManualRoles(aiMetadata.manual_roles);
   const manualSkills = normalizePersonManualSkills(aiMetadata.manual_skills);
   const rawDocuments = Array.isArray(aiMetadata.documents) ? aiMetadata.documents : [];
   const documents = rawDocuments
@@ -927,6 +953,8 @@ function loadDraft(entityId: string) {
     description: typeof aiMetadata.description === 'string' ? aiMetadata.description : '',
     importanceSource: normalizeImportanceSource(aiMetadata.importance_source),
     metadataValues: buildEntityMetadataValues(entity.type, aiMetadata),
+    manualRoles,
+    aiRoleSuggestions: extractAiPersonRoles(aiMetadata.roles),
     manualSkills,
     aiSkillSuggestions: extractAiPersonSkills(aiMetadata.skills),
     fieldDrafts: buildEntityFieldDrafts(entity.type),
@@ -943,7 +971,9 @@ function loadDraft(entityId: string) {
   isMineToggleBusy.value = false;
   editingFieldValue.value = null;
   isFieldsListExpanded.value = false;
+  isPersonRolesLibraryOpen.value = false;
   isPersonSkillsLibraryOpen.value = false;
+  manualPersonRolesDirty.value = false;
   manualPersonSkillsDirty.value = false;
 
   pendingComposerHeightReset.value = true;
@@ -989,7 +1019,7 @@ function persistDraft(entityId: string) {
     })),
   };
   for (const field of getEntityContextFields(currentDraft.type)) {
-    if (isPersonSkillsField(field.key, currentDraft.type)) {
+    if (isPersonSkillsField(field.key, currentDraft.type) || isPersonRolesField(field.key, currentDraft.type)) {
       continue;
     }
     nextMetadata[field.key] = normalizeMetadataValues(field.key, currentDraft.metadataValues[field.key] || []).slice(
@@ -999,6 +1029,11 @@ function persistDraft(entityId: string) {
   }
 
   if (currentDraft.type === 'person') {
+    nextMetadata.manual_roles = currentDraft.manualRoles.map((role) => ({
+      name: role.name,
+      category: role.category,
+      group: role.group,
+    }));
     nextMetadata.manual_skills = currentDraft.manualSkills.map((skill) => ({
       name: skill.name,
       level: normalizePersonSkillLevel(skill.level),
@@ -1065,6 +1100,7 @@ function closeModal() {
   isDeleteConfirmOpen.value = false;
   isChatClearConfirmOpen.value = false;
   isMineToggleBusy.value = false;
+  isPersonRolesLibraryOpen.value = false;
   isPersonSkillsLibraryOpen.value = false;
   closeChatToolsMenus();
   closeProfileFooter();
@@ -1204,6 +1240,12 @@ async function confirmClearChatHistory() {
     currentDraft.chatHistory = [];
     currentDraft.importanceSource = 'auto';
     currentDraft.metadataValues = buildEntityMetadataValues(currentDraft.type, resetMetadata);
+    currentDraft.manualRoles = [];
+    currentDraft.aiRoleSuggestions = [];
+    currentDraft.manualSkills = [];
+    currentDraft.aiSkillSuggestions = [];
+    manualPersonRolesDirty.value = false;
+    manualPersonSkillsDirty.value = false;
     currentDraft.fieldDrafts = buildEntityFieldDrafts(currentDraft.type);
     editingFieldValue.value = null;
 
@@ -1254,9 +1296,19 @@ function getPersonManualSkills() {
   return draft.value.manualSkills;
 }
 
+function getPersonManualRoles() {
+  if (!draft.value || draft.value.type !== 'person') return [] as PersonManualRoleEntry[];
+  return draft.value.manualRoles;
+}
+
 function getPersonAiSkillSuggestions() {
   if (!draft.value || draft.value.type !== 'person') return [] as string[];
   return draft.value.aiSkillSuggestions;
+}
+
+function getPersonAiRoleSuggestions() {
+  if (!draft.value || draft.value.type !== 'person') return [] as string[];
+  return draft.value.aiRoleSuggestions;
 }
 
 function getPersonDisplayedSkillCount() {
@@ -1270,6 +1322,17 @@ function getPersonDisplayedSkillCount() {
   return dedupe.size;
 }
 
+function getPersonDisplayedRoleCount() {
+  const dedupe = new Set<string>();
+  for (const role of getPersonManualRoles()) {
+    dedupe.add(role.name.toLowerCase());
+  }
+  for (const roleName of getPersonAiRoleSuggestions()) {
+    dedupe.add(roleName.toLowerCase());
+  }
+  return dedupe.size;
+}
+
 function getFieldDraft(fieldKey: string) {
   if (!draft.value) return '';
   return draft.value.fieldDrafts[fieldKey] || '';
@@ -1278,6 +1341,10 @@ function getFieldDraft(fieldKey: string) {
 function getFieldPlaceholder(field: MetadataFieldConfig) {
   if (isPersonSkillsField(field.key)) {
     const count = getPersonDisplayedSkillCount();
+    return `${field.label}: ${count}`;
+  }
+  if (isPersonRolesField(field.key)) {
+    const count = getPersonDisplayedRoleCount();
     return `${field.label}: ${count}`;
   }
   const count = draft.value ? (draft.value.metadataValues[field.key] || []).length : 0;
@@ -1339,6 +1406,10 @@ function startEditFieldValue(fieldKey: string, value: string) {
     isPersonSkillsLibraryOpen.value = true;
     return;
   }
+  if (isPersonRolesField(fieldKey)) {
+    isPersonRolesLibraryOpen.value = true;
+    return;
+  }
   editingFieldValue.value = { fieldKey, originalValue: value };
   draft.value.fieldDrafts[fieldKey] = normalizeMetadataValue(fieldKey, value).slice(
     0,
@@ -1381,6 +1452,20 @@ function getLinkChipLabel(value: string) {
 function markManualSkillsChanged() {
   manualPersonSkillsDirty.value = true;
   scheduleSave();
+}
+
+function markManualRolesChanged() {
+  manualPersonRolesDirty.value = true;
+  scheduleSave();
+}
+
+function openPersonRolesLibrary() {
+  if (!draft.value || draft.value.type !== 'person') return;
+  isPersonRolesLibraryOpen.value = true;
+}
+
+function closePersonRolesLibrary() {
+  isPersonRolesLibraryOpen.value = false;
 }
 
 function openPersonSkillsLibrary() {
@@ -1432,6 +1517,90 @@ function addPersonManualSkillEntry(
   draft.value.manualSkills = nextSkills;
   draft.value.fieldDrafts.skills = '';
   markManualSkillsChanged();
+}
+
+function addPersonManualRoleEntry(
+  payload: {
+    name: string;
+    category?: PersonRoleCategory;
+    group?: string;
+  },
+) {
+  if (!draft.value || draft.value.type !== 'person') return;
+
+  const resolved = resolvePersonManualRoleEntry(
+    {
+      name: payload.name,
+      category: payload.category,
+      group: payload.group,
+    },
+    {
+      fallbackCategory: payload.category || 'professional',
+      fallbackGroup: payload.group || PERSON_ROLE_CUSTOM_GROUP,
+    },
+  );
+  if (!resolved) return;
+
+  const nextRoles = [...draft.value.manualRoles];
+  const existingIndex = nextRoles.findIndex((role) => role.name.toLowerCase() === resolved.name.toLowerCase());
+  if (existingIndex >= 0) {
+    nextRoles[existingIndex] = {
+      ...nextRoles[existingIndex]!,
+      ...resolved,
+    };
+  } else {
+    nextRoles.push(resolved);
+  }
+
+  draft.value.manualRoles = nextRoles;
+  draft.value.fieldDrafts.roles = '';
+  markManualRolesChanged();
+}
+
+function addCustomPersonRoleFromInput() {
+  if (!draft.value || draft.value.type !== 'person') return;
+  const normalizedName = normalizePersonRoleName(draft.value.fieldDrafts.roles);
+  if (!normalizedName) return;
+
+  addPersonManualRoleEntry({
+    name: normalizedName,
+    category: 'professional',
+    group: PERSON_ROLE_CUSTOM_GROUP,
+  });
+}
+
+function togglePersonManualRole(payload: {
+  name: string;
+  category: PersonRoleCategory;
+  group: string;
+}) {
+  if (!draft.value || draft.value.type !== 'person') return;
+
+  const normalizedName = normalizePersonRoleName(payload.name);
+  if (!normalizedName) return;
+
+  const existingIndex = draft.value.manualRoles.findIndex((role) => role.name.toLowerCase() === normalizedName.toLowerCase());
+  if (existingIndex >= 0) {
+    draft.value.manualRoles = draft.value.manualRoles.filter((role) => role.name.toLowerCase() !== normalizedName.toLowerCase());
+    markManualRolesChanged();
+    return;
+  }
+
+  addPersonManualRoleEntry({
+    name: normalizedName,
+    category: payload.category,
+    group: payload.group,
+  });
+}
+
+function removePersonManualRole(roleName: string) {
+  if (!draft.value || draft.value.type !== 'person') return;
+
+  const normalizedName = normalizePersonRoleName(roleName).toLowerCase();
+  const nextRoles = draft.value.manualRoles.filter((role) => role.name.toLowerCase() !== normalizedName);
+  if (nextRoles.length === draft.value.manualRoles.length) return;
+  draft.value.manualRoles = nextRoles;
+  markManualRolesChanged();
 }
 
 function addCustomPersonSkillFromInput() {
@@ -2286,6 +2455,28 @@ function buildEntityStructuredText() {
 
   let hasFields = false;
   for (const field of activeFields.value) {
+    if (isPersonSkillsField(field.key, currentDraft.type)) {
+      const manualSkills = currentDraft.manualSkills.map((skill) => `${skill.name} ${skill.level}/10`);
+      const aiSkills = currentDraft.aiSkillSuggestions.filter(
+        (skillName) => !currentDraft.manualSkills.some((skill) => skill.name.toLowerCase() === skillName.toLowerCase()),
+      );
+      const displayValues = [...manualSkills, ...aiSkills];
+      if (!displayValues.length) continue;
+      hasFields = true;
+      lines.push(`${field.label}: ${displayValues.join(', ')}`);
+      continue;
+    }
+    if (isPersonRolesField(field.key, currentDraft.type)) {
+      const manualRoles = currentDraft.manualRoles.map((role) => role.name);
+      const aiRoles = currentDraft.aiRoleSuggestions.filter(
+        (roleName) => !currentDraft.manualRoles.some((role) => role.name.toLowerCase() === roleName.toLowerCase()),
+      );
+      const displayValues = [...manualRoles, ...aiRoles];
+      if (!displayValues.length) continue;
+      hasFields = true;
+      lines.push(`${field.label}: ${displayValues.join(', ')}`);
+      continue;
+    }
     const values = normalizeMetadataValues(field.key, currentDraft.metadataValues[field.key] || []);
     if (!values.length) continue;
     hasFields = true;
@@ -2594,6 +2785,12 @@ const entityProfileFilledFieldCount = computed(() => {
       }
       continue;
     }
+    if (isPersonRolesField(field.key, currentDraft.type)) {
+      if (currentDraft.manualRoles.length > 0 || currentDraft.aiRoleSuggestions.length > 0) {
+        filled += 1;
+      }
+      continue;
+    }
     if ((currentDraft.metadataValues[field.key] || []).length > 0) {
       filled += 1;
     }
@@ -2646,6 +2843,14 @@ const progressEntity = computed<Entity | null>(() => {
         level: skill.level,
         category: skill.category,
         group: skill.group,
+      }));
+      continue;
+    }
+    if (isPersonRolesField(field.key, draft.value.type)) {
+      metadata.manual_roles = draft.value.manualRoles.map((role) => ({
+        name: role.name,
+        category: role.category,
+        group: role.group,
       }));
       continue;
     }
@@ -3258,6 +3463,25 @@ watch(
         }
 
         if (draft.value.type === 'person') {
+          const remoteManualRoles = normalizePersonManualRoles(remoteMeta.manual_roles);
+          const remoteManualRolesSignature = buildPersonManualRolesSignature(remoteManualRoles);
+          const localManualRolesSignature = buildPersonManualRolesSignature(draft.value.manualRoles);
+
+          if (manualPersonRolesDirty.value) {
+            if (remoteManualRolesSignature === localManualRolesSignature) {
+              manualPersonRolesDirty.value = false;
+            }
+          } else if (remoteManualRolesSignature !== localManualRolesSignature) {
+            draft.value.manualRoles = remoteManualRoles;
+          }
+
+          const remoteAiRoles = extractAiPersonRoles(remoteMeta.roles);
+          const localAiRolesSignature = draft.value.aiRoleSuggestions.join('|').toLowerCase();
+          const remoteAiRolesSignature = remoteAiRoles.join('|').toLowerCase();
+          if (remoteAiRolesSignature !== localAiRolesSignature) {
+            draft.value.aiRoleSuggestions = remoteAiRoles;
+          }
+
           const remoteManualSkills = normalizePersonManualSkills(remoteMeta.manual_skills);
           const remoteManualSkillsSignature = buildPersonManualSkillsSignature(remoteManualSkills);
           const localManualSkillsSignature = buildPersonManualSkillsSignature(draft.value.manualSkills);
@@ -3279,7 +3503,10 @@ watch(
         }
 
         for (const field of getEntityContextFields(draft.value.type)) {
-          if (isPersonSkillsField(field.key, draft.value.type)) {
+          if (
+            isPersonSkillsField(field.key, draft.value.type)
+            || isPersonRolesField(field.key, draft.value.type)
+          ) {
             continue;
           }
           if (editingFieldValue.value?.fieldKey === field.key) continue;
@@ -3569,6 +3796,74 @@ onBeforeUnmount(() => {
                   >
                     <span class="entity-info-tag-main entity-info-skill-ai-text">
                       {{ skillName }}
+                    </span>
+                  </div>
+                </div>
+
+                <div
+                  v-else-if="isPersonRolesField(field.key)"
+                  class="entity-info-field-scroll entity-info-skill-scroll"
+                >
+                  <div class="entity-info-skill-input-shell">
+                    <input
+                      :ref="(el) => setFieldInputRef(field.key, el)"
+                      :value="getFieldDraft(field.key)"
+                      type="text"
+                      class="entity-info-tag-input entity-info-skill-input"
+                      :maxlength="getMetadataFieldMaxLength(field.key)"
+                      :placeholder="getFieldPlaceholder(field)"
+                      @input="onFieldDraftInput(field.key, $event)"
+                      @keydown.enter.prevent="addCustomPersonRoleFromInput"
+                      @keydown="onFieldDraftKeydown(field.key, $event)"
+                    />
+                    <button
+                      type="button"
+                      class="entity-info-skill-library-btn"
+                      title="Открыть базу ролей"
+                      @click="openPersonRolesLibrary"
+                    >
+                      +
+                    </button>
+                  </div>
+
+                  <div
+                    v-for="role in getPersonManualRoles()"
+                    :key="`person-role:${role.name}`"
+                    class="entity-info-tag entity-info-skill-tag"
+                  >
+                    <button
+                      type="button"
+                      class="entity-info-tag-main entity-info-role-tag-main"
+                      title="Открыть базу ролей"
+                      @click="openPersonRolesLibrary"
+                    >
+                      <span class="entity-info-skill-tag-name">{{ role.name }}</span>
+                      <span class="entity-info-role-tag-meta">{{ role.group }}</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="entity-info-tag-remove"
+                      title="Удалить"
+                      @click.stop="removePersonManualRole(role.name)"
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  <span
+                    v-if="getPersonAiRoleSuggestions().length"
+                    class="entity-info-skill-ai-badge"
+                  >
+                    AI
+                  </span>
+
+                  <div
+                    v-for="roleName in getPersonAiRoleSuggestions()"
+                    :key="`person-role-ai:${roleName}`"
+                    class="entity-info-tag entity-info-tag-ai"
+                  >
+                    <span class="entity-info-tag-main entity-info-skill-ai-text">
+                      {{ roleName }}
                     </span>
                   </div>
                 </div>
@@ -4200,6 +4495,14 @@ onBeforeUnmount(() => {
       @toggle-skill="togglePersonManualSkill"
       @set-skill-level="setPersonManualSkillLevel"
       @add-custom-skill="addPersonManualSkillEntry"
+    />
+    <PersonRolesLibraryModal
+      v-if="draft"
+      :open="isPersonRolesLibraryOpen"
+      :selected-roles="draft.manualRoles"
+      @close="closePersonRolesLibrary"
+      @toggle-role="togglePersonManualRole"
+      @add-custom-role="addPersonManualRoleEntry"
     />
   </div>
 </template>
@@ -4860,6 +5163,22 @@ onBeforeUnmount(() => {
   color: #1e3a8a;
   font-size: 10px;
   font-weight: 800;
+  padding: 2px 6px;
+}
+
+.entity-info-role-tag-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.entity-info-role-tag-meta {
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  color: #475569;
+  font-size: 10px;
+  font-weight: 700;
   padding: 2px 6px;
 }
 

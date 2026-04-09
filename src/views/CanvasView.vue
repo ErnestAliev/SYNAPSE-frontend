@@ -15,6 +15,7 @@ import { useEntitiesStore } from '../stores/entities';
 import { useAuthStore } from '../stores/auth';
 import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../services/entityAi';
 import { calculateEntityProfileProgress } from '../utils/profileProgress';
+import { buildPersonRoleDisplayValues, countPersonRoleItems } from '../utils/personRoles';
 import { buildPersonSkillDisplayValues, countPersonSkillItems } from '../utils/personSkills';
 import {
   PROJECT_CHAT_MONITOR_UPDATED_EVENT,
@@ -1562,6 +1563,14 @@ function summarizeMonitorEntity(entity: Entity): AgentChatPreviewEntitySummary {
       if (!skillCount) continue;
       fieldCounts.skills = skillCount;
       fieldsItemsTotal += skillCount;
+      continue;
+    }
+    if (entity.type === 'person' && (key === 'manual_roles' || key === 'roles')) {
+      if (fieldCounts.roles) continue;
+      const roleCount = countPersonRoleItems(metadata);
+      if (!roleCount) continue;
+      fieldCounts.roles = roleCount;
+      fieldsItemsTotal += roleCount;
       continue;
     }
     if (!Array.isArray(rawValue)) continue;
@@ -6794,6 +6803,11 @@ function getCanvasTooltipFields(entity: Entity): Array<{ label: string; values: 
   for (const { key, label } of fieldConfigs) {
     if (entity.type === 'person' && key === 'skills') {
       const values = buildPersonSkillDisplayValues(meta, { limit: 6 });
+      if (values.length) result.push({ label, values });
+      continue;
+    }
+    if (entity.type === 'person' && key === 'roles') {
+      const values = buildPersonRoleDisplayValues(meta, { limit: 6 });
       if (values.length) result.push({ label, values });
       continue;
     }
