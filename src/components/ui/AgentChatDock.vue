@@ -269,6 +269,7 @@ function buildProjectContextCanvasSignature(project: Entity | null) {
         type: typeof entity.type === 'string' ? entity.type.trim() : '',
         name: typeof entity.name === 'string' ? entity.name.trim() : '',
         description: typeof metadata.description === 'string' ? metadata.description.trim() : '',
+        updatedAt: typeof entity.updatedAt === 'string' ? entity.updatedAt.trim() : '',
       };
     })
     .sort((left, right) => left.id.localeCompare(right.id));
