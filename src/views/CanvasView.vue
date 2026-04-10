@@ -15,6 +15,7 @@ import { useEntitiesStore } from '../stores/entities';
 import { useAuthStore } from '../stores/auth';
 import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../services/entityAi';
 import { calculateEntityProfileProgress } from '../utils/profileProgress';
+import { buildPersonEmploymentDisplayValues, countPersonEmploymentItems } from '../utils/personEmployment';
 import { buildPersonRoleDisplayValues, countPersonRoleItems } from '../utils/personRoles';
 import { buildPersonSkillDisplayValues, countPersonSkillItems } from '../utils/personSkills';
 import {
@@ -247,6 +248,7 @@ type MetadataFieldKey =
   | 'markers'
   | 'phones'
   | 'skills'
+  | 'employment'
   | 'importance'
   | 'links'
   | 'roles'
@@ -283,10 +285,11 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'tags', label: 'Теги' },
     { key: 'markers', label: 'Метки' },
     { key: 'skills', label: 'Навыки' },
+    { key: 'roles', label: 'Роли' },
+    { key: 'employment', label: 'Занятость' },
     { key: 'importance', label: 'Значимость' },
     { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
-    { key: 'roles', label: 'Роли' },
   ],
   company: [
     { key: 'tags', label: 'Теги' },
@@ -372,6 +375,7 @@ const PROFILE_METADATA_TARGETS: Record<MetadataFieldKey, number> = {
   markers: 3,
   phones: 2,
   skills: 4,
+  employment: 1,
   importance: 1,
   links: 2,
   roles: 2,
@@ -402,6 +406,7 @@ const PROFILE_METADATA_WEIGHTS: Record<EntityType, Partial<Record<MetadataFieldK
     tags: 1.1,
     markers: 0.8,
     skills: 1.3,
+    employment: 1.2,
     importance: 1.2,
     links: 0.9,
     roles: 1.3,
@@ -1571,6 +1576,14 @@ function summarizeMonitorEntity(entity: Entity): AgentChatPreviewEntitySummary {
       if (!roleCount) continue;
       fieldCounts.roles = roleCount;
       fieldsItemsTotal += roleCount;
+      continue;
+    }
+    if (entity.type === 'person' && key === 'employment') {
+      if (fieldCounts.employment) continue;
+      const employmentCount = countPersonEmploymentItems(metadata);
+      if (!employmentCount) continue;
+      fieldCounts.employment = employmentCount;
+      fieldsItemsTotal += employmentCount;
       continue;
     }
     if (!Array.isArray(rawValue)) continue;
@@ -6713,7 +6726,7 @@ const CANVAS_NODE_TOOLTIP_FIELDS: Partial<Record<EntityType, Array<{ key: string
   event:      [{ key: 'date', label: 'Дата' }, { key: 'location', label: 'Место' }, { key: 'participants', label: 'Участники' }, { key: 'outcomes', label: 'Итоги' }, { key: 'tags', label: 'Теги' }],
   result:     [{ key: 'outcomes', label: 'Результаты' }, { key: 'metrics', label: 'Метрики' }, { key: 'owners', label: 'Ответственные' }, { key: 'tags', label: 'Теги' }],
   task:       [{ key: 'priority', label: 'Приоритет' }, { key: 'status', label: 'Статус' }, { key: 'owners', label: 'Ответственные' }, { key: 'date', label: 'Дата' }, { key: 'tags', label: 'Теги' }],
-  person:     [{ key: 'roles', label: 'Роли' }, { key: 'skills', label: 'Навыки' }, { key: 'tags', label: 'Теги' }, { key: 'markers', label: 'Маркеры' }],
+  person:     [{ key: 'roles', label: 'Роли' }, { key: 'employment', label: 'Занятость' }, { key: 'skills', label: 'Навыки' }, { key: 'tags', label: 'Теги' }, { key: 'markers', label: 'Маркеры' }],
   company:    [{ key: 'industry', label: 'Отрасль' }, { key: 'stage', label: 'Стадия' }, { key: 'tags', label: 'Теги' }, { key: 'markers', label: 'Маркеры' }],
   resource:   [{ key: 'resources', label: 'Тип' }, { key: 'status', label: 'Статус' }, { key: 'owners', label: 'Владельцы' }, { key: 'tags', label: 'Теги' }],
   connection: [{ key: 'roles', label: 'Роли' }, { key: 'status', label: 'Статус' }, { key: 'tags', label: 'Теги' }],
@@ -6808,6 +6821,17 @@ function getCanvasTooltipFields(entity: Entity): Array<{ label: string; values: 
     }
     if (entity.type === 'person' && key === 'roles') {
       const values = buildPersonRoleDisplayValues(meta, { limit: 6 });
+      if (values.length) result.push({ label, values });
+      continue;
+    }
+    if (entity.type === 'person' && key === 'employment') {
+      const values = buildPersonEmploymentDisplayValues(meta, {
+        limit: 4,
+        resolveCompanyName: (companyEntityId) => {
+          const linkedCompany = entitiesStore.byId(companyEntityId);
+          return linkedCompany?.type === 'company' ? linkedCompany.name || '' : '';
+        },
+      });
       if (values.length) result.push({ label, values });
       continue;
     }

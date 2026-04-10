@@ -54,6 +54,13 @@ import {
   type PersonManualRoleEntry,
   type PersonRoleCategory,
 } from '../../utils/personRoles';
+import {
+  normalizePersonEmploymentCompanyName,
+  normalizePersonEmploymentEntries,
+  normalizePersonEmploymentEntityId,
+  normalizePersonEmploymentPosition,
+  type PersonEmploymentEntry,
+} from '../../utils/personEmployment';
 
 const props = defineProps<{
   entityId: string;
@@ -148,6 +155,7 @@ type MetadataFieldKey =
   | 'markers'
   | 'phones'
   | 'skills'
+  | 'employment'
   | 'importance'
   | 'links'
   | 'roles'
@@ -217,10 +225,11 @@ const ENTITY_CONTEXT_FIELDS: Record<EntityType, MetadataFieldConfig[]> = {
     { key: 'tags', label: 'Теги' },
     { key: 'markers', label: 'Метки' },
     { key: 'skills', label: 'Навыки' },
+    { key: 'roles', label: 'Роли' },
+    { key: 'employment', label: 'Занятость' },
     { key: 'importance', label: 'Значимость' },
     { key: 'phones', label: 'Телефоны' },
     { key: 'links', label: 'Ссылки' },
-    { key: 'roles', label: 'Роли' },
   ],
   company: [
     { key: 'tags', label: 'Теги' },
@@ -320,6 +329,7 @@ const draft = ref<{
   aiRoleSuggestions: string[];
   manualSkills: PersonManualSkillEntry[];
   aiSkillSuggestions: string[];
+  employmentEntries: PersonEmploymentEntry[];
   fieldDrafts: Record<string, string>;
   textInput: string;
   voiceInput: string;
@@ -402,6 +412,7 @@ const isPersonSkillsLibraryOpen = ref(false);
 const manualPersonSkillsDirty = ref(false);
 const isPersonRolesLibraryOpen = ref(false);
 const manualPersonRolesDirty = ref(false);
+const personEmploymentDirty = ref(false);
 
 const voiceInput = useUnifiedVoiceInput({
   language: 'ru',
@@ -694,12 +705,29 @@ function buildPersonManualRolesSignature(roles: PersonManualRoleEntry[]) {
     .join('||');
 }
 
+function buildPersonEmploymentSignature(entries: PersonEmploymentEntry[]) {
+  return entries
+    .filter((entry) => entry.companyEntityId || entry.companyName.trim() || entry.position.trim())
+    .map((entry) => [
+      entry.companyEntityId,
+      entry.companyName.toLowerCase(),
+      entry.position.toLowerCase(),
+      entry.current ? '1' : '0',
+      entry.primary ? '1' : '0',
+    ].join('|'))
+    .join('||');
+}
+
 function isPersonSkillsField(fieldKey: string, type = draft.value?.type || currentEntity.value?.type) {
   return type === 'person' && fieldKey === 'skills';
 }
 
 function isPersonRolesField(fieldKey: string, type = draft.value?.type || currentEntity.value?.type) {
   return type === 'person' && fieldKey === 'roles';
+}
+
+function isPersonEmploymentField(fieldKey: string, type = draft.value?.type || currentEntity.value?.type) {
+  return type === 'person' && fieldKey === 'employment';
 }
 
 function buildEntityMetadataResetPayload(currentMetadata: Record<string, unknown> = {}) {
@@ -716,6 +744,7 @@ function buildEntityMetadataResetPayload(currentMetadata: Record<string, unknown
     importance_source: 'auto',
     manual_skills: [],
     manual_roles: [],
+    employment: [],
   };
 
   const preserved = toProfile(currentMetadata);
@@ -927,6 +956,7 @@ function loadDraft(entityId: string) {
   const aiMetadata = toProfile(entity.ai_metadata);
   const manualRoles = normalizePersonManualRoles(aiMetadata.manual_roles);
   const manualSkills = normalizePersonManualSkills(aiMetadata.manual_skills);
+  const employmentEntries = normalizePersonEmploymentEntries(aiMetadata.employment);
   const rawDocuments = Array.isArray(aiMetadata.documents) ? aiMetadata.documents : [];
   const documents = rawDocuments
     .map((doc, index) => {
@@ -957,6 +987,7 @@ function loadDraft(entityId: string) {
     aiRoleSuggestions: extractAiPersonRoles(aiMetadata.roles),
     manualSkills,
     aiSkillSuggestions: extractAiPersonSkills(aiMetadata.skills),
+    employmentEntries,
     fieldDrafts: buildEntityFieldDrafts(entity.type),
     textInput: '',
     voiceInput: typeof aiMetadata.voice_input === 'string' ? aiMetadata.voice_input : '',
@@ -975,6 +1006,7 @@ function loadDraft(entityId: string) {
   isPersonSkillsLibraryOpen.value = false;
   manualPersonRolesDirty.value = false;
   manualPersonSkillsDirty.value = false;
+  personEmploymentDirty.value = false;
 
   pendingComposerHeightReset.value = true;
   void nextTick(() => {
@@ -1019,7 +1051,11 @@ function persistDraft(entityId: string) {
     })),
   };
   for (const field of getEntityContextFields(currentDraft.type)) {
-    if (isPersonSkillsField(field.key, currentDraft.type) || isPersonRolesField(field.key, currentDraft.type)) {
+    if (
+      isPersonSkillsField(field.key, currentDraft.type)
+      || isPersonRolesField(field.key, currentDraft.type)
+      || isPersonEmploymentField(field.key, currentDraft.type)
+    ) {
       continue;
     }
     nextMetadata[field.key] = normalizeMetadataValues(field.key, currentDraft.metadataValues[field.key] || []).slice(
@@ -1039,6 +1075,13 @@ function persistDraft(entityId: string) {
       level: normalizePersonSkillLevel(skill.level),
       category: skill.category,
       group: skill.group,
+    }));
+    nextMetadata.employment = currentDraft.employmentEntries.map((entry) => ({
+      companyEntityId: entry.companyEntityId,
+      companyName: entry.companyName,
+      position: entry.position,
+      current: entry.current,
+      primary: entry.primary,
     }));
   }
 
@@ -1102,6 +1145,7 @@ function closeModal() {
   isMineToggleBusy.value = false;
   isPersonRolesLibraryOpen.value = false;
   isPersonSkillsLibraryOpen.value = false;
+  personEmploymentDirty.value = false;
   closeChatToolsMenus();
   closeProfileFooter();
   emit('close');
@@ -1244,8 +1288,10 @@ async function confirmClearChatHistory() {
     currentDraft.aiRoleSuggestions = [];
     currentDraft.manualSkills = [];
     currentDraft.aiSkillSuggestions = [];
+    currentDraft.employmentEntries = [];
     manualPersonRolesDirty.value = false;
     manualPersonSkillsDirty.value = false;
+    personEmploymentDirty.value = false;
     currentDraft.fieldDrafts = buildEntityFieldDrafts(currentDraft.type);
     editingFieldValue.value = null;
 
@@ -1311,6 +1357,11 @@ function getPersonAiRoleSuggestions() {
   return draft.value.aiRoleSuggestions;
 }
 
+function getPersonEmploymentEntries() {
+  if (!draft.value || draft.value.type !== 'person') return [] as PersonEmploymentEntry[];
+  return draft.value.employmentEntries;
+}
+
 function getPersonDisplayedSkillCount() {
   const dedupe = new Set<string>();
   for (const skill of getPersonManualSkills()) {
@@ -1333,6 +1384,10 @@ function getPersonDisplayedRoleCount() {
   return dedupe.size;
 }
 
+function getPersonDisplayedEmploymentCount() {
+  return getPersonEmploymentEntries().length;
+}
+
 function getFieldDraft(fieldKey: string) {
   if (!draft.value) return '';
   return draft.value.fieldDrafts[fieldKey] || '';
@@ -1345,6 +1400,10 @@ function getFieldPlaceholder(field: MetadataFieldConfig) {
   }
   if (isPersonRolesField(field.key)) {
     const count = getPersonDisplayedRoleCount();
+    return `${field.label}: ${count}`;
+  }
+  if (isPersonEmploymentField(field.key)) {
+    const count = getPersonDisplayedEmploymentCount();
     return `${field.label}: ${count}`;
   }
   const count = draft.value ? (draft.value.metadataValues[field.key] || []).length : 0;
@@ -1410,6 +1469,9 @@ function startEditFieldValue(fieldKey: string, value: string) {
     isPersonRolesLibraryOpen.value = true;
     return;
   }
+  if (isPersonEmploymentField(fieldKey)) {
+    return;
+  }
   editingFieldValue.value = { fieldKey, originalValue: value };
   draft.value.fieldDrafts[fieldKey] = normalizeMetadataValue(fieldKey, value).slice(
     0,
@@ -1459,6 +1521,11 @@ function markManualRolesChanged() {
   scheduleSave();
 }
 
+function markPersonEmploymentChanged() {
+  personEmploymentDirty.value = true;
+  scheduleSave();
+}
+
 function openPersonRolesLibrary() {
   if (!draft.value || draft.value.type !== 'person') return;
   isPersonRolesLibraryOpen.value = true;
@@ -1475,6 +1542,140 @@ function openPersonSkillsLibrary() {
 
 function closePersonSkillsLibrary() {
   isPersonSkillsLibraryOpen.value = false;
+}
+
+function buildDefaultEmploymentEntry(): PersonEmploymentEntry {
+  return {
+    companyEntityId: '',
+    companyName: '',
+    position: '',
+    current: true,
+    primary: getPersonEmploymentEntries().length === 0,
+  };
+}
+
+function setPersonEmploymentEntry(index: number, nextEntry: PersonEmploymentEntry) {
+  if (!draft.value || draft.value.type !== 'person') return;
+  if (index < 0 || index >= draft.value.employmentEntries.length) return;
+
+  const normalizedCompanyEntityId = normalizePersonEmploymentEntityId(nextEntry.companyEntityId);
+  const normalizedCompanyName = normalizePersonEmploymentCompanyName(nextEntry.companyName);
+  const normalizedPosition = normalizePersonEmploymentPosition(nextEntry.position);
+  const normalizedEntry: PersonEmploymentEntry = {
+    companyEntityId: normalizedCompanyEntityId,
+    companyName: normalizedCompanyName,
+    position: normalizedPosition,
+    current: nextEntry.current === true,
+    primary: nextEntry.primary === true,
+  };
+
+  const nextEntries = [...draft.value.employmentEntries];
+  nextEntries[index] = normalizedEntry;
+  if (normalizedEntry.primary) {
+    for (let itemIndex = 0; itemIndex < nextEntries.length; itemIndex += 1) {
+      if (itemIndex === index) continue;
+      nextEntries[itemIndex] = {
+        ...nextEntries[itemIndex]!,
+        primary: false,
+      };
+    }
+  }
+
+  draft.value.employmentEntries = nextEntries;
+  markPersonEmploymentChanged();
+}
+
+function addPersonEmploymentEntry() {
+  if (!draft.value || draft.value.type !== 'person') return;
+  if (draft.value.employmentEntries.length >= 12) return;
+
+  draft.value.employmentEntries = [...draft.value.employmentEntries, buildDefaultEmploymentEntry()];
+  markPersonEmploymentChanged();
+}
+
+function removePersonEmploymentEntry(index: number) {
+  if (!draft.value || draft.value.type !== 'person') return;
+  if (index < 0 || index >= draft.value.employmentEntries.length) return;
+
+  const removed = draft.value.employmentEntries[index];
+  const nextEntries = draft.value.employmentEntries.filter((_, itemIndex) => itemIndex !== index);
+  if (removed?.primary && nextEntries.length > 0 && !nextEntries.some((entry) => entry.primary)) {
+    nextEntries[0] = {
+      ...nextEntries[0]!,
+      primary: true,
+    };
+  }
+  draft.value.employmentEntries = nextEntries;
+  markPersonEmploymentChanged();
+}
+
+function updatePersonEmploymentCompanyName(index: number, event: Event) {
+  if (!draft.value || draft.value.type !== 'person') return;
+  const input = event.target as HTMLInputElement | null;
+  if (!input) return;
+
+  const currentEntry = draft.value.employmentEntries[index];
+  if (!currentEntry) return;
+
+  const nextCompanyName = normalizePersonEmploymentCompanyName(input.value);
+  const linkedCompanyName = currentEntry.companyEntityId
+    ? (entitiesStore.byId(currentEntry.companyEntityId)?.name || '').trim()
+    : '';
+
+  setPersonEmploymentEntry(index, {
+    ...currentEntry,
+    companyName: nextCompanyName,
+    companyEntityId:
+      currentEntry.companyEntityId && linkedCompanyName && linkedCompanyName === nextCompanyName
+        ? currentEntry.companyEntityId
+        : '',
+  });
+}
+
+function updatePersonEmploymentPosition(index: number, event: Event) {
+  if (!draft.value || draft.value.type !== 'person') return;
+  const input = event.target as HTMLInputElement | null;
+  if (!input) return;
+
+  const currentEntry = draft.value.employmentEntries[index];
+  if (!currentEntry) return;
+
+  setPersonEmploymentEntry(index, {
+    ...currentEntry,
+    position: normalizePersonEmploymentPosition(input.value),
+  });
+}
+
+function updatePersonEmploymentCompanyLink(index: number, event: Event) {
+  if (!draft.value || draft.value.type !== 'person') return;
+  const select = event.target as HTMLSelectElement | null;
+  if (!select) return;
+
+  const currentEntry = draft.value.employmentEntries[index];
+  if (!currentEntry) return;
+
+  const companyEntityId = normalizePersonEmploymentEntityId(select.value);
+  const linkedCompanyName = companyEntityId ? (entitiesStore.byId(companyEntityId)?.name || '').trim() : '';
+
+  setPersonEmploymentEntry(index, {
+    ...currentEntry,
+    companyEntityId,
+    companyName: linkedCompanyName || currentEntry.companyName,
+  });
+}
+
+function updatePersonEmploymentFlag(index: number, key: 'current' | 'primary', event: Event) {
+  if (!draft.value || draft.value.type !== 'person') return;
+  const input = event.target as HTMLInputElement | null;
+  if (!input) return;
+
+  const currentEntry = draft.value.employmentEntries[index];
+  if (!currentEntry) return;
+
+  setPersonEmploymentEntry(index, {
+    ...currentEntry,
+    [key]: input.checked,
+  });
 }
 
 function addPersonManualSkillEntry(
@@ -2442,6 +2643,19 @@ function toDisplayTime(iso: string) {
   }).format(date);
 }
 
+function formatPersonEmploymentEntryForDisplay(entry: PersonEmploymentEntry) {
+  const linkedCompanyName = entry.companyEntityId ? (entitiesStore.byId(entry.companyEntityId)?.name || '').trim() : '';
+  const companyName = normalizePersonEmploymentCompanyName(entry.companyName || linkedCompanyName);
+  const position = normalizePersonEmploymentPosition(entry.position);
+  const base = [position, companyName ? (position ? `в ${companyName}` : companyName) : ''].filter(Boolean).join(' ');
+  if (!base) return '';
+
+  const flags: string[] = [];
+  if (entry.current) flags.push('текущее');
+  if (entry.primary) flags.push('основное');
+  return flags.length ? `${base} (${flags.join(', ')})` : base;
+}
+
 function sanitizeFileNamePart(value: string) {
   return value.replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -2472,6 +2686,15 @@ function buildEntityStructuredText() {
         (roleName) => !currentDraft.manualRoles.some((role) => role.name.toLowerCase() === roleName.toLowerCase()),
       );
       const displayValues = [...manualRoles, ...aiRoles];
+      if (!displayValues.length) continue;
+      hasFields = true;
+      lines.push(`${field.label}: ${displayValues.join(', ')}`);
+      continue;
+    }
+    if (isPersonEmploymentField(field.key, currentDraft.type)) {
+      const displayValues = currentDraft.employmentEntries
+        .map((entry) => formatPersonEmploymentEntryForDisplay(entry))
+        .filter(Boolean);
       if (!displayValues.length) continue;
       hasFields = true;
       lines.push(`${field.label}: ${displayValues.join(', ')}`);
@@ -2587,6 +2810,15 @@ function exportEntityAsTextFile() {
 
 const currentEntity = computed(() => entitiesStore.byId(props.entityId) || null);
 const voicePromptEntityType = computed<EntityType>(() => currentEntity.value?.type || draft.value?.type || 'shape');
+const employmentCompanyOptions = computed(() =>
+  entitiesStore
+    .byType('company')
+    .map((company) => ({
+      id: company._id,
+      name: (company.name || 'Без названия').trim() || 'Без названия',
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name, 'ru')),
+);
 const mineToggleLabel = computed(() => {
   const entityType = currentEntity.value?.type || draft.value?.type || 'shape';
   return ENTITY_MINE_TOGGLE_LABELS[entityType] || 'Моё';
@@ -2791,6 +3023,12 @@ const entityProfileFilledFieldCount = computed(() => {
       }
       continue;
     }
+    if (isPersonEmploymentField(field.key, currentDraft.type)) {
+      if (currentDraft.employmentEntries.length > 0) {
+        filled += 1;
+      }
+      continue;
+    }
     if ((currentDraft.metadataValues[field.key] || []).length > 0) {
       filled += 1;
     }
@@ -2851,6 +3089,16 @@ const progressEntity = computed<Entity | null>(() => {
         name: role.name,
         category: role.category,
         group: role.group,
+      }));
+      continue;
+    }
+    if (isPersonEmploymentField(field.key, draft.value.type)) {
+      metadata.employment = draft.value.employmentEntries.map((entry) => ({
+        companyEntityId: entry.companyEntityId,
+        companyName: entry.companyName,
+        position: entry.position,
+        current: entry.current,
+        primary: entry.primary,
       }));
       continue;
     }
@@ -3500,12 +3748,24 @@ watch(
           if (remoteAiSkillsSignature !== localAiSkillsSignature) {
             draft.value.aiSkillSuggestions = remoteAiSkills;
           }
+
+          const remoteEmploymentEntries = normalizePersonEmploymentEntries(remoteMeta.employment);
+          const remoteEmploymentSignature = buildPersonEmploymentSignature(remoteEmploymentEntries);
+          const localEmploymentSignature = buildPersonEmploymentSignature(draft.value.employmentEntries);
+          if (personEmploymentDirty.value) {
+            if (remoteEmploymentSignature === localEmploymentSignature) {
+              personEmploymentDirty.value = false;
+            }
+          } else if (remoteEmploymentSignature !== localEmploymentSignature) {
+            draft.value.employmentEntries = remoteEmploymentEntries;
+          }
         }
 
         for (const field of getEntityContextFields(draft.value.type)) {
           if (
             isPersonSkillsField(field.key, draft.value.type)
             || isPersonRolesField(field.key, draft.value.type)
+            || isPersonEmploymentField(field.key, draft.value.type)
           ) {
             continue;
           }
@@ -3865,6 +4125,98 @@ onBeforeUnmount(() => {
                     <span class="entity-info-tag-main entity-info-skill-ai-text">
                       {{ roleName }}
                     </span>
+                  </div>
+                </div>
+
+                <div
+                  v-else-if="isPersonEmploymentField(field.key)"
+                  class="entity-info-field-scroll entity-info-employment-scroll"
+                >
+                  <div class="entity-info-employment-header">
+                    <span class="entity-info-employment-label">{{ getFieldPlaceholder(field) }}</span>
+                    <button
+                      type="button"
+                      class="entity-info-employment-add-btn"
+                      @click="addPersonEmploymentEntry"
+                    >
+                      + Добавить
+                    </button>
+                  </div>
+
+                  <div
+                    v-if="!getPersonEmploymentEntries().length"
+                    class="entity-info-employment-empty"
+                  >
+                    Добавьте компанию и должность. Это попадет в контекст проекта как фон профиля, но не создаст ноду компании на канве автоматически.
+                  </div>
+
+                  <div
+                    v-for="(employment, index) in getPersonEmploymentEntries()"
+                    :key="`person-employment:${employment.companyEntityId || employment.companyName || 'row'}:${employment.position}:${index}`"
+                    class="entity-info-employment-card"
+                  >
+                    <div class="entity-info-employment-main">
+                      <input
+                        :value="employment.companyName"
+                        type="text"
+                        class="entity-info-employment-input"
+                        maxlength="120"
+                        placeholder="Компания"
+                        @input="updatePersonEmploymentCompanyName(index, $event)"
+                      />
+                      <input
+                        :value="employment.position"
+                        type="text"
+                        class="entity-info-employment-input"
+                        maxlength="96"
+                        placeholder="Должность / формат занятости"
+                        @input="updatePersonEmploymentPosition(index, $event)"
+                      />
+                    </div>
+
+                    <div class="entity-info-employment-meta">
+                      <select
+                        class="entity-info-employment-select"
+                        :value="employment.companyEntityId"
+                        @change="updatePersonEmploymentCompanyLink(index, $event)"
+                      >
+                        <option value="">Без привязки к карточке компании</option>
+                        <option
+                          v-for="company in employmentCompanyOptions"
+                          :key="company.id"
+                          :value="company.id"
+                        >
+                          {{ company.name }}
+                        </option>
+                      </select>
+
+                      <label class="entity-info-employment-flag">
+                        <input
+                          type="checkbox"
+                          :checked="employment.current"
+                          @change="updatePersonEmploymentFlag(index, 'current', $event)"
+                        />
+                        <span>Текущее</span>
+                      </label>
+
+                      <label class="entity-info-employment-flag">
+                        <input
+                          type="checkbox"
+                          :checked="employment.primary"
+                          @change="updatePersonEmploymentFlag(index, 'primary', $event)"
+                        />
+                        <span>Основное</span>
+                      </label>
+
+                      <button
+                        type="button"
+                        class="entity-info-employment-remove-btn"
+                        title="Удалить запись"
+                        @click="removePersonEmploymentEntry(index)"
+                      >
+                        ×
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -5102,6 +5454,120 @@ onBeforeUnmount(() => {
   gap: 6px;
 }
 
+.entity-info-employment-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.entity-info-employment-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.entity-info-employment-label {
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.entity-info-employment-add-btn {
+  border: 1px solid #bfd5ff;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1e40af;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.entity-info-employment-empty {
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 10px 12px;
+}
+
+.entity-info-employment-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid #dbe4f3;
+  border-radius: 14px;
+  background: #f8fafc;
+  padding: 10px;
+}
+
+.entity-info-employment-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.entity-info-employment-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.entity-info-employment-input,
+.entity-info-employment-select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #dbe4f3;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 9px 10px;
+  outline: none;
+}
+
+.entity-info-employment-input:focus,
+.entity-info-employment-select:focus {
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+}
+
+.entity-info-employment-select {
+  flex: 1 1 240px;
+}
+
+.entity-info-employment-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.entity-info-employment-remove-btn {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  color: #334155;
+  font-size: 16px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+}
+
 .entity-info-skill-input-shell {
   flex: 0 0 auto;
   min-width: 174px;
@@ -5900,6 +6366,18 @@ onBeforeUnmount(() => {
   .entity-info-skill-input-shell {
     min-width: 148px;
     max-width: 210px;
+  }
+
+  .entity-info-employment-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .entity-info-employment-meta {
+    align-items: stretch;
+  }
+
+  .entity-info-employment-select {
+    flex-basis: 100%;
   }
 
   .entity-info-tag-input {

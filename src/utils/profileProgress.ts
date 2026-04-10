@@ -1,4 +1,5 @@
 import type { Entity, EntityType } from '../types/entity';
+import { countPersonEmploymentItems } from './personEmployment';
 import { countPersonRoleItems } from './personRoles';
 import { countPersonSkillItems } from './personSkills';
 
@@ -7,6 +8,7 @@ type MetadataFieldKey =
   | 'markers'
   | 'phones'
   | 'skills'
+  | 'employment'
   | 'importance'
   | 'links'
   | 'roles'
@@ -26,7 +28,7 @@ type MetadataFieldKey =
 
 const ENTITY_METADATA_FIELDS: Record<EntityType, MetadataFieldKey[]> = {
   connection: ['tags', 'markers', 'roles', 'status', 'links', 'importance', 'phones'],
-  person: ['tags', 'markers', 'skills', 'importance', 'links', 'roles', 'phones'],
+  person: ['tags', 'markers', 'skills', 'roles', 'employment', 'importance', 'links', 'phones'],
   company: ['tags', 'markers', 'industry', 'departments', 'stage', 'risks', 'links', 'phones'],
   event: ['tags', 'markers', 'date', 'location', 'participants', 'outcomes', 'links', 'phones'],
   resource: ['tags', 'markers', 'resources', 'status', 'importance', 'owners', 'links', 'phones'],
@@ -70,6 +72,12 @@ function countFilledMetadataFields(type: EntityType, metadata: Record<string, un
     }
     if (type === 'person' && key === 'roles') {
       if (countPersonRoleItems(metadata) > 0) {
+        filled += 1;
+      }
+      continue;
+    }
+    if (type === 'person' && key === 'employment') {
+      if (countPersonEmploymentItems(metadata) > 0) {
         filled += 1;
       }
       continue;
