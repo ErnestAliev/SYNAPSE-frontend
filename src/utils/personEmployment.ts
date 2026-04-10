@@ -7,6 +7,49 @@ export interface PersonEmploymentEntry {
 }
 
 export const PERSON_EMPLOYMENT_MAX_ITEMS = 12;
+export const PERSON_POSITION_LIBRARY = [
+  'CEO',
+  'COO',
+  'CFO',
+  'CTO',
+  'CMO',
+  'Основатель',
+  'Сооснователь',
+  'Собственник',
+  'Управляющий',
+  'Исполнительный директор',
+  'Операционный директор',
+  'Коммерческий директор',
+  'Финансовый директор',
+  'Технический директор',
+  'Продакт-менеджер',
+  'Проектный менеджер',
+  'Руководитель отдела',
+  'Team Lead',
+  'Руководитель продаж',
+  'Менеджер по продажам',
+  'Аккаунт-менеджер',
+  'Маркетолог',
+  'Performance-маркетолог',
+  'Бренд-менеджер',
+  'Дизайнер',
+  'Motion designer',
+  '3D artist',
+  'Разработчик',
+  'Frontend developer',
+  'Backend developer',
+  'Fullstack developer',
+  'Аналитик',
+  'Бизнес-аналитик',
+  'Финансист',
+  'Бухгалтер',
+  'HR',
+  'Рекрутер',
+  'Юрист',
+  'Консультант',
+  'Продюсер',
+  'Редактор',
+].sort((left, right) => left.localeCompare(right, 'ru'));
 
 export function normalizePersonEmploymentEntityId(value: unknown) {
   if (typeof value === 'string') {
@@ -38,6 +81,31 @@ export function normalizePersonEmploymentPosition(value: unknown) {
     .slice(0, 96);
 }
 
+export function findPersonEmploymentPositionMatch(value: unknown) {
+  const normalized = normalizePersonEmploymentPosition(value);
+  if (!normalized) return '';
+  return PERSON_POSITION_LIBRARY.find((item) => item.toLowerCase() === normalized.toLowerCase()) || '';
+}
+
+export function buildPersonEmploymentPositionSuggestions(value: unknown, limit = 10) {
+  const normalized = normalizePersonEmploymentPosition(value).toLowerCase();
+  if (!normalized) {
+    return PERSON_POSITION_LIBRARY.slice(0, Math.max(10, limit));
+  }
+
+  const matched = PERSON_POSITION_LIBRARY.filter((item) => item.toLowerCase().includes(normalized));
+  if (matched.length >= limit) {
+    return matched.slice(0, limit);
+  }
+
+  const matchedKeys = new Set(matched.map((item) => item.toLowerCase()));
+  const supplement = PERSON_POSITION_LIBRARY
+    .filter((item) => !matchedKeys.has(item.toLowerCase()))
+    .slice(0, Math.max(0, limit - matched.length));
+
+  return [...matched, ...supplement];
+}
+
 function buildEmploymentDedupeKey(entry: PersonEmploymentEntry) {
   const companyKey = (entry.companyEntityId || entry.companyName).trim().toLowerCase();
   const positionKey = entry.position.trim().toLowerCase();
@@ -64,7 +132,7 @@ export function resolvePersonEmploymentEntry(value: unknown): PersonEmploymentEn
   const record = value as Record<string, unknown>;
   const companyEntityId = normalizePersonEmploymentEntityId(record.companyEntityId);
   const companyName = normalizePersonEmploymentCompanyName(record.companyName);
-  const position = normalizePersonEmploymentPosition(record.position);
+  const position = findPersonEmploymentPositionMatch(record.position) || normalizePersonEmploymentPosition(record.position);
 
   if (!companyEntityId && !companyName && !position) {
     return null;
@@ -123,12 +191,7 @@ export function formatPersonEmployment(entry: PersonEmploymentEntry, options: { 
   if (!fragments.length) {
     return '';
   }
-
-  const labels: string[] = [];
-  if (entry.current) labels.push('текущее');
-  if (entry.primary) labels.push('основное');
-
-  return labels.length ? `${fragments.join(' ')} (${labels.join(', ')})` : fragments.join(' ');
+  return fragments.join(' ');
 }
 
 export function buildPersonEmploymentDisplayValues(

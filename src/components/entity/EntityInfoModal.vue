@@ -55,6 +55,8 @@ import {
   type PersonRoleCategory,
 } from '../../utils/personRoles';
 import {
+  buildPersonEmploymentPositionSuggestions,
+  findPersonEmploymentPositionMatch,
   normalizePersonEmploymentCompanyName,
   normalizePersonEmploymentEntries,
   normalizePersonEmploymentEntityId,
@@ -413,6 +415,8 @@ const manualPersonSkillsDirty = ref(false);
 const isPersonRolesLibraryOpen = ref(false);
 const manualPersonRolesDirty = ref(false);
 const personEmploymentDirty = ref(false);
+const activeEmploymentCompanySearchIndex = ref<number | null>(null);
+const activeEmploymentPositionSearchIndex = ref<number | null>(null);
 
 const voiceInput = useUnifiedVoiceInput({
   language: 'ru',
@@ -1007,6 +1011,8 @@ function loadDraft(entityId: string) {
   manualPersonRolesDirty.value = false;
   manualPersonSkillsDirty.value = false;
   personEmploymentDirty.value = false;
+  activeEmploymentCompanySearchIndex.value = null;
+  activeEmploymentPositionSearchIndex.value = null;
 
   pendingComposerHeightReset.value = true;
   void nextTick(() => {
@@ -1146,6 +1152,8 @@ function closeModal() {
   isPersonRolesLibraryOpen.value = false;
   isPersonSkillsLibraryOpen.value = false;
   personEmploymentDirty.value = false;
+  activeEmploymentCompanySearchIndex.value = null;
+  activeEmploymentPositionSearchIndex.value = null;
   closeChatToolsMenus();
   closeProfileFooter();
   emit('close');
@@ -1292,6 +1300,8 @@ async function confirmClearChatHistory() {
     manualPersonRolesDirty.value = false;
     manualPersonSkillsDirty.value = false;
     personEmploymentDirty.value = false;
+    activeEmploymentCompanySearchIndex.value = null;
+    activeEmploymentPositionSearchIndex.value = null;
     currentDraft.fieldDrafts = buildEntityFieldDrafts(currentDraft.type);
     editingFieldValue.value = null;
 
@@ -1549,8 +1559,8 @@ function buildDefaultEmploymentEntry(): PersonEmploymentEntry {
     companyEntityId: '',
     companyName: '',
     position: '',
-    current: true,
-    primary: getPersonEmploymentEntries().length === 0,
+    current: false,
+    primary: false,
   };
 }
 
@@ -1585,6 +1595,121 @@ function setPersonEmploymentEntry(index: number, nextEntry: PersonEmploymentEntr
   markPersonEmploymentChanged();
 }
 
+function findEmploymentCompanyMatch(companyName: string) {
+  const normalized = normalizePersonEmploymentCompanyName(companyName).toLowerCase();
+  if (!normalized) return null;
+
+  return employmentCompanyOptions.value.find((company) => company.name.toLowerCase() === normalized) || null;
+}
+
+function getEmploymentCompanySuggestions(companyName: string) {
+  const normalized = normalizePersonEmploymentCompanyName(companyName).toLowerCase();
+  const source = employmentCompanyOptions.value;
+
+  if (!normalized) {
+    return source.slice(0, 10);
+  }
+
+  const matched = source.filter((company) => company.name.toLowerCase().includes(normalized));
+  if (matched.length >= 10) {
+    return matched.slice(0, 10);
+  }
+
+  const matchedIds = new Set(matched.map((company) => company.id));
+  const supplement = source.filter((company) => !matchedIds.has(company.id)).slice(0, Math.max(0, 10 - matched.length));
+  return [...matched, ...supplement];
+}
+
+function getEmploymentPositionSuggestions(position: string) {
+  return buildPersonEmploymentPositionSuggestions(position, 10);
+}
+
+function openEmploymentCompanySearch(index: number) {
+  activeEmploymentCompanySearchIndex.value = index;
+}
+
+function closeEmploymentCompanySearch() {
+  window.setTimeout(() => {
+    activeEmploymentCompanySearchIndex.value = null;
+  }, 90);
+}
+
+function openEmploymentPositionSearch(index: number) {
+  activeEmploymentPositionSearchIndex.value = index;
+}
+
+function closeEmploymentPositionSearch() {
+  window.setTimeout(() => {
+    activeEmploymentPositionSearchIndex.value = null;
+  }, 90);
+}
+
+function onPersonEmploymentCompanyBlur(index: number) {
+  commitPersonEmploymentCompany(index);
+  closeEmploymentCompanySearch();
+}
+
+function onPersonEmploymentPositionBlur(index: number) {
+  commitPersonEmploymentPosition(index);
+  closeEmploymentPositionSearch();
+}
+
+function onEmploymentSuggestionPointerDown(event: PointerEvent) {
+  event.preventDefault();
+}
+
+function commitPersonEmploymentCompany(index: number) {
+  if (!draft.value || draft.value.type !== 'person') return;
+  const currentEntry = draft.value.employmentEntries[index];
+  if (!currentEntry) return;
+
+  const matchedCompany = findEmploymentCompanyMatch(currentEntry.companyName);
+  setPersonEmploymentEntry(index, {
+    ...currentEntry,
+    companyEntityId: matchedCompany?.id || '',
+    companyName: matchedCompany?.name || currentEntry.companyName,
+  });
+  activeEmploymentCompanySearchIndex.value = null;
+}
+
+function commitPersonEmploymentPosition(index: number) {
+  if (!draft.value || draft.value.type !== 'person') return;
+  const currentEntry = draft.value.employmentEntries[index];
+  if (!currentEntry) return;
+
+  const matchedPosition = findPersonEmploymentPositionMatch(currentEntry.position);
+  setPersonEmploymentEntry(index, {
+    ...currentEntry,
+    position: matchedPosition || currentEntry.position,
+  });
+  activeEmploymentPositionSearchIndex.value = null;
+}
+
+function selectEmploymentCompany(index: number, company: { id: string; name: string }) {
+  if (!draft.value || draft.value.type !== 'person') return;
+  const currentEntry = draft.value.employmentEntries[index];
+  if (!currentEntry) return;
+
+  setPersonEmploymentEntry(index, {
+    ...currentEntry,
+    companyEntityId: company.id,
+    companyName: company.name,
+  });
+  activeEmploymentCompanySearchIndex.value = null;
+}
+
+function selectEmploymentPosition(index: number, position: string) {
+  if (!draft.value || draft.value.type !== 'person') return;
+  const currentEntry = draft.value.employmentEntries[index];
+  if (!currentEntry) return;
+
+  setPersonEmploymentEntry(index, {
+    ...currentEntry,
+    position,
+  });
+  activeEmploymentPositionSearchIndex.value = null;
+}
+
 function addPersonEmploymentEntry() {
   if (!draft.value || draft.value.type !== 'person') return;
   if (draft.value.employmentEntries.length >= 12) return;
@@ -1597,14 +1722,7 @@ function removePersonEmploymentEntry(index: number) {
   if (!draft.value || draft.value.type !== 'person') return;
   if (index < 0 || index >= draft.value.employmentEntries.length) return;
 
-  const removed = draft.value.employmentEntries[index];
   const nextEntries = draft.value.employmentEntries.filter((_, itemIndex) => itemIndex !== index);
-  if (removed?.primary && nextEntries.length > 0 && !nextEntries.some((entry) => entry.primary)) {
-    nextEntries[0] = {
-      ...nextEntries[0]!,
-      primary: true,
-    };
-  }
   draft.value.employmentEntries = nextEntries;
   markPersonEmploymentChanged();
 }
@@ -1618,18 +1736,13 @@ function updatePersonEmploymentCompanyName(index: number, event: Event) {
   if (!currentEntry) return;
 
   const nextCompanyName = normalizePersonEmploymentCompanyName(input.value);
-  const linkedCompanyName = currentEntry.companyEntityId
-    ? (entitiesStore.byId(currentEntry.companyEntityId)?.name || '').trim()
-    : '';
 
   setPersonEmploymentEntry(index, {
     ...currentEntry,
     companyName: nextCompanyName,
-    companyEntityId:
-      currentEntry.companyEntityId && linkedCompanyName && linkedCompanyName === nextCompanyName
-        ? currentEntry.companyEntityId
-        : '',
+    companyEntityId: '',
   });
+  activeEmploymentCompanySearchIndex.value = index;
 }
 
 function updatePersonEmploymentPosition(index: number, event: Event) {
@@ -1644,38 +1757,19 @@ function updatePersonEmploymentPosition(index: number, event: Event) {
     ...currentEntry,
     position: normalizePersonEmploymentPosition(input.value),
   });
+  activeEmploymentPositionSearchIndex.value = index;
 }
 
-function updatePersonEmploymentCompanyLink(index: number, event: Event) {
-  if (!draft.value || draft.value.type !== 'person') return;
-  const select = event.target as HTMLSelectElement | null;
-  if (!select) return;
-
-  const currentEntry = draft.value.employmentEntries[index];
-  if (!currentEntry) return;
-
-  const companyEntityId = normalizePersonEmploymentEntityId(select.value);
-  const linkedCompanyName = companyEntityId ? (entitiesStore.byId(companyEntityId)?.name || '').trim() : '';
-
-  setPersonEmploymentEntry(index, {
-    ...currentEntry,
-    companyEntityId,
-    companyName: linkedCompanyName || currentEntry.companyName,
-  });
+function onPersonEmploymentCompanyKeydown(index: number, event: KeyboardEvent) {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  commitPersonEmploymentCompany(index);
 }
 
-function updatePersonEmploymentFlag(index: number, key: 'current' | 'primary', event: Event) {
-  if (!draft.value || draft.value.type !== 'person') return;
-  const input = event.target as HTMLInputElement | null;
-  if (!input) return;
-
-  const currentEntry = draft.value.employmentEntries[index];
-  if (!currentEntry) return;
-
-  setPersonEmploymentEntry(index, {
-    ...currentEntry,
-    [key]: input.checked,
-  });
+function onPersonEmploymentPositionKeydown(index: number, event: KeyboardEvent) {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  commitPersonEmploymentPosition(index);
 }
 
 function addPersonManualSkillEntry(
@@ -2647,13 +2741,7 @@ function formatPersonEmploymentEntryForDisplay(entry: PersonEmploymentEntry) {
   const linkedCompanyName = entry.companyEntityId ? (entitiesStore.byId(entry.companyEntityId)?.name || '').trim() : '';
   const companyName = normalizePersonEmploymentCompanyName(entry.companyName || linkedCompanyName);
   const position = normalizePersonEmploymentPosition(entry.position);
-  const base = [position, companyName ? (position ? `в ${companyName}` : companyName) : ''].filter(Boolean).join(' ');
-  if (!base) return '';
-
-  const flags: string[] = [];
-  if (entry.current) flags.push('текущее');
-  if (entry.primary) flags.push('основное');
-  return flags.length ? `${base} (${flags.join(', ')})` : base;
+  return [position, companyName ? (position ? `в ${companyName}` : companyName) : ''].filter(Boolean).join(' ');
 }
 
 function sanitizeFileNamePart(value: string) {
@@ -4144,70 +4232,71 @@ onBeforeUnmount(() => {
                   </div>
 
                   <div
-                    v-if="!getPersonEmploymentEntries().length"
-                    class="entity-info-employment-empty"
-                  >
-                    Добавьте компанию и должность. Это попадет в контекст проекта как фон профиля, но не создаст ноду компании на канве автоматически.
-                  </div>
-
-                  <div
                     v-for="(employment, index) in getPersonEmploymentEntries()"
-                    :key="`person-employment:${employment.companyEntityId || employment.companyName || 'row'}:${employment.position}:${index}`"
+                    :key="`person-employment:${index}`"
                     class="entity-info-employment-card"
                   >
                     <div class="entity-info-employment-main">
-                      <input
-                        :value="employment.companyName"
-                        type="text"
-                        class="entity-info-employment-input"
-                        maxlength="120"
-                        placeholder="Компания"
-                        @input="updatePersonEmploymentCompanyName(index, $event)"
-                      />
-                      <input
-                        :value="employment.position"
-                        type="text"
-                        class="entity-info-employment-input"
-                        maxlength="96"
-                        placeholder="Должность / формат занятости"
-                        @input="updatePersonEmploymentPosition(index, $event)"
-                      />
+                      <div class="entity-info-employment-field">
+                        <input
+                          :value="employment.companyName"
+                          type="text"
+                          class="entity-info-employment-input"
+                          maxlength="120"
+                          placeholder="Компания"
+                          @focus="openEmploymentCompanySearch(index)"
+                          @blur="onPersonEmploymentCompanyBlur(index)"
+                          @input="updatePersonEmploymentCompanyName(index, $event)"
+                          @keydown="onPersonEmploymentCompanyKeydown(index, $event)"
+                        />
+                        <div
+                          v-if="activeEmploymentCompanySearchIndex === index && getEmploymentCompanySuggestions(employment.companyName).length"
+                          class="entity-info-employment-dropdown"
+                        >
+                          <button
+                            v-for="company in getEmploymentCompanySuggestions(employment.companyName)"
+                            :key="company.id"
+                            type="button"
+                            class="entity-info-employment-option"
+                            @pointerdown="onEmploymentSuggestionPointerDown"
+                            @click="selectEmploymentCompany(index, company)"
+                          >
+                            {{ company.name }}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div class="entity-info-employment-field">
+                        <input
+                          :value="employment.position"
+                          type="text"
+                          class="entity-info-employment-input"
+                          maxlength="96"
+                          placeholder="Должность"
+                          @focus="openEmploymentPositionSearch(index)"
+                          @blur="onPersonEmploymentPositionBlur(index)"
+                          @input="updatePersonEmploymentPosition(index, $event)"
+                          @keydown="onPersonEmploymentPositionKeydown(index, $event)"
+                        />
+                        <div
+                          v-if="activeEmploymentPositionSearchIndex === index && getEmploymentPositionSuggestions(employment.position).length"
+                          class="entity-info-employment-dropdown"
+                        >
+                          <button
+                            v-for="position in getEmploymentPositionSuggestions(employment.position)"
+                            :key="position"
+                            type="button"
+                            class="entity-info-employment-option"
+                            @pointerdown="onEmploymentSuggestionPointerDown"
+                            @click="selectEmploymentPosition(index, position)"
+                          >
+                            {{ position }}
+                          </button>
+                        </div>
+                      </div>
                     </div>
 
                     <div class="entity-info-employment-meta">
-                      <select
-                        class="entity-info-employment-select"
-                        :value="employment.companyEntityId"
-                        @change="updatePersonEmploymentCompanyLink(index, $event)"
-                      >
-                        <option value="">Без привязки к карточке компании</option>
-                        <option
-                          v-for="company in employmentCompanyOptions"
-                          :key="company.id"
-                          :value="company.id"
-                        >
-                          {{ company.name }}
-                        </option>
-                      </select>
-
-                      <label class="entity-info-employment-flag">
-                        <input
-                          type="checkbox"
-                          :checked="employment.current"
-                          @change="updatePersonEmploymentFlag(index, 'current', $event)"
-                        />
-                        <span>Текущее</span>
-                      </label>
-
-                      <label class="entity-info-employment-flag">
-                        <input
-                          type="checkbox"
-                          :checked="employment.primary"
-                          @change="updatePersonEmploymentFlag(index, 'primary', $event)"
-                        />
-                        <span>Основное</span>
-                      </label>
-
                       <button
                         type="button"
                         class="entity-info-employment-remove-btn"
@@ -5485,16 +5574,6 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
-.entity-info-employment-empty {
-  border: 1px dashed #cbd5e1;
-  border-radius: 12px;
-  background: #f8fafc;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.35;
-  padding: 10px 12px;
-}
-
 .entity-info-employment-card {
   display: flex;
   flex-direction: column;
@@ -5511,15 +5590,17 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.entity-info-employment-field {
+  position: relative;
+}
+
 .entity-info-employment-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
-.entity-info-employment-input,
-.entity-info-employment-select {
+.entity-info-employment-input {
   width: 100%;
   min-width: 0;
   border: 1px solid #dbe4f3;
@@ -5532,23 +5613,45 @@ onBeforeUnmount(() => {
   outline: none;
 }
 
-.entity-info-employment-input:focus,
-.entity-info-employment-select:focus {
+.entity-info-employment-input:focus {
   border-color: #93c5fd;
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
 }
 
-.entity-info-employment-select {
-  flex: 1 1 240px;
+.entity-info-employment-dropdown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 176px;
+  overflow-y: auto;
+  border: 1px solid #dbe4f3;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+  padding: 6px;
 }
 
-.entity-info-employment-flag {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.entity-info-employment-option {
+  border: none;
+  border-radius: 10px;
+  background: transparent;
   color: #334155;
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: left;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.entity-info-employment-option:hover {
+  background: #eff6ff;
+  color: #1d4ed8;
 }
 
 .entity-info-employment-remove-btn {
@@ -6373,11 +6476,7 @@ onBeforeUnmount(() => {
   }
 
   .entity-info-employment-meta {
-    align-items: stretch;
-  }
-
-  .entity-info-employment-select {
-    flex-basis: 100%;
+    justify-content: flex-end;
   }
 
   .entity-info-tag-input {
