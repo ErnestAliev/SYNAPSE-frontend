@@ -1,4 +1,4 @@
-ЕЩЩexport interface PersonEmploymentEntry {
+export interface PersonEmploymentEntry {
   companyEntityId: string;
   companyName: string;
   position: string;
