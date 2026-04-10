@@ -417,6 +417,10 @@ const manualPersonSkillsDirty = ref(false);
 const isPersonRolesLibraryOpen = ref(false);
 const manualPersonRolesDirty = ref(false);
 const personEmploymentDirty = ref(false);
+const employmentCompanyInputDraft = ref('');
+const employmentPositionInputDraft = ref('');
+const isEmploymentCompanyInputFocused = ref(false);
+const isEmploymentPositionInputFocused = ref(false);
 
 const voiceInput = useUnifiedVoiceInput({
   language: 'ru',
@@ -722,6 +726,20 @@ function buildPersonEmploymentSignature(entries: PersonEmploymentEntry[]) {
     .join('||');
 }
 
+function syncEmploymentInputDrafts(entries: PersonEmploymentEntry[], options: { force?: boolean } = {}) {
+  const firstEntry = Array.isArray(entries) ? entries[0] : null;
+  const nextCompanyName = typeof firstEntry?.companyName === 'string' ? firstEntry.companyName : '';
+  const nextPosition = typeof firstEntry?.position === 'string' ? firstEntry.position : '';
+  const force = options.force === true;
+
+  if (force || !isEmploymentCompanyInputFocused.value) {
+    employmentCompanyInputDraft.value = nextCompanyName;
+  }
+  if (force || !isEmploymentPositionInputFocused.value) {
+    employmentPositionInputDraft.value = nextPosition;
+  }
+}
+
 function isPersonSkillsField(fieldKey: string, type = draft.value?.type || currentEntity.value?.type) {
   return type === 'person' && fieldKey === 'skills';
 }
@@ -1011,6 +1029,9 @@ function loadDraft(entityId: string) {
   manualPersonRolesDirty.value = false;
   manualPersonSkillsDirty.value = false;
   personEmploymentDirty.value = false;
+  isEmploymentCompanyInputFocused.value = false;
+  isEmploymentPositionInputFocused.value = false;
+  syncEmploymentInputDrafts(employmentEntries, { force: true });
 
   pendingComposerHeightReset.value = true;
   void nextTick(() => {
@@ -1150,6 +1171,10 @@ function closeModal() {
   isPersonRolesLibraryOpen.value = false;
   isPersonSkillsLibraryOpen.value = false;
   personEmploymentDirty.value = false;
+  isEmploymentCompanyInputFocused.value = false;
+  isEmploymentPositionInputFocused.value = false;
+  employmentCompanyInputDraft.value = '';
+  employmentPositionInputDraft.value = '';
   closeChatToolsMenus();
   closeProfileFooter();
   emit('close');
@@ -1296,6 +1321,10 @@ async function confirmClearChatHistory() {
     manualPersonRolesDirty.value = false;
     manualPersonSkillsDirty.value = false;
     personEmploymentDirty.value = false;
+    isEmploymentCompanyInputFocused.value = false;
+    isEmploymentPositionInputFocused.value = false;
+    employmentCompanyInputDraft.value = '';
+    employmentPositionInputDraft.value = '';
     currentDraft.fieldDrafts = buildEntityFieldDrafts(currentDraft.type);
     editingFieldValue.value = null;
 
@@ -1570,9 +1599,7 @@ function getEmploymentPositionOptions() {
 }
 
 function getSimpleEmploymentValue(key: 'companyName' | 'position') {
-  const entry = getPersonEmploymentEntries()[0];
-  const rawValue = entry?.[key];
-  return typeof rawValue === 'string' ? rawValue : '';
+  return key === 'companyName' ? employmentCompanyInputDraft.value : employmentPositionInputDraft.value;
 }
 
 function updateSimpleEmploymentValue(key: 'companyName' | 'position', event: Event) {
@@ -1580,9 +1607,16 @@ function updateSimpleEmploymentValue(key: 'companyName' | 'position', event: Eve
   const input = event.target as HTMLInputElement | null;
   if (!input) return;
 
+  const nextRawValue = key === 'companyName' ? input.value.slice(0, 120) : input.value.slice(0, 96);
+  if (key === 'companyName') {
+    employmentCompanyInputDraft.value = nextRawValue;
+  } else {
+    employmentPositionInputDraft.value = nextRawValue;
+  }
+
   const current = getPersonEmploymentEntries()[0] || buildDefaultEmploymentEntry();
-  const nextCompanyName = key === 'companyName' ? input.value.slice(0, 120) : current.companyName;
-  const nextPosition = key === 'position' ? input.value.slice(0, 96) : current.position;
+  const nextCompanyName = employmentCompanyInputDraft.value;
+  const nextPosition = employmentPositionInputDraft.value;
 
   if (!nextCompanyName.trim() && !nextPosition.trim()) {
     draft.value.employmentEntries = [];
@@ -1608,11 +1642,12 @@ function commitSimpleEmploymentCompany() {
   const current = getPersonEmploymentEntries()[0];
   if (!current) return;
 
-  const normalizedCompanyName = normalizePersonEmploymentCompanyName(current.companyName);
+  const normalizedCompanyName = normalizePersonEmploymentCompanyName(employmentCompanyInputDraft.value);
   const matchedCompany = findEmploymentCompanyMatch(normalizedCompanyName);
 
-  if (!normalizedCompanyName && !current.position.trim()) {
+  if (!normalizedCompanyName && !employmentPositionInputDraft.value.trim()) {
     draft.value.employmentEntries = [];
+    employmentCompanyInputDraft.value = '';
     markPersonEmploymentChanged();
     return;
   }
@@ -1620,8 +1655,9 @@ function commitSimpleEmploymentCompany() {
   draft.value.employmentEntries = [{
     ...current,
     companyEntityId: matchedCompany?.id || '',
-    companyName: current.companyName.slice(0, 120),
+    companyName: employmentCompanyInputDraft.value.slice(0, 120),
   }];
+  employmentCompanyInputDraft.value = draft.value.employmentEntries[0]?.companyName || '';
   markPersonEmploymentChanged();
 }
 
@@ -1631,29 +1667,49 @@ function commitSimpleEmploymentPosition() {
   const current = getPersonEmploymentEntries()[0];
   if (!current) return;
 
-  const normalizedPosition = normalizePersonEmploymentPosition(current.position);
+  const normalizedPosition = normalizePersonEmploymentPosition(employmentPositionInputDraft.value);
   const matchedPosition = findPersonEmploymentPositionMatch(normalizedPosition);
   const registeredCustomPosition =
     normalizedPosition && !matchedPosition
       ? registerCustomPersonEmploymentPosition(normalizedPosition)
       : '';
 
-  if (!current.companyName.trim() && !normalizedPosition) {
+  if (!employmentCompanyInputDraft.value.trim() && !normalizedPosition) {
     draft.value.employmentEntries = [];
+    employmentPositionInputDraft.value = '';
     markPersonEmploymentChanged();
     return;
   }
 
   draft.value.employmentEntries = [{
     ...current,
-    position: matchedPosition || registeredCustomPosition || current.position.slice(0, 96),
+    position: matchedPosition || registeredCustomPosition || employmentPositionInputDraft.value.slice(0, 96),
   }];
+  employmentPositionInputDraft.value = draft.value.employmentEntries[0]?.position || '';
   markPersonEmploymentChanged();
 }
 
 function onSimpleEmploymentPositionKeydown(event: KeyboardEvent) {
   if (event.key !== 'Enter') return;
   event.preventDefault();
+  commitSimpleEmploymentPosition();
+}
+
+function onSimpleEmploymentCompanyFocus() {
+  isEmploymentCompanyInputFocused.value = true;
+}
+
+function onSimpleEmploymentCompanyBlur() {
+  isEmploymentCompanyInputFocused.value = false;
+  commitSimpleEmploymentCompany();
+}
+
+function onSimpleEmploymentPositionFocus() {
+  isEmploymentPositionInputFocused.value = true;
+}
+
+function onSimpleEmploymentPositionBlur() {
+  isEmploymentPositionInputFocused.value = false;
   commitSimpleEmploymentPosition();
 }
 
@@ -3729,9 +3785,13 @@ watch(
           if (personEmploymentDirty.value) {
             if (remoteEmploymentSignature === localEmploymentSignature) {
               personEmploymentDirty.value = false;
+              syncEmploymentInputDrafts(remoteEmploymentEntries);
             }
           } else if (remoteEmploymentSignature !== localEmploymentSignature) {
             draft.value.employmentEntries = remoteEmploymentEntries;
+            syncEmploymentInputDrafts(remoteEmploymentEntries);
+          } else {
+            syncEmploymentInputDrafts(remoteEmploymentEntries);
           }
         }
 
@@ -4113,6 +4173,8 @@ onBeforeUnmount(() => {
                     :list="PERSON_EMPLOYMENT_COMPANY_DATALIST_ID"
                     maxlength="120"
                     placeholder="Работает в"
+                    @focus="onSimpleEmploymentCompanyFocus"
+                    @blur="onSimpleEmploymentCompanyBlur"
                     @input="updateSimpleEmploymentValue('companyName', $event)"
                     @change="commitSimpleEmploymentCompany"
                   />
@@ -4123,6 +4185,8 @@ onBeforeUnmount(() => {
                     :list="PERSON_EMPLOYMENT_POSITION_DATALIST_ID"
                     maxlength="96"
                     placeholder="Должность"
+                    @focus="onSimpleEmploymentPositionFocus"
+                    @blur="onSimpleEmploymentPositionBlur"
                     @input="updateSimpleEmploymentValue('position', $event)"
                     @change="commitSimpleEmploymentPosition"
                     @keydown="onSimpleEmploymentPositionKeydown"
