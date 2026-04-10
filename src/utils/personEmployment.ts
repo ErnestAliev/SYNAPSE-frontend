@@ -7,6 +7,7 @@ export interface PersonEmploymentEntry {
 }
 
 export const PERSON_EMPLOYMENT_MAX_ITEMS = 12;
+const PERSON_CUSTOM_POSITION_STORAGE_KEY = 'synapse12.personEmployment.customPositions';
 export const PERSON_POSITION_LIBRARY = [
   'CEO',
   'COO',
@@ -51,6 +52,22 @@ export const PERSON_POSITION_LIBRARY = [
   'Редактор',
 ].sort((left, right) => left.localeCompare(right, 'ru'));
 
+function dedupeEmploymentPositions(source: string[]) {
+  const dedupe = new Set<string>();
+  const result: string[] = [];
+
+  for (const item of source) {
+    const normalized = normalizePersonEmploymentPosition(item);
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (dedupe.has(key)) continue;
+    dedupe.add(key);
+    result.push(normalized);
+  }
+
+  return result;
+}
+
 export function normalizePersonEmploymentEntityId(value: unknown) {
   if (typeof value === 'string') {
     return value.trim().slice(0, 120);
@@ -81,25 +98,73 @@ export function normalizePersonEmploymentPosition(value: unknown) {
     .slice(0, 96);
 }
 
+export function readCustomPersonEmploymentPositions() {
+  if (typeof window === 'undefined') return [] as string[];
+
+  try {
+    const raw = window.localStorage.getItem(PERSON_CUSTOM_POSITION_STORAGE_KEY);
+    if (!raw) return [] as string[];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [] as string[];
+    return dedupeEmploymentPositions(parsed.filter((item): item is string => typeof item === 'string'));
+  } catch {
+    return [] as string[];
+  }
+}
+
+export function writeCustomPersonEmploymentPositions(items: string[]) {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(
+      PERSON_CUSTOM_POSITION_STORAGE_KEY,
+      JSON.stringify(dedupeEmploymentPositions(items)),
+    );
+  } catch {
+    // Ignore localStorage write failures.
+  }
+}
+
+export function listPersonEmploymentPositions() {
+  return dedupeEmploymentPositions([
+    ...PERSON_POSITION_LIBRARY,
+    ...readCustomPersonEmploymentPositions(),
+  ]).sort((left, right) => left.localeCompare(right, 'ru'));
+}
+
+export function registerCustomPersonEmploymentPosition(value: unknown) {
+  const normalized = normalizePersonEmploymentPosition(value);
+  if (!normalized) return '';
+
+  const current = listPersonEmploymentPositions();
+  const exists = current.some((item) => item.toLowerCase() === normalized.toLowerCase());
+  if (!exists) {
+    writeCustomPersonEmploymentPositions([normalized, ...readCustomPersonEmploymentPositions()]);
+  }
+
+  return normalized;
+}
+
 export function findPersonEmploymentPositionMatch(value: unknown) {
   const normalized = normalizePersonEmploymentPosition(value);
   if (!normalized) return '';
-  return PERSON_POSITION_LIBRARY.find((item) => item.toLowerCase() === normalized.toLowerCase()) || '';
+  return listPersonEmploymentPositions().find((item) => item.toLowerCase() === normalized.toLowerCase()) || '';
 }
 
 export function buildPersonEmploymentPositionSuggestions(value: unknown, limit = 10) {
   const normalized = normalizePersonEmploymentPosition(value).toLowerCase();
+  const positionLibrary = listPersonEmploymentPositions();
   if (!normalized) {
-    return PERSON_POSITION_LIBRARY.slice(0, Math.max(10, limit));
+    return positionLibrary.slice(0, Math.max(10, limit));
   }
 
-  const matched = PERSON_POSITION_LIBRARY.filter((item) => item.toLowerCase().includes(normalized));
+  const matched = positionLibrary.filter((item) => item.toLowerCase().includes(normalized));
   if (matched.length >= limit) {
     return matched.slice(0, limit);
   }
 
   const matchedKeys = new Set(matched.map((item) => item.toLowerCase()));
-  const supplement = PERSON_POSITION_LIBRARY
+  const supplement = positionLibrary
     .filter((item) => !matchedKeys.has(item.toLowerCase()))
     .slice(0, Math.max(0, limit - matched.length));
 

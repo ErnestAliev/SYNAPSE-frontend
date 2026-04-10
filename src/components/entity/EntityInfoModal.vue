@@ -55,9 +55,12 @@ import {
   type PersonRoleCategory,
 } from '../../utils/personRoles';
 import {
+  findPersonEmploymentPositionMatch,
+  listPersonEmploymentPositions,
   normalizePersonEmploymentCompanyName,
   normalizePersonEmploymentEntries,
   normalizePersonEmploymentPosition,
+  registerCustomPersonEmploymentPosition,
   type PersonEmploymentEntry,
 } from '../../utils/personEmployment';
 
@@ -77,6 +80,8 @@ const FOOTER_CROP_OUTPUT_SIZE = 512;
 const AI_ATTACHMENT_MAX_INLINE_BYTES = 2_000_000;
 const AI_ATTACHMENT_MAX_INLINE_DATA_URL_LENGTH = 2_800_000;
 const CHAT_INPUT_MAX_HEIGHT_PX = 360;
+const PERSON_EMPLOYMENT_COMPANY_DATALIST_ID = 'person-employment-company-options';
+const PERSON_EMPLOYMENT_POSITION_DATALIST_ID = 'person-employment-position-options';
 const ENTITY_TYPE_CHAT_TARGET: Record<EntityType, string> = {
   project: 'проект',
   connection: 'контакт',
@@ -1560,6 +1565,10 @@ function findEmploymentCompanyMatch(companyName: string) {
   return employmentCompanyOptions.value.find((company) => company.name.toLowerCase() === normalized) || null;
 }
 
+function getEmploymentPositionOptions() {
+  return listPersonEmploymentPositions();
+}
+
 function getSimpleEmploymentValue(key: 'companyName' | 'position') {
   const entry = getPersonEmploymentEntries()[0];
   const rawValue = entry?.[key];
@@ -1591,6 +1600,61 @@ function updateSimpleEmploymentValue(key: 'companyName' | 'position', event: Eve
     primary: false,
   }];
   markPersonEmploymentChanged();
+}
+
+function commitSimpleEmploymentCompany() {
+  if (!draft.value || draft.value.type !== 'person') return;
+
+  const current = getPersonEmploymentEntries()[0];
+  if (!current) return;
+
+  const normalizedCompanyName = normalizePersonEmploymentCompanyName(current.companyName);
+  const matchedCompany = findEmploymentCompanyMatch(normalizedCompanyName);
+
+  if (!normalizedCompanyName && !current.position.trim()) {
+    draft.value.employmentEntries = [];
+    markPersonEmploymentChanged();
+    return;
+  }
+
+  draft.value.employmentEntries = [{
+    ...current,
+    companyEntityId: matchedCompany?.id || '',
+    companyName: current.companyName.slice(0, 120),
+  }];
+  markPersonEmploymentChanged();
+}
+
+function commitSimpleEmploymentPosition() {
+  if (!draft.value || draft.value.type !== 'person') return;
+
+  const current = getPersonEmploymentEntries()[0];
+  if (!current) return;
+
+  const normalizedPosition = normalizePersonEmploymentPosition(current.position);
+  const matchedPosition = findPersonEmploymentPositionMatch(normalizedPosition);
+  const registeredCustomPosition =
+    normalizedPosition && !matchedPosition
+      ? registerCustomPersonEmploymentPosition(normalizedPosition)
+      : '';
+
+  if (!current.companyName.trim() && !normalizedPosition) {
+    draft.value.employmentEntries = [];
+    markPersonEmploymentChanged();
+    return;
+  }
+
+  draft.value.employmentEntries = [{
+    ...current,
+    position: matchedPosition || registeredCustomPosition || current.position.slice(0, 96),
+  }];
+  markPersonEmploymentChanged();
+}
+
+function onSimpleEmploymentPositionKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  commitSimpleEmploymentPosition();
 }
 
 function addPersonManualSkillEntry(
@@ -2728,6 +2792,7 @@ const employmentCompanyOptions = computed(() =>
     }))
     .sort((left, right) => left.name.localeCompare(right.name, 'ru')),
 );
+const employmentCompanyNames = computed(() => employmentCompanyOptions.value.map((company) => company.name));
 const mineToggleLabel = computed(() => {
   const entityType = currentEntity.value?.type || draft.value?.type || 'shape';
   return ENTITY_MINE_TOGGLE_LABELS[entityType] || 'Моё';
@@ -4045,18 +4110,37 @@ onBeforeUnmount(() => {
                     :value="getSimpleEmploymentValue('companyName')"
                     type="text"
                     class="entity-info-employment-input"
+                    :list="PERSON_EMPLOYMENT_COMPANY_DATALIST_ID"
                     maxlength="120"
                     placeholder="Работает в"
                     @input="updateSimpleEmploymentValue('companyName', $event)"
+                    @change="commitSimpleEmploymentCompany"
                   />
                   <input
                     :value="getSimpleEmploymentValue('position')"
                     type="text"
                     class="entity-info-employment-input"
+                    :list="PERSON_EMPLOYMENT_POSITION_DATALIST_ID"
                     maxlength="96"
                     placeholder="Должность"
                     @input="updateSimpleEmploymentValue('position', $event)"
+                    @change="commitSimpleEmploymentPosition"
+                    @keydown="onSimpleEmploymentPositionKeydown"
                   />
+                  <datalist :id="PERSON_EMPLOYMENT_COMPANY_DATALIST_ID">
+                    <option
+                      v-for="companyName in employmentCompanyNames"
+                      :key="`employment-company:${companyName}`"
+                      :value="companyName"
+                    />
+                  </datalist>
+                  <datalist :id="PERSON_EMPLOYMENT_POSITION_DATALIST_ID">
+                    <option
+                      v-for="position in getEmploymentPositionOptions()"
+                      :key="`employment-position:${position}`"
+                      :value="position"
+                    />
+                  </datalist>
                 </div>
 
                 <div
