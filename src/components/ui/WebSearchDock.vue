@@ -210,8 +210,8 @@ interface WebSearchFieldSuggestion {
 }
 
 interface WebSearchStateEntry {
-  status: 'idle' | 'searching' | 'ready' | 'failed';
-  phase: '' | 'summary' | 'images' | 'fields' | 'ready' | 'failed';
+  status: 'idle' | 'searching' | 'ready' | 'failed' | 'cancelled';
+  phase: '' | 'summary' | 'images' | 'fields' | 'ready' | 'failed' | 'cancelled';
   query: string;
   summary: string;
   citations: WebSearchCitation[];
@@ -256,6 +256,7 @@ const props = defineProps<{
 
 const isOpen = ref(false);
 const isSubmitting = ref(false);
+const isCancellingSearch = ref(false);
 const isLoadingEntityState = ref(false);
 const queryDraft = ref('');
 const searchInputRef = ref<HTMLInputElement | null>(null);
@@ -569,7 +570,7 @@ function getSearchLinkChipLabel(value: string) {
 function normalizeWebSearchStateEntry(rawValue: unknown, entityType: EntityType): WebSearchStateEntry {
   const row = toProfile(rawValue);
   const statusRaw = typeof row.status === 'string' ? row.status.trim().toLowerCase() : '';
-  const status: WebSearchStateEntry['status'] = ['searching', 'ready', 'failed'].includes(statusRaw)
+  const status: WebSearchStateEntry['status'] = ['searching', 'ready', 'failed', 'cancelled'].includes(statusRaw)
     ? (statusRaw as WebSearchStateEntry['status'])
     : 'idle';
   const rawCitations = Array.isArray(row.citations) ? row.citations : [];
@@ -578,7 +579,8 @@ function normalizeWebSearchStateEntry(rawValue: unknown, entityType: EntityType)
   return {
     status,
     phase:
-      typeof row.phase === 'string' && ['summary', 'images', 'fields', 'ready', 'failed'].includes(row.phase.trim().toLowerCase())
+      typeof row.phase === 'string' &&
+      ['summary', 'images', 'fields', 'ready', 'failed', 'cancelled'].includes(row.phase.trim().toLowerCase())
         ? (row.phase.trim().toLowerCase() as WebSearchStateEntry['phase'])
         : '',
     query: typeof row.query === 'string' ? row.query.trim() : '',
@@ -1006,7 +1008,19 @@ const summaryCopyText = computed(() => {
   return lines.join('\n').trim();
 });
 
-const isBusy = computed(() => isSubmitting.value || syncedSearchState.value.status === 'searching');
+const isSearchRunning = computed(() => syncedSearchState.value.status === 'searching');
+const isBusy = computed(() => isSubmitting.value || isCancellingSearch.value || isSearchRunning.value);
+const isSearchSubmitDisabled = computed(
+  () =>
+    isCancellingSearch.value ||
+    isLoadingEntityState.value ||
+    !hasActiveEntityContext.value ||
+    (!isSearchRunning.value && (isSubmitting.value || !queryDraft.value.trim())),
+);
+const searchSubmitLabel = computed(() => {
+  if (isSearchRunning.value) return isCancellingSearch.value ? 'Останавливаю...' : 'Отменить';
+  return isSubmitting.value ? 'Сбор...' : 'Найти';
+});
 const loadingLabel = computed(() => {
   const query = syncedSearchState.value.query || queryDraft.value.trim();
   const phase = syncedSearchState.value.phase;
@@ -1025,6 +1039,10 @@ const effectiveErrorMessage = computed(() => {
   if (localErrorMessage.value.trim()) return localErrorMessage.value.trim();
   if (syncedSearchState.value.status === 'failed') return syncedSearchState.value.errorMessage;
   return '';
+});
+const cancelledStatusMessage = computed(() => {
+  if (syncedSearchState.value.status !== 'cancelled') return '';
+  return syncedSearchState.value.errorMessage || 'Поиск остановлен.';
 });
 const contextStatusMessage = computed(() => {
   if (!hasActiveEntityContext.value) {
@@ -1098,7 +1116,8 @@ const shouldShowSearchStats = computed(() => {
     state.summary ||
     state.status === 'searching' ||
     state.status === 'ready' ||
-    state.status === 'failed',
+    state.status === 'failed' ||
+    state.status === 'cancelled',
   );
 });
 
@@ -1393,7 +1412,7 @@ function onImageDragStart(event: DragEvent, image: WebSearchImageResult) {
 async function submitSearch() {
   const query = queryDraft.value.trim();
   const entityId = effectiveActiveEntityId.value;
-  if (!query || !projectId.value || !entityId || isSubmitting.value || isLoadingEntityState.value) return;
+  if (!query || !projectId.value || !entityId || isSubmitting.value || isCancellingSearch.value || isLoadingEntityState.value) return;
 
   isSubmitting.value = true;
   localErrorMessage.value = '';
@@ -1418,6 +1437,45 @@ async function submitSearch() {
   } finally {
     isSubmitting.value = false;
   }
+}
+
+async function cancelSearch() {
+  const entityId = effectiveActiveEntityId.value;
+  if (!entityId || isCancellingSearch.value || !isSearchRunning.value) return;
+
+  isCancellingSearch.value = true;
+  localErrorMessage.value = '';
+  try {
+    const { data } = await apiClient.post(
+      '/ai/web-search/cancel',
+      {
+        projectId: projectId.value,
+        entityId,
+      },
+      {
+        timeout: 30000,
+      },
+    );
+    const nextState =
+      data?.webSearch && typeof data.webSearch === 'object' && !Array.isArray(data.webSearch)
+        ? (data.webSearch as Record<string, unknown>)
+        : null;
+    if (nextState) {
+      entitiesStore.setEntityWebSearchState(entityId, nextState);
+    }
+  } catch (error) {
+    localErrorMessage.value = extractApiErrorMessage(error, 'Не удалось остановить веб-поиск.');
+  } finally {
+    isCancellingSearch.value = false;
+  }
+}
+
+async function handleSearchSubmit() {
+  if (isSearchRunning.value) {
+    await cancelSearch();
+    return;
+  }
+  await submitSearch();
 }
 
 function stopPanelResize() {
@@ -1681,7 +1739,7 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <form class="web-search-form" @submit.prevent="void submitSearch()">
+      <form class="web-search-form" @submit.prevent="void handleSearchSubmit()">
         <input
           ref="searchInputRef"
           v-model.trim="queryDraft"
@@ -1695,9 +1753,9 @@ onBeforeUnmount(() => {
         <button
           type="submit"
           class="web-search-submit"
-          :disabled="isSubmitting || isLoadingEntityState || !hasActiveEntityContext || !queryDraft.trim()"
+          :disabled="isSearchSubmitDisabled"
         >
-          {{ isBusy ? 'Сбор...' : 'Найти' }}
+          {{ searchSubmitLabel }}
         </button>
       </form>
       <p class="web-search-query-hint">{{ searchInputHint }}</p>
@@ -1707,6 +1765,7 @@ onBeforeUnmount(() => {
       </p>
       <p v-else-if="contextStatusMessage" class="web-search-status">{{ contextStatusMessage }}</p>
       <p v-else-if="effectiveErrorMessage" class="web-search-status error">{{ effectiveErrorMessage }}</p>
+      <p v-else-if="cancelledStatusMessage" class="web-search-status">{{ cancelledStatusMessage }}</p>
       <p v-else-if="copyNotice" class="web-search-copy-notice">{{ copyNotice }}</p>
 
       <section class="web-search-fields-wrap">
