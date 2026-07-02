@@ -93,6 +93,18 @@ const SEARCH_LINK_CHIP_LABELS: Array<{ label: string; domains: string[] }> = [
   { label: 'VK', domains: ['vk.com', 'vkontakte.ru'] },
   { label: 'GitHub', domains: ['github.com'] },
 ];
+const SEARCH_ENTITY_TYPE_LABELS: Record<EntityType, string> = {
+  project: 'Проект',
+  connection: 'Подключение',
+  person: 'Персона',
+  company: 'Компания',
+  event: 'Событие',
+  resource: 'Ресурс',
+  goal: 'Цель',
+  result: 'Результат',
+  task: 'Задача',
+  shape: 'Элемент',
+};
 const SEARCH_ENTITY_CONTEXT_FIELDS: Record<EntityType, SearchMetadataFieldConfig[]> = {
   connection: [
     { key: 'tags', label: 'Теги' },
@@ -1120,6 +1132,18 @@ const shouldShowSearchStats = computed(() => {
     state.status === 'cancelled',
   );
 });
+const hasWebSearchReport = computed(() => {
+  const state = syncedSearchState.value;
+  return Boolean(
+    hasActiveEntityContext.value &&
+      (state.query ||
+        state.summary ||
+        state.citations.length ||
+        state.images.length ||
+        state.searchQueries.length ||
+        editableSearchFieldValueCount.value),
+  );
+});
 
 function areStringListsEqual(left: string[], right: string[]) {
   if (left.length !== right.length) return false;
@@ -1389,6 +1413,277 @@ async function copySummary() {
   if (!summaryCopyText.value) return;
   await writeTextToClipboard(summaryCopyText.value);
   showCopyNotice('Сводка скопирована');
+}
+
+function sanitizeFileNamePart(value: string) {
+  return value
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .slice(0, 80);
+}
+
+function formatReportTimestamp(value: string) {
+  const timestamp = parseSearchTimestamp(value);
+  if (!timestamp) return '';
+  try {
+    return new Intl.DateTimeFormat('ru-RU', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(new Date(timestamp));
+  } catch {
+    return value;
+  }
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function buildWebSearchReportFileName(extension: 'txt' | 'pdf') {
+  const typeLabel = SEARCH_ENTITY_TYPE_LABELS[activeSearchEntityType.value] || 'Сущность';
+  const name = sanitizeFileNamePart(activeSearchEntityName.value) || 'Без названия';
+  const datePart = new Date().toISOString().slice(0, 10);
+  return `${typeLabel} - ${name} - веб-поиск ${datePart}.${extension}`;
+}
+
+function buildWebSearchReportText() {
+  const state = syncedSearchState.value;
+  const lines: string[] = [];
+  const typeLabel = SEARCH_ENTITY_TYPE_LABELS[activeSearchEntityType.value] || 'Сущность';
+
+  lines.push(`Веб-поиск: ${activeSearchEntityName.value}`);
+  lines.push(`Тип: ${typeLabel}`);
+  if (state.query) lines.push(`Запрос: ${state.query}`);
+  lines.push(`Статус: ${state.status}`);
+  lines.push(`Страниц изучено: ${searchStatsPageCount.value}`);
+  lines.push(`Время сбора: ${searchStatsDurationLabel.value}`);
+  if (state.model) lines.push(`Модель: ${state.model}`);
+  if (state.startedAt) lines.push(`Начато: ${formatReportTimestamp(state.startedAt) || state.startedAt}`);
+  if (state.completedAt) lines.push(`Завершено: ${formatReportTimestamp(state.completedAt) || state.completedAt}`);
+  if (state.updatedAt) lines.push(`Обновлено: ${formatReportTimestamp(state.updatedAt) || state.updatedAt}`);
+
+  lines.push('', 'Поля');
+  let hasFields = false;
+  for (const field of activeSearchFields.value) {
+    const values = getEditableSearchFieldValues(field.key);
+    if (!values.length) continue;
+    hasFields = true;
+    lines.push(`${field.label}: ${values.join(', ')}`);
+  }
+  if (!hasFields) lines.push('—');
+
+  lines.push('', 'Фото');
+  if (state.images.length) {
+    state.images.forEach((image, index) => {
+      lines.push(`${index + 1}. ${image.title || image.domain || 'Фото'}`);
+      if (image.domain) lines.push(`   Домен: ${image.domain}`);
+      lines.push(`   Изображение: ${image.imageUrl}`);
+      if (image.thumbnailUrl && image.thumbnailUrl !== image.imageUrl) {
+        lines.push(`   Превью: ${image.thumbnailUrl}`);
+      }
+      if (image.sourcePageUrl) lines.push(`   Источник: ${image.sourcePageUrl}`);
+    });
+  } else {
+    lines.push('—');
+  }
+
+  lines.push('', 'Сводка');
+  lines.push(state.summary || '—');
+
+  lines.push('', 'Источники');
+  if (state.citations.length) {
+    state.citations.forEach((citation) => {
+      lines.push(`[${citation.sourceIndex}] ${citation.title || citation.domain || citation.url}`);
+      lines.push(`    ${citation.url}`);
+    });
+  } else {
+    lines.push('—');
+  }
+
+  lines.push('', 'Поисковые запросы');
+  if (state.searchQueries.length) {
+    state.searchQueries.forEach((query, index) => {
+      lines.push(`${index + 1}. ${query}`);
+    });
+  } else {
+    lines.push('—');
+  }
+
+  return lines.join('\n').trim();
+}
+
+function exportWebSearchReportAsTextFile() {
+  if (typeof window === 'undefined' || !hasWebSearchReport.value) return;
+
+  const text = buildWebSearchReportText();
+  const blob = new Blob([`\uFEFF${text}`], { type: 'text/plain;charset=utf-8' });
+  const objectUrl = window.URL.createObjectURL(blob);
+  const anchor = window.document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = buildWebSearchReportFileName('txt');
+  anchor.rel = 'noopener';
+  window.document.body.appendChild(anchor);
+  anchor.click();
+  window.document.body.removeChild(anchor);
+  window.URL.revokeObjectURL(objectUrl);
+  showCopyNotice('TXT отчет сохранен');
+}
+
+function buildWebSearchReportHtml() {
+  const state = syncedSearchState.value;
+  const typeLabel = SEARCH_ENTITY_TYPE_LABELS[activeSearchEntityType.value] || 'Сущность';
+  const fieldsHtml = activeSearchFields.value
+    .map((field) => {
+      const values = getEditableSearchFieldValues(field.key);
+      if (!values.length) return '';
+      return `
+        <div class="field-row">
+          <dt>${escapeHtml(field.label)}</dt>
+          <dd>${values.map((value) => `<span>${escapeHtml(value)}</span>`).join('')}</dd>
+        </div>
+      `;
+    })
+    .filter(Boolean)
+    .join('');
+  const imagesHtml = state.images
+    .map(
+      (image, index) => `
+        <article class="image-card">
+          <img src="${escapeHtml(image.thumbnailUrl || image.imageUrl)}" alt="${escapeHtml(image.title || `Фото ${index + 1}`)}" referrerpolicy="no-referrer" />
+          <div>
+            <strong>${escapeHtml(image.title || `Фото ${index + 1}`)}</strong>
+            <p>${escapeHtml(image.domain || '')}</p>
+            <a href="${escapeHtml(image.sourcePageUrl || image.imageUrl)}">${escapeHtml(image.sourcePageUrl || image.imageUrl)}</a>
+          </div>
+        </article>
+      `,
+    )
+    .join('');
+  const summaryHtml = answerParagraphs.value.length
+    ? answerParagraphs.value
+        .map(
+          (paragraph) => `
+            <p>
+              ${escapeHtml(paragraph.text)}
+              ${paragraph.citations
+                .map((citation) => `<a class="citation" href="${escapeHtml(citation.url)}">[${citation.sourceIndex}]</a>`)
+                .join(' ')}
+            </p>
+          `,
+        )
+        .join('')
+    : '<p class="muted">—</p>';
+  const citationsHtml = state.citations.length
+    ? state.citations
+        .map(
+          (citation) => `
+            <li>
+              <strong>[${citation.sourceIndex}] ${escapeHtml(citation.title || citation.domain || citation.url)}</strong>
+              <a href="${escapeHtml(citation.url)}">${escapeHtml(citation.url)}</a>
+            </li>
+          `,
+        )
+        .join('')
+    : '<li class="muted">—</li>';
+  const searchQueriesHtml = state.searchQueries.length
+    ? state.searchQueries.map((query) => `<li>${escapeHtml(query)}</li>`).join('')
+    : '<li class="muted">—</li>';
+  const fileName = buildWebSearchReportFileName('pdf');
+
+  return `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(fileName)}</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, Arial, sans-serif; color: #0f172a; background: #eef2f7; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #eef2f7; }
+    .toolbar { position: sticky; top: 0; z-index: 2; display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; background: rgba(255,255,255,.94); border-bottom: 1px solid #dbe4f3; }
+    .toolbar button { border: 1px solid #dbe4f3; border-radius: 10px; background: #fff; color: #334155; font-weight: 800; padding: 9px 12px; cursor: pointer; }
+    .toolbar button.primary { background: #1058ff; color: #fff; border-color: #1058ff; }
+    main { width: min(900px, calc(100% - 28px)); margin: 18px auto 40px; background: #fff; border: 1px solid #dbe4f3; border-radius: 14px; padding: 34px; box-shadow: 0 18px 44px rgba(15,23,42,.13); }
+    h1 { margin: 0 0 8px; font-size: 28px; line-height: 1.15; }
+    h2 { margin: 28px 0 12px; font-size: 17px; border-bottom: 1px solid #e5ebf5; padding-bottom: 7px; }
+    p { line-height: 1.62; }
+    a { color: #1058ff; word-break: break-word; }
+    .meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 18px; }
+    .meta div, .field-row { border: 1px solid #e5ebf5; border-radius: 10px; padding: 10px; background: #f8fafc; }
+    .meta span, dt { display: block; color: #64748b; font-size: 11px; font-weight: 800; text-transform: uppercase; }
+    .meta strong { display: block; margin-top: 4px; font-size: 13px; }
+    dl { display: grid; gap: 8px; margin: 0; }
+    dd { display: flex; flex-wrap: wrap; gap: 6px; margin: 7px 0 0; }
+    dd span { border: 1px solid #bfd5ff; border-radius: 999px; background: #eff6ff; color: #1e40af; padding: 4px 8px; font-size: 12px; font-weight: 700; }
+    .images { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+    .image-card { border: 1px solid #e5ebf5; border-radius: 12px; overflow: hidden; background: #f8fafc; page-break-inside: avoid; }
+    .image-card img { display: block; width: 100%; aspect-ratio: 1 / 1; object-fit: cover; background: #e2e8f0; }
+    .image-card div { padding: 10px; }
+    .image-card p { margin: 4px 0; color: #64748b; font-size: 12px; }
+    .summary p { margin: 0 0 12px; }
+    .citation { font-weight: 800; text-decoration: none; }
+    li { margin: 0 0 10px; line-height: 1.45; }
+    li strong { display: block; }
+    .muted { color: #64748b; }
+    @media print {
+      body { background: #fff; }
+      .toolbar { display: none; }
+      main { width: auto; margin: 0; border: none; border-radius: 0; box-shadow: none; padding: 0; }
+      a { color: #0f172a; }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button type="button" onclick="window.close()">Закрыть</button>
+    <button type="button" class="primary" onclick="window.print()">Сохранить PDF</button>
+  </div>
+  <main>
+    <h1>Веб-поиск: ${escapeHtml(activeSearchEntityName.value)}</h1>
+    <p class="muted">${escapeHtml(typeLabel)}${state.query ? ` · ${escapeHtml(state.query)}` : ''}</p>
+    <section class="meta">
+      <div><span>Статус</span><strong>${escapeHtml(state.status)}</strong></div>
+      <div><span>Страниц изучено</span><strong>${searchStatsPageCount.value}</strong></div>
+      <div><span>Время сбора</span><strong>${escapeHtml(searchStatsDurationLabel.value)}</strong></div>
+      <div><span>Модель</span><strong>${escapeHtml(state.model || '—')}</strong></div>
+      <div><span>Начато</span><strong>${escapeHtml(formatReportTimestamp(state.startedAt) || state.startedAt || '—')}</strong></div>
+      <div><span>Завершено</span><strong>${escapeHtml(formatReportTimestamp(state.completedAt) || state.completedAt || '—')}</strong></div>
+      <div><span>Обновлено</span><strong>${escapeHtml(formatReportTimestamp(state.updatedAt) || state.updatedAt || '—')}</strong></div>
+    </section>
+    <h2>Поля</h2>
+    <dl>${fieldsHtml || '<p class="muted">—</p>'}</dl>
+    <h2>Фото</h2>
+    <section class="images">${imagesHtml || '<p class="muted">—</p>'}</section>
+    <h2>Сводка</h2>
+    <section class="summary">${summaryHtml}</section>
+    <h2>Источники</h2>
+    <ol>${citationsHtml}</ol>
+    <h2>Поисковые запросы</h2>
+    <ol>${searchQueriesHtml}</ol>
+  </main>
+</body>
+</html>`;
+}
+
+function openWebSearchPdfPreview() {
+  if (typeof window === 'undefined' || !hasWebSearchReport.value) return;
+
+  const previewWindow = window.open('', '_blank');
+  if (!previewWindow) {
+    localErrorMessage.value = 'Браузер заблокировал окно предпросмотра PDF.';
+    return;
+  }
+
+  previewWindow.document.open();
+  previewWindow.document.write(buildWebSearchReportHtml());
+  previewWindow.document.close();
+  showCopyNotice('PDF предпросмотр открыт');
 }
 
 function onImageDragStart(event: DragEvent, image: WebSearchImageResult) {
@@ -1739,36 +2034,37 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <form class="web-search-form" @submit.prevent="void handleSearchSubmit()">
-        <input
-          ref="searchInputRef"
-          v-model.trim="queryDraft"
-          type="search"
-          class="web-search-input"
-          :disabled="isSubmitting || isLoadingEntityState || !hasActiveEntityContext"
-          :placeholder="searchInputPlaceholder"
-          @focus="isQueryFocused = true"
-          @blur="isQueryFocused = false"
-        />
-        <button
-          type="submit"
-          class="web-search-submit"
-          :disabled="isSearchSubmitDisabled"
-        >
-          {{ searchSubmitLabel }}
-        </button>
-      </form>
-      <p class="web-search-query-hint">{{ searchInputHint }}</p>
+      <div class="web-search-panel-scroll">
+        <form class="web-search-form" @submit.prevent="void handleSearchSubmit()">
+          <input
+            ref="searchInputRef"
+            v-model.trim="queryDraft"
+            type="search"
+            class="web-search-input"
+            :disabled="isSubmitting || isLoadingEntityState || !hasActiveEntityContext"
+            :placeholder="searchInputPlaceholder"
+            @focus="isQueryFocused = true"
+            @blur="isQueryFocused = false"
+          />
+          <button
+            type="submit"
+            class="web-search-submit"
+            :disabled="isSearchSubmitDisabled"
+          >
+            {{ searchSubmitLabel }}
+          </button>
+        </form>
+        <p class="web-search-query-hint">{{ searchInputHint }}</p>
 
-      <p v-if="isBusy" class="web-search-status loading">
-        <span class="web-search-loading-glow">{{ loadingLabel }}</span>
-      </p>
-      <p v-else-if="contextStatusMessage" class="web-search-status">{{ contextStatusMessage }}</p>
-      <p v-else-if="effectiveErrorMessage" class="web-search-status error">{{ effectiveErrorMessage }}</p>
-      <p v-else-if="cancelledStatusMessage" class="web-search-status">{{ cancelledStatusMessage }}</p>
-      <p v-else-if="copyNotice" class="web-search-copy-notice">{{ copyNotice }}</p>
+        <p v-if="isBusy" class="web-search-status loading">
+          <span class="web-search-loading-glow">{{ loadingLabel }}</span>
+        </p>
+        <p v-else-if="contextStatusMessage" class="web-search-status">{{ contextStatusMessage }}</p>
+        <p v-else-if="effectiveErrorMessage" class="web-search-status error">{{ effectiveErrorMessage }}</p>
+        <p v-else-if="cancelledStatusMessage" class="web-search-status">{{ cancelledStatusMessage }}</p>
+        <p v-else-if="copyNotice" class="web-search-copy-notice">{{ copyNotice }}</p>
 
-      <section class="web-search-fields-wrap">
+        <section class="web-search-fields-wrap">
         <button
           type="button"
           class="web-search-section-toggle"
@@ -1848,9 +2144,9 @@ onBeforeUnmount(() => {
             </div>
           </template>
         </div>
-      </section>
+        </section>
 
-      <section class="web-search-images-wrap">
+        <section class="web-search-images-wrap">
         <button
           type="button"
           class="web-search-section-toggle"
@@ -1913,9 +2209,9 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-      </section>
+        </section>
 
-      <section class="web-search-summary-wrap">
+        <section class="web-search-summary-wrap">
         <button
           type="button"
           class="web-search-section-toggle"
@@ -1971,7 +2267,27 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-      </section>
+        </section>
+      </div>
+
+      <footer class="web-search-export-footer">
+        <button
+          type="button"
+          class="web-search-export-btn"
+          :disabled="!hasWebSearchReport"
+          @click="exportWebSearchReportAsTextFile"
+        >
+          Экспорт TXT
+        </button>
+        <button
+          type="button"
+          class="web-search-export-btn primary"
+          :disabled="!hasWebSearchReport"
+          @click="openWebSearchPdfPreview"
+        >
+          Экспорт PDF
+        </button>
+      </footer>
 
     </section>
   </div>
@@ -2034,14 +2350,23 @@ onBeforeUnmount(() => {
   border: 1px solid #dbe4f3;
   background: rgba(255, 255, 255, 0.98);
   box-shadow: 0 26px 52px rgba(15, 23, 42, 0.24);
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
   min-width: 320px;
   min-height: 320px;
   box-sizing: border-box;
-  padding-bottom: 16px;
   backdrop-filter: blur(10px);
   pointer-events: auto;
+}
+
+.web-search-panel-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-bottom: 4px;
 }
 
 .web-search-header {
@@ -2616,6 +2941,58 @@ onBeforeUnmount(() => {
   text-decoration: underline;
 }
 
+.web-search-export-footer {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid #e5ebf5;
+  background: #ffffff;
+  box-shadow: 0 -12px 22px rgba(15, 23, 42, 0.06);
+}
+
+.web-search-export-btn {
+  min-height: 38px;
+  border: 1px solid #dbe4f3;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    color 0.16s ease,
+    background-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.web-search-export-btn:hover:not(:disabled) {
+  border-color: #bfd5ff;
+  color: #1058ff;
+  background: #eef4ff;
+}
+
+.web-search-export-btn.primary {
+  border-color: #1058ff;
+  background: #1058ff;
+  color: #ffffff;
+  box-shadow: 0 10px 20px rgba(16, 88, 255, 0.18);
+}
+
+.web-search-export-btn.primary:hover:not(:disabled) {
+  border-color: #0b4bdd;
+  background: #0b4bdd;
+  color: #ffffff;
+}
+
+.web-search-export-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+  box-shadow: none;
+}
+
 @media (max-width: 900px) {
   .web-search-trigger {
     top: 50%;
@@ -2628,7 +3005,10 @@ onBeforeUnmount(() => {
 
   .web-search-panel {
     border-radius: 0;
-    padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
+  }
+
+  .web-search-export-footer {
+    padding-bottom: max(14px, env(safe-area-inset-bottom, 0px));
   }
 
   .web-search-header {
