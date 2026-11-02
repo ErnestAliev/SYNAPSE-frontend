@@ -16,6 +16,7 @@ import { useAuthStore } from '../stores/auth';
 import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../services/entityAi';
 import { calculateEntityProfileProgress } from '../utils/profileProgress';
 import { getRadialMenuGeometry } from '../utils/radialMenu';
+import { segmentsWithinDistance, type SegmentPoint } from '../utils/segmentGeometry';
 import { buildPersonEmploymentDisplayValues, countPersonEmploymentItems } from '../utils/personEmployment';
 import { buildPersonRoleDisplayValues, countPersonRoleItems } from '../utils/personRoles';
 import { buildPersonSkillDisplayValues, countPersonSkillItems } from '../utils/personSkills';
@@ -500,8 +501,18 @@ const entitiesStore = useEntitiesStore();
 const authStore = useAuthStore();
 
 const viewportRef = ref<HTMLDivElement | null>(null);
-const canvasTrashRef = ref<HTMLDivElement | null>(null);
-const dragPointerPosition = ref<{ x: number; y: number } | null>(null);
+const canvasTool = ref<'select' | 'erase'>('select');
+const eraseGesture = ref<{
+  pointerId: number;
+  start: SegmentPoint;
+  previous: SegmentPoint;
+  points: SegmentPoint[];
+  nodeId: string | null;
+  edgeIds: Set<string>;
+  moved: boolean;
+  cancelled: boolean;
+} | null>(null);
+const eraseStrokePoints = computed(() => eraseGesture.value?.points.map((point) => `${point.x},${point.y}`).join(' ') || '');
 const nodes = ref<CanvasNodeProjection[]>([]);
 const edges = ref<CanvasEdgeProjection[]>([]);
 const groups = ref<CanvasGroupProjection[]>([]);
@@ -550,20 +561,6 @@ const draggingGroup = ref<{
   startPositions: Record<string, { x: number; y: number }>;
   moved: boolean;
 } | null>(null);
-const trashNodeIds = computed(() => {
-  if (isPlayMode.value) return [];
-  const drag = draggingGroup.value || draggingNode.value;
-  if (!drag?.moved) return [];
-  const ids = 'nodeIds' in drag ? drag.nodeIds : [drag.nodeId];
-  return ids.every((id) => {
-    const node = getNodeById(id);
-    return node && !isNodeLocked(node);
-  }) ? ids : [];
-});
-const isCanvasTrashHovered = computed(() => {
-  const pointer = dragPointerPosition.value;
-  return Boolean(pointer && trashNodeIds.value.length && isPointerOverCanvasTrash(pointer.x, pointer.y));
-});
 interface TensionOffset {
   x: number;
   y: number;
@@ -4217,6 +4214,7 @@ function isCanvasInteractionActive() {
       selectionRect.value ||
       draggingNode.value ||
       draggingGroup.value ||
+      eraseGesture.value ||
       touchGesture.value ||
       tensionDrag.value ||
       hasTensionOffsets.value,
@@ -5034,6 +5032,8 @@ async function addNodeAtWorldPosition(worldX: number, worldY: number, name = get
 }
 
 async function loadProjectCanvas(projectId: string) {
+  canvasTool.value = 'select';
+  eraseGesture.value = null;
   loadedProjectId.value = projectId;
   isProjectServerStateFresh.value = false;
   clearViewportSyncTimer();
@@ -5307,7 +5307,128 @@ async function onEdgeAddNode() {
   queueCanvasSync();
 }
 
+function toggleEraseTool() {
+  const nextTool = canvasTool.value === 'erase' ? 'select' : 'erase';
+  resetTransientStates();
+  clearSelectedNodes();
+  clearSelectedMarqueeGroups();
+  closeCanvasTooltip();
+  dismissNodeMenuHint({ persist: false });
+  nameEditingNodeId.value = null;
+  canvasTool.value = nextTool;
+}
+
+function isEraseSurfaceTarget(target: EventTarget | null) {
+  return target instanceof Element && !target.closest(
+    '.canvas-controls, .canvas-erase-hint, .canvas-library, .canvas-history-controls, .canvas-monitor, .canvas-node-search, .canvas-node-search-overlay, .canvas-focus-overlay, .node-menu-hint, .canvas-group-menu, .menu-backdrop, .entity-card-tooltip, input, textarea, select, [contenteditable="true"]',
+  );
+}
+
+function erasePointerPosition(event: PointerEvent): SegmentPoint {
+  const rect = viewportRef.value!.getBoundingClientRect();
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+}
+
+function collectEraseEdges(start: SegmentPoint, end: SegmentPoint) {
+  const gesture = eraseGesture.value;
+  if (!gesture || gesture.nodeId || gesture.cancelled) return;
+  for (const edge of edges.value) {
+    if (gesture.edgeIds.has(edge.id)) continue;
+    const source = getCanvasAnchorById(edge.source);
+    const target = getCanvasAnchorById(edge.target);
+    if (!source || !target) continue;
+    const sourcePoint = getAnchorEdgePoint(source, target);
+    const targetPoint = getAnchorEdgePoint(target, source);
+    const a = { x: camera.value.x + sourcePoint.x * camera.value.zoom, y: camera.value.y + sourcePoint.y * camera.value.zoom };
+    const b = { x: camera.value.x + targetPoint.x * camera.value.zoom, y: camera.value.y + targetPoint.y * camera.value.zoom };
+    const sourceNode = getNodeById(source.id);
+    const targetNode = getNodeById(target.id);
+    const sourceRadius = sourceNode ? getNodeRadiusWorld(sourceNode) * camera.value.zoom : 0;
+    const targetRadius = targetNode ? getNodeRadiusWorld(targetNode) * camera.value.zoom : 0;
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    if (length <= sourceRadius + targetRadius) continue;
+    const dx = (b.x - a.x) / length;
+    const dy = (b.y - a.y) / length;
+    // Connections underneath the node circles are not visible cut targets.
+    a.x += dx * sourceRadius;
+    a.y += dy * sourceRadius;
+    b.x -= dx * targetRadius;
+    b.y -= dy * targetRadius;
+    if (segmentsWithinDistance(start, end, a, b, EDGE_HIT_LINE_TOLERANCE)) {
+      gesture.edgeIds.add(edge.id);
+    }
+  }
+}
+
+function onErasePointerDownCapture(event: PointerEvent) {
+  if (canvasTool.value !== 'erase' || isPlayMode.value || !viewportRef.value) return;
+  if (eraseGesture.value && eraseGesture.value.pointerId !== event.pointerId) {
+    eraseGesture.value.cancelled = true;
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  if (event.button !== 0 || !isEraseSurfaceTarget(event.target)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const point = erasePointerPosition(event);
+  const nodeId = (event.target as Element).closest<HTMLElement>('.canvas-node')?.dataset.nodeId || null;
+  eraseGesture.value = {
+    pointerId: event.pointerId, start: point, previous: point, points: [point],
+    nodeId, edgeIds: new Set(), moved: false, cancelled: false,
+  };
+  collectEraseEdges(point, point);
+}
+
+function updateEraseGesture(event: PointerEvent) {
+  const gesture = eraseGesture.value;
+  if (!gesture || gesture.pointerId !== event.pointerId || gesture.cancelled || !viewportRef.value) return;
+  const point = erasePointerPosition(event);
+  if (Math.hypot(point.x - gesture.start.x, point.y - gesture.start.y) > 10) gesture.moved = true;
+  collectEraseEdges(gesture.previous, point);
+  gesture.previous = point;
+  if (Math.hypot(point.x - gesture.points[gesture.points.length - 1]!.x, point.y - gesture.points[gesture.points.length - 1]!.y) >= 2) {
+    gesture.points.push(point);
+    if (gesture.points.length > 512) gesture.points.shift();
+  }
+}
+
+function finishEraseGesture(event: PointerEvent) {
+  const gesture = eraseGesture.value;
+  if (!gesture || gesture.pointerId !== event.pointerId) return;
+  const rect = viewportRef.value?.getBoundingClientRect();
+  const releasedOnCanvas = rect && event.clientX >= rect.left && event.clientX <= rect.right &&
+    event.clientY >= rect.top && event.clientY <= rect.bottom && isEraseSurfaceTarget(event.target);
+  if (event.type === 'pointerup' && !gesture.cancelled && releasedOnCanvas) {
+    updateEraseGesture(event);
+    flushCanvasHistoryStep();
+    if (gesture.nodeId && !gesture.moved) {
+      removeNodesFromCanvas([gesture.nodeId]);
+    } else if (!gesture.nodeId && gesture.edgeIds.size) {
+      edges.value = edges.value.filter((edge) => !gesture.edgeIds.has(edge.id));
+      queueCanvasSync();
+    }
+    commitCanvasHistoryStep();
+  }
+  eraseGesture.value = null;
+  suppressMenuOpenUntil.value = Date.now() + 140;
+}
+
+function onEraseClickCapture(event: MouseEvent) {
+  if (canvasTool.value !== 'erase' || !isEraseSurfaceTarget(event.target)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  // Keyboard/assistive activation does not dispatch a pointer gesture.
+  const nodeId = (event.target as Element).closest<HTMLElement>('.canvas-node')?.dataset.nodeId;
+  if (event.type === 'click' && event.detail === 0 && nodeId) {
+    flushCanvasHistoryStep();
+    removeNodesFromCanvas([nodeId]);
+    commitCanvasHistoryStep();
+  }
+}
+
 function onViewportWheel(event: WheelEvent) {
+  if (eraseGesture.value) eraseGesture.value.cancelled = true;
   // Critical: block browser back/forward swipe gestures on trackpads.
   event.preventDefault();
   event.stopPropagation();
@@ -5577,6 +5698,10 @@ function onGroupMenuUngroup() {
 }
 
 function onWindowPointerMove(event: PointerEvent) {
+  if (eraseGesture.value) {
+    updateEraseGesture(event);
+    return;
+  }
   if (tensionDrag.value) {
     onWindowTensionMove(event);
     return;
@@ -5614,7 +5739,6 @@ function onWindowPointerMove(event: PointerEvent) {
   const groupDrag = draggingGroup.value;
   if (groupDrag) {
     if (groupDrag.pointerId !== event.pointerId) return;
-    dragPointerPosition.value = { x: event.clientX, y: event.clientY };
     const world = clientToWorld(event.clientX, event.clientY);
     const deltaX = world.x - groupDrag.startPointerX;
     const deltaY = world.y - groupDrag.startPointerY;
@@ -5643,7 +5767,6 @@ function onWindowPointerMove(event: PointerEvent) {
   const dragState = draggingNode.value;
   if (!dragState) return;
   if (dragState.pointerId !== event.pointerId) return;
-  dragPointerPosition.value = { x: event.clientX, y: event.clientY };
 
   const node = nodes.value.find((item) => item.id === dragState.nodeId);
   if (!node) return;
@@ -5665,6 +5788,10 @@ function onWindowPointerMove(event: PointerEvent) {
 }
 
 function onWindowPointerUp(event: PointerEvent) {
+  if (eraseGesture.value) {
+    finishEraseGesture(event);
+    return;
+  }
   if (tensionDrag.value) {
     onWindowTensionEnd(event);
     return;
@@ -5736,20 +5863,6 @@ function onWindowPointerUp(event: PointerEvent) {
 
   const activeDrag = draggingGroup.value || draggingNode.value;
   if (activeDrag && activeDrag.pointerId !== event.pointerId) return;
-  if (
-    event.type === 'pointerup' && trashNodeIds.value.length &&
-    isPointerOverCanvasTrash(event.clientX, event.clientY)
-  ) {
-    removeNodesFromCanvas(trashNodeIds.value);
-    draggingGroup.value = null;
-    draggingNode.value = null;
-    dragPointerPosition.value = null;
-    lastCanvasTouchTap.value = null;
-    suppressMenuOpenUntil.value = Date.now() + 140;
-    return;
-  }
-  dragPointerPosition.value = null;
-
   const groupDrag = draggingGroup.value;
   if (groupDrag) {
     lastCanvasTouchTap.value = null;
@@ -5787,6 +5900,8 @@ function onWindowPointerUp(event: PointerEvent) {
 }
 
 function resetTransientStates() {
+  canvasTool.value = 'select';
+  eraseGesture.value = null;
   lastCanvasTouchTap.value = null;
   isPanning.value = false;
   draggingNode.value = null;
@@ -5806,6 +5921,11 @@ function resetTransientStates() {
 }
 
 function onWindowKeyDown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && canvasTool.value === 'erase') {
+    event.preventDefault();
+    resetTransientStates();
+    return;
+  }
   if (event.key === 'Escape' && editingGroupId.value) {
     event.preventDefault();
     closeFocusedGroup();
@@ -5848,6 +5968,7 @@ function onWindowKeyDown(event: KeyboardEvent) {
   }
 
   if (isUndoShortcut && !isEditableElement(event.target)) {
+    eraseGesture.value = null;
     event.preventDefault();
     if (event.shiftKey) {
       redoCanvasChange();
@@ -5868,6 +5989,7 @@ function onWindowKeyDown(event: KeyboardEvent) {
 
 async function onCanvasDoubleClick(event: MouseEvent) {
   if (event.defaultPrevented) return;
+  if (canvasTool.value === 'erase') return;
   if (isPlayMode.value) return;
   if (Date.now() < suppressCanvasDoubleClickUntil.value) return;
 
@@ -6273,11 +6395,6 @@ async function onMenuResetNode() {
   closeContextMenu();
 }
 
-function isPointerOverCanvasTrash(clientX: number, clientY: number) {
-  const rect = canvasTrashRef.value?.getBoundingClientRect();
-  return Boolean(rect && clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom);
-}
-
 function removeNodesFromCanvas(nodeIds: string[]) {
   const ids = new Set(nodeIds.filter((id) => {
     const node = getNodeById(id);
@@ -6555,6 +6672,7 @@ watch(
     Boolean(selectionRect.value),
     Boolean(draggingNode.value),
     Boolean(draggingGroup.value),
+    Boolean(eraseGesture.value),
     Boolean(touchGesture.value),
     Boolean(tensionDrag.value),
     hasTensionOffsets.value,
@@ -6824,6 +6942,8 @@ const CANVAS_NODE_TOOLTIP_FIELDS: Partial<Record<EntityType, Array<{ key: string
 };
 
 function setCanvasViewMode(mode: CanvasViewMode) {
+  canvasTool.value = 'select';
+  eraseGesture.value = null;
   clearTensionState();
   canvasPlayHintVisible.value = false;
   canvasViewMode.value = mode;
@@ -7151,7 +7271,11 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       :class="{
         'is-panning': isPanning,
         'is-drop-ready': isCanvasDropActive,
+        'is-erasing': canvasTool === 'erase',
       }"
+      @pointerdown.capture="onErasePointerDownCapture"
+      @click.capture="onEraseClickCapture"
+      @dblclick.capture="onEraseClickCapture"
       @pointerdown="onViewportPointerDown"
       @click="onViewportClick"
       @contextmenu.prevent.stop="onViewportContextMenu"
@@ -7459,19 +7583,9 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       </div>
 
       <div class="canvas-grid" :style="gridStyle" />
-      <div
-        v-if="trashNodeIds.length"
-        ref="canvasTrashRef"
-        class="canvas-trash"
-        :class="{ 'is-hovered': isCanvasTrashHovered }"
-        role="status"
-        aria-live="polite"
-      >
-        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6" />
-        </svg>
-        <span>{{ isCanvasTrashHovered ? 'Отпустите, чтобы убрать' : 'Перетащите сюда' }}</span>
-      </div>
+      <svg v-if="eraseGesture?.moved && !eraseGesture.nodeId && !eraseGesture.cancelled" class="canvas-erase-stroke" aria-hidden="true">
+        <polyline :points="eraseStrokePoints" />
+      </svg>
       <EdgeLayerCanvas
         :nodes="renderNodes"
         :groups="canvasGroupAnchors"
@@ -7484,6 +7598,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
         <CanvasNode
           v-for="node in renderNodes"
           :key="node.id"
+          :data-node-id="node.id"
           :node="node"
           :active="contextMenu?.nodeId === node.id"
           :selected="isNodeSelected(node.id)"
@@ -7679,8 +7794,26 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
         @pointerdown="closeContextMenu"
       />
 
+      <div v-if="canvasTool === 'erase'" class="canvas-erase-hint" role="status" @pointerdown.stop @click.stop>
+        <span>Ластик: нажмите на объект или проведите по связям</span>
+        <button type="button" @click="toggleEraseTool">Готово</button>
+      </div>
       <div class="canvas-controls" @pointerdown.stop @wheel.stop>
         <template v-if="!isPlayMode">
+          <button
+            type="button"
+            class="canvas-control-btn canvas-icon-btn canvas-erase-btn"
+            :class="{ active: canvasTool === 'erase' }"
+            :aria-pressed="canvasTool === 'erase'"
+            aria-label="Ластик"
+            title="Ластик: удалить объект или разорвать связь. Esc — завершить"
+            @click="toggleEraseTool"
+          >
+            <svg class="canvas-control-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m15 3 6 6-10 10H5l-3-3L15 3Z" />
+              <path d="m8 10 6 6M11 19h10" />
+            </svg>
+          </button>
           <div class="canvas-control-menu-wrap">
             <button
               type="button"
@@ -7946,7 +8079,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
         <path d="m16.2 12.9-2.3 3" />
       </svg>
     </button>
-    <WebSearchDock v-show="!contextMenu && !trashNodeIds.length" :active-entity-id="activeWebSearchEntityId" />
+    <WebSearchDock v-show="!contextMenu && canvasTool !== 'erase'" :active-entity-id="activeWebSearchEntityId" />
 
     <div
       v-if="canvasPlayHintVisible && isPlayMode"
@@ -8212,43 +8345,64 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
   cursor: grabbing;
 }
 
-.canvas-trash {
+.canvas-erase-stroke {
   position: absolute;
-  right: max(20px, env(safe-area-inset-right));
-  bottom: calc(84px + env(safe-area-inset-bottom) + var(--synapse-vv-bottom-offset, 0px));
+  inset: 0;
+  width: 100%;
+  height: 100%;
   z-index: 130;
-  box-sizing: border-box;
-  min-width: 112px;
-  min-height: 88px;
-  padding: 14px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border: 1px dashed #fca5a5;
-  border-radius: 20px;
-  background: #fff5f5;
-  color: #dc2626;
-  box-shadow: 0 6px 20px rgba(220, 38, 38, 0.1);
   pointer-events: none;
 }
 
-.canvas-trash :deep(svg) {
-  width: 26px;
-  height: 26px;
+.canvas-erase-stroke polyline {
+  fill: none;
+  stroke: #dc2626;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 5 5;
 }
 
-.canvas-trash span {
-  font-size: 11px;
-  font-weight: 600;
+.canvas-viewport.is-erasing,
+.canvas-viewport.is-erasing :deep(.node-circle) {
+  cursor: crosshair;
 }
 
-.canvas-trash.is-hovered {
-  border-style: solid;
-  border-color: #dc2626;
-  background: #fee2e2;
-  box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.12);
+.canvas-erase-hint {
+  position: fixed;
+  left: 50%;
+  bottom: calc(78px + env(safe-area-inset-bottom, 0px) + var(--synapse-vv-bottom-offset, 0px));
+  transform: translateX(-50%);
+  z-index: 46;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: max-content;
+  max-width: calc(100% - 40px);
+  padding: 8px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 12px;
+  background: #fff5f5;
+  color: #b91c1c;
+  font-size: 12px;
+}
+
+.canvas-erase-hint button {
+  padding: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.canvas-control-btn.canvas-erase-btn.active,
+.canvas-control-btn.canvas-erase-btn.active:hover:not(:disabled) {
+  color: #b91c1c;
+  border-color: #fca5a5;
+  background: #fff1f2;
 }
 
 .canvas-viewport.is-drop-ready::after {
