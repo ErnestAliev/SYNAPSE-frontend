@@ -92,7 +92,7 @@ const ENTITY_TYPE_CHAT_TARGET: Record<EntityType, string> = {
   goal: 'цель',
   result: 'результат',
   task: 'задачу',
-  shape: 'элемент',
+  shape: 'объект',
 };
 const ENTITY_MINE_TOGGLE_LABELS: Partial<Record<EntityType, string>> = {
   person: 'Это я',
@@ -103,7 +103,7 @@ const ENTITY_MINE_TOGGLE_LABELS: Partial<Record<EntityType, string>> = {
   task: 'Моя задача',
   event: 'Моё событие',
   result: 'Мой результат',
-  shape: 'Моё',
+  shape: 'Мой объект',
 };
 const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   project: 'Проект',
@@ -115,7 +115,7 @@ const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   goal: 'Цель',
   result: 'Результат',
   task: 'Задача',
-  shape: 'Элемент',
+  shape: 'Объект',
 };
 
 type EntityChatRole = 'user' | 'assistant';
@@ -2861,6 +2861,7 @@ const mineToggleChecked = computed(() => {
   }
   return toBooleanFlag(entity.is_mine);
 });
+const entityLocked = computed(() => toBooleanFlag(toProfile(currentEntity.value?.profile).locked));
 const availableProjectOptions = computed(() => {
   const current = currentEntity.value;
   return entitiesStore
@@ -3170,6 +3171,11 @@ function queueProfilePatch(patch: Record<string, unknown>) {
     },
     { delay: ENTITY_SYNC_DELAY },
   );
+}
+
+function toggleEntityLock() {
+  if (!currentEntity.value || isProjectActionBusy.value) return;
+  queueProfilePatch({ locked: !entityLocked.value });
 }
 
 function queueEntityNameUpdate(nextName: string) {
@@ -3979,6 +3985,23 @@ onBeforeUnmount(() => {
               </span>
               <span class="entity-info-mine-switch-label">{{ mineToggleLabel }}</span>
             </label>
+            <button
+              type="button"
+              class="entity-info-lock-toggle"
+              :class="{ 'is-locked': entityLocked }"
+              :aria-pressed="entityLocked"
+              :aria-label="entityLocked ? 'Разблокировать объект' : 'Заблокировать объект'"
+              :title="entityLocked ? 'Разблокировать объект' : 'Заблокировать объект'"
+              :disabled="isProjectActionBusy"
+              @click="toggleEntityLock"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="5" y="10" width="14" height="11" rx="2" />
+                <path v-if="entityLocked" d="M8 10V7a4 4 0 0 1 8 0v3" />
+                <path v-else d="M8 10V7a4 4 0 0 1 7.5-2" />
+              </svg>
+              <span>{{ entityLocked ? 'Заблокирован' : 'Не заблокирован' }}</span>
+            </button>
             <span class="entity-info-progress-level">{{ profileProgressLevel }}</span>
             <span class="entity-info-progress-percent">{{ profileProgress }}%</span>
           </div>
@@ -5249,6 +5272,52 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+.entity-info-lock-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 4px 7px;
+  border: 1px solid #dbe4f3;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #64748b;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.entity-info-lock-toggle svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.entity-info-lock-toggle:hover,
+.entity-info-lock-toggle.is-locked {
+  color: #1058ff;
+  border-color: #bfd5ff;
+  background: #eef4ff;
+}
+
+.entity-info-lock-toggle:focus-visible {
+  outline: 2px solid #1058ff;
+  outline-offset: 2px;
+}
+
+.entity-info-lock-toggle:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .entity-info-progress-level {
   margin-left: auto;
   color: #64748b;
@@ -6206,6 +6275,11 @@ onBeforeUnmount(() => {
   }
 
   .entity-info-mine-switch-label {
+    font-size: 10px;
+  }
+
+  .entity-info-lock-toggle {
+    min-height: 44px;
     font-size: 10px;
   }
 

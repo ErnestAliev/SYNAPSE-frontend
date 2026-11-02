@@ -446,7 +446,7 @@ function getNodeGlyph(type: EntityType) {
     goal: 'Ц',
     result: 'И',
     task: 'З',
-    shape: 'Э',
+    shape: 'О',
   };
   return glyphMap[type] || '•';
 }
@@ -483,7 +483,7 @@ const CREATE_BUTTON_LABELS: Record<EntityType, string> = {
   goal: 'Создать цель',
   result: 'Создать результат',
   task: 'Создать задачу',
-  shape: 'Создать элемент',
+  shape: 'Создать объект',
 };
 const CREATE_ENTITY_NAME_TEMPLATES: Record<EntityType, string> = {
   project: 'Новый проект',
@@ -914,7 +914,10 @@ const filteredEntities = computed(() => {
 
 const filteredEntitiesCount = computed(() => filteredEntities.value.length);
 const totalEntitiesCount = computed(() => typedEntities.value.length);
-const filtersCounterLabel = computed(() => (activeType.value === 'connection' ? 'контактов' : 'элементов'));
+const filtersCounterLabel = computed(() => {
+  if (activeType.value === 'connection') return 'контактов';
+  return activeType.value === 'shape' ? 'объектов' : 'элементов';
+});
 const isConnectionBackgroundRunning = computed(
   () => connectionBackgroundState.value === 'running' || connectionBackgroundState.value === 'paused',
 );

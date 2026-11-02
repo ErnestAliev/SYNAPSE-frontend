@@ -22,7 +22,7 @@ const tabs: TabConfig[] = [
   { id: 'goal', label: 'Цели', to: '/entities/goal' },
   { id: 'result', label: 'Результаты', to: '/entities/result' },
   { id: 'task', label: 'Задачи', to: '/entities/task' },
-  { id: 'shape', label: 'Элементы', to: '/entities/shape' },
+  { id: 'shape', label: 'Объекты', to: '/entities/shape' },
   { id: 'connection', label: 'Подключение', to: '/entities/connection' },
 ];
 

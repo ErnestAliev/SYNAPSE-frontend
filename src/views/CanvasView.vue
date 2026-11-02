@@ -15,6 +15,7 @@ import { useEntitiesStore } from '../stores/entities';
 import { useAuthStore } from '../stores/auth';
 import { analyzeEntityWithAi, isEntityAiProcessingResponse } from '../services/entityAi';
 import { calculateEntityProfileProgress } from '../utils/profileProgress';
+import { getRadialMenuGeometry } from '../utils/radialMenu';
 import { buildPersonEmploymentDisplayValues, countPersonEmploymentItems } from '../utils/personEmployment';
 import { buildPersonRoleDisplayValues, countPersonRoleItems } from '../utils/personRoles';
 import { buildPersonSkillDisplayValues, countPersonSkillItems } from '../utils/personSkills';
@@ -37,8 +38,6 @@ import type {
 const GRID_STEP = 40;
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 3.0;
-const MENU_WIDTH = 320;
-const MENU_HEIGHT = 320;
 const GROUP_MENU_WIDTH = 184;
 const MIN_NODE_SCALE = 0.8;
 const MAX_NODE_SCALE = 1.2;
@@ -90,7 +89,7 @@ const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   goal: 'Цель',
   result: 'Результат',
   task: 'Задача',
-  shape: 'Элемент',
+  shape: 'Объект',
 };
 const ENTITY_TYPE_CHAT_TARGET: Record<EntityType, string> = {
   project: 'проект',
@@ -102,7 +101,7 @@ const ENTITY_TYPE_CHAT_TARGET: Record<EntityType, string> = {
   goal: 'цель',
   result: 'результат',
   task: 'задачу',
-  shape: 'элемент',
+  shape: 'объект',
 };
 const EMPTY_CONNECTION_RELATION_LABEL = 'Связь не указана';
 const DEFAULT_CONNECTION_RELATION_OPTIONS = [
@@ -501,6 +500,8 @@ const entitiesStore = useEntitiesStore();
 const authStore = useAuthStore();
 
 const viewportRef = ref<HTMLDivElement | null>(null);
+const canvasTrashRef = ref<HTMLDivElement | null>(null);
+const dragPointerPosition = ref<{ x: number; y: number } | null>(null);
 const nodes = ref<CanvasNodeProjection[]>([]);
 const edges = ref<CanvasEdgeProjection[]>([]);
 const groups = ref<CanvasGroupProjection[]>([]);
@@ -536,17 +537,33 @@ const panStart = ref({
 
 const draggingNode = ref<{
   nodeId: string;
+  pointerId: number;
   offsetX: number;
   offsetY: number;
   moved: boolean;
 } | null>(null);
 const draggingGroup = ref<{
   nodeIds: string[];
+  pointerId: number;
   startPointerX: number;
   startPointerY: number;
   startPositions: Record<string, { x: number; y: number }>;
   moved: boolean;
 } | null>(null);
+const trashNodeIds = computed(() => {
+  if (isPlayMode.value) return [];
+  const drag = draggingGroup.value || draggingNode.value;
+  if (!drag?.moved) return [];
+  const ids = 'nodeIds' in drag ? drag.nodeIds : [drag.nodeId];
+  return ids.every((id) => {
+    const node = getNodeById(id);
+    return node && !isNodeLocked(node);
+  }) ? ids : [];
+});
+const isCanvasTrashHovered = computed(() => {
+  const pointer = dragPointerPosition.value;
+  return Boolean(pointer && trashNodeIds.value.length && isPointerOverCanvasTrash(pointer.x, pointer.y));
+});
 interface TensionOffset {
   x: number;
   y: number;
@@ -1088,23 +1105,46 @@ const contextMenuPosition = computed(() => {
   if (!viewport || !node) return null;
 
   const rect = viewport.getBoundingClientRect();
-  const rawX = rect.left + camera.value.x + node.x * camera.value.zoom;
-  const rawY = rect.top + camera.value.y + node.y * camera.value.zoom;
-  const padding = 10;
-  const menuHalfWidth = (MENU_WIDTH * camera.value.zoom) / 2;
-  const menuHalfHeight = (MENU_HEIGHT * camera.value.zoom) / 2;
-
   return {
-    x: Math.min(
-      Math.max(rawX, padding + menuHalfWidth),
-      window.innerWidth - padding - menuHalfWidth,
-    ),
-    y: Math.min(
-      Math.max(rawY, padding + menuHalfHeight),
-      window.innerHeight - padding - menuHalfHeight,
-    ),
+    x: rect.left + camera.value.x + node.x * camera.value.zoom,
+    y: rect.top + camera.value.y + node.y * camera.value.zoom,
   };
 });
+
+function fitContextMenuAroundNode(node: CanvasNodeProjection) {
+  const viewport = viewportRef.value;
+  if (!viewport) return;
+  const rect = viewport.getBoundingClientRect();
+  const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
+  const diameter = getNodeRadiusWorld(node) * 2;
+  const originalX = camera.value.x + node.x * camera.value.zoom;
+  const originalY = camera.value.y + node.y * camera.value.zoom;
+  let geometry = getRadialMenuGeometry(rect.width, diameter * camera.value.zoom, coarsePointer);
+  const minimumGeometry = getRadialMenuGeometry(rect.width, diameter * MIN_ZOOM, coarsePointer);
+  const verticalPadding = Math.min(12, Math.max(0, (rect.height - minimumGeometry.height) / 2));
+  const fits = (candidate: ReturnType<typeof getRadialMenuGeometry>) =>
+    candidate.fitsViewport && candidate.height <= rect.height - 2 * verticalPadding;
+  if (!fits(geometry)) {
+    let lower = MIN_ZOOM;
+    let upper = camera.value.zoom;
+    for (let step = 0; step < 18; step += 1) {
+      const zoom = (lower + upper) / 2;
+      if (fits(getRadialMenuGeometry(rect.width, diameter * zoom, coarsePointer))) lower = zoom;
+      else upper = zoom;
+    }
+    camera.value.zoom = lower;
+    camera.value.x = originalX - node.x * camera.value.zoom;
+    camera.value.y = originalY - node.y * camera.value.zoom;
+    geometry = getRadialMenuGeometry(rect.width, diameter * camera.value.zoom, coarsePointer);
+  }
+  const fit = (position: number, extent: number, size: number) => {
+    const margin = extent / 2 + 12;
+    return size < margin * 2 ? size / 2 : Math.min(Math.max(position, margin), size - margin);
+  };
+  // Pan the canvas, so the transparent menu center stays on the actual node.
+  camera.value.x += fit(originalX, geometry.width, rect.width) - originalX;
+  camera.value.y += fit(originalY, geometry.height, rect.height) - originalY;
+}
 
 const groupContextMenuPosition = computed(() => {
   const menu = groupContextMenu.value;
@@ -5491,6 +5531,7 @@ function onGroupPointerDown(groupId: string, event: PointerEvent) {
 
   draggingGroup.value = {
     nodeIds: group.nodeIds,
+    pointerId: event.pointerId,
     startPointerX: world.x,
     startPointerY: world.y,
     startPositions,
@@ -5572,6 +5613,8 @@ function onWindowPointerMove(event: PointerEvent) {
 
   const groupDrag = draggingGroup.value;
   if (groupDrag) {
+    if (groupDrag.pointerId !== event.pointerId) return;
+    dragPointerPosition.value = { x: event.clientX, y: event.clientY };
     const world = clientToWorld(event.clientX, event.clientY);
     const deltaX = world.x - groupDrag.startPointerX;
     const deltaY = world.y - groupDrag.startPointerY;
@@ -5599,6 +5642,8 @@ function onWindowPointerMove(event: PointerEvent) {
 
   const dragState = draggingNode.value;
   if (!dragState) return;
+  if (dragState.pointerId !== event.pointerId) return;
+  dragPointerPosition.value = { x: event.clientX, y: event.clientY };
 
   const node = nodes.value.find((item) => item.id === dragState.nodeId);
   if (!node) return;
@@ -5688,6 +5733,22 @@ function onWindowPointerUp(event: PointerEvent) {
   if (isPanning.value) {
     isPanning.value = false;
   }
+
+  const activeDrag = draggingGroup.value || draggingNode.value;
+  if (activeDrag && activeDrag.pointerId !== event.pointerId) return;
+  if (
+    event.type === 'pointerup' && trashNodeIds.value.length &&
+    isPointerOverCanvasTrash(event.clientX, event.clientY)
+  ) {
+    removeNodesFromCanvas(trashNodeIds.value);
+    draggingGroup.value = null;
+    draggingNode.value = null;
+    dragPointerPosition.value = null;
+    lastCanvasTouchTap.value = null;
+    suppressMenuOpenUntil.value = Date.now() + 140;
+    return;
+  }
+  dragPointerPosition.value = null;
 
   const groupDrag = draggingGroup.value;
   if (groupDrag) {
@@ -5989,6 +6050,7 @@ function onNodeDragStart(payload: {
 
     draggingGroup.value = {
       nodeIds: draggableSelectionIds,
+      pointerId: payload.pointerEvent.pointerId,
       startPointerX: world.x,
       startPointerY: world.y,
       startPositions,
@@ -6018,6 +6080,7 @@ function onNodeDragStart(payload: {
   const world = clientToWorld(payload.pointerEvent.clientX, payload.pointerEvent.clientY);
   draggingNode.value = {
     nodeId: payload.nodeId,
+    pointerId: payload.pointerEvent.pointerId,
     offsetX: world.x - node.x,
     offsetY: world.y - node.y,
     moved: false,
@@ -6057,6 +6120,8 @@ function onNodeOpenMenu(payload: { nodeId: string; shiftKey?: boolean }) {
 
   nameEditingNodeId.value = null;
   contextMenuHoverType.value = null;
+  const node = getNodeById(payload.nodeId);
+  if (node) fitContextMenuAroundNode(node);
   contextMenu.value = { nodeId: payload.nodeId };
   completeNodeOnboardingStep('open-menu');
 }
@@ -6208,19 +6273,44 @@ async function onMenuResetNode() {
   closeContextMenu();
 }
 
-function onMenuDeleteNode() {
-  if (activeMenuLocked.value) return;
+function isPointerOverCanvasTrash(clientX: number, clientY: number) {
+  const rect = canvasTrashRef.value?.getBoundingClientRect();
+  return Boolean(rect && clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom);
+}
 
-  const nodeId = contextMenu.value?.nodeId;
-  if (!nodeId) return;
+function removeNodesFromCanvas(nodeIds: string[]) {
+  const ids = new Set(nodeIds.filter((id) => {
+    const node = getNodeById(id);
+    return node && !isNodeLocked(node);
+  }));
+  if (!ids.size) return;
 
-  nodes.value = nodes.value.filter((node) => node.id !== nodeId);
-  edges.value = edges.value.filter((edge) => edge.source !== nodeId && edge.target !== nodeId);
+  // Remove projections only; the shared entity dossiers stay in the library.
+  nodes.value = nodes.value.filter((node) => !ids.has(node.id));
+  edges.value = edges.value.filter((edge) => !ids.has(edge.source) && !ids.has(edge.target));
   syncGroups(groups.value, { preserveSelection: true });
-  selectedNodeIds.value = selectedNodeIds.value.filter((id) => id !== nodeId);
+  selectedNodeIds.value = selectedNodeIds.value.filter((id) => !ids.has(id));
+  selectedMarqueeGroupIds.value = selectedMarqueeGroupIds.value.filter((id) => groups.value.some((group) => group.id === id));
+  if (selectedGroupId.value && !groups.value.some((group) => group.id === selectedGroupId.value)) {
+    clearSelectedGroup();
+  }
+  if (editingGroupId.value && !groups.value.some((group) => group.id === editingGroupId.value)) {
+    editingGroupId.value = null;
+  }
+  if (canvasTooltip.value && ids.has(canvasTooltip.value.nodeId)) {
+    clearCanvasTooltipCloseTimer();
+    canvasTooltip.value = null;
+  }
+  if (nameEditingNodeId.value && ids.has(nameEditingNodeId.value)) nameEditingNodeId.value = null;
   queueCanvasSync();
   closeEdgeMenu();
   closeContextMenu();
+  closeGroupContextMenu();
+}
+
+function onMenuDeleteNode() {
+  const nodeId = contextMenu.value?.nodeId;
+  if (nodeId) removeNodesFromCanvas([nodeId]);
 }
 
 function onNodeNameCommit(payload: {
@@ -6353,7 +6443,6 @@ function onMenuToggleLock() {
 function onMenuOpenEntityInfo() {
   const entityId = activeMenuEntity.value?._id;
   if (!entityId) return;
-  if (!activeMenuCategoryLocked.value) return;
 
   completeNodeOnboardingStep('open-context');
   openEntityInfoModal(entityId);
@@ -6895,6 +6984,11 @@ const canvasTooltipMass = computed(() => {
   const node = getNodeById(nodeId);
   return normalizeNodeMass(node?.mass);
 });
+const canvasTooltipScalePercent = computed(() => {
+  const node = getNodeById(canvasTooltip.value?.nodeId || '');
+  return Math.round(normalizeNodeScale(node?.scale) * 100);
+});
+const canvasTooltipLocked = computed(() => isNodeLocked(getNodeById(canvasTooltip.value?.nodeId || '')));
 const canvasTooltipDescription = computed(() => {
   const entity = canvasTooltip.value?.entity;
   if (!entity) return '';
@@ -6918,12 +7012,25 @@ function onCanvasTooltipMassInput(event: Event) {
 
   const target = event.target as HTMLInputElement | null;
   const node = getNodeById(nodeId);
-  if (!target || !node) return;
+  if (!target || !node || isNodeLocked(node)) return;
 
   const nextMass = normalizeNodeMass(target.value);
   if (normalizeNodeMass(node.mass) === nextMass) return;
 
   node.mass = nextMass;
+  queueCanvasSync();
+}
+
+function onCanvasTooltipScaleInput(event: Event) {
+  clearCanvasTooltipCloseTimer();
+  const node = getNodeById(canvasTooltip.value?.nodeId || '');
+  const target = event.target as HTMLInputElement | null;
+  if (!node || !target || isNodeLocked(node)) return;
+  const numeric = Number(target.value);
+  if (!Number.isFinite(numeric)) return;
+  const nextScale = clampNodeScale(numeric / 100);
+  if (Math.abs(normalizeNodeScale(node.scale) - nextScale) < 0.001) return;
+  node.scale = nextScale;
   queueCanvasSync();
 }
 
@@ -7352,6 +7459,19 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       </div>
 
       <div class="canvas-grid" :style="gridStyle" />
+      <div
+        v-if="trashNodeIds.length"
+        ref="canvasTrashRef"
+        class="canvas-trash"
+        :class="{ 'is-hovered': isCanvasTrashHovered }"
+        role="status"
+        aria-live="polite"
+      >
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6" />
+        </svg>
+        <span>{{ isCanvasTrashHovered ? 'Отпустите, чтобы убрать' : 'Перетащите сюда' }}</span>
+      </div>
       <EdgeLayerCanvas
         :nodes="renderNodes"
         :groups="canvasGroupAnchors"
@@ -7826,7 +7946,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
         <path d="m16.2 12.9-2.3 3" />
       </svg>
     </button>
-    <WebSearchDock :active-entity-id="activeWebSearchEntityId" />
+    <WebSearchDock v-show="!contextMenu && !trashNodeIds.length" :active-entity-id="activeWebSearchEntityId" />
 
     <div
       v-if="canvasPlayHintVisible && isPlayMode"
@@ -7882,7 +8002,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
           </p>
           <div class="entity-card-tooltip-mass">
             <div class="entity-card-tooltip-mass-head">
-              <span class="entity-card-tooltip-field-label">Mass</span>
+              <span class="entity-card-tooltip-field-label">Масса</span>
               <span class="entity-card-tooltip-mass-value">{{ canvasTooltipMass }}</span>
             </div>
             <input
@@ -7892,7 +8012,26 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
               max="10"
               step="1"
               :value="canvasTooltipMass"
+              :disabled="canvasTooltipLocked"
+              aria-label="Масса объекта"
               @input="onCanvasTooltipMassInput"
+            />
+          </div>
+          <div class="entity-card-tooltip-mass">
+            <div class="entity-card-tooltip-mass-head">
+              <span class="entity-card-tooltip-field-label">Диаметр</span>
+              <span class="entity-card-tooltip-mass-value">{{ canvasTooltipScalePercent }}%</span>
+            </div>
+            <input
+              class="entity-card-tooltip-mass-slider"
+              type="range"
+              :min="MIN_NODE_SCALE * 100"
+              :max="MAX_NODE_SCALE * 100"
+              step="1"
+              :value="canvasTooltipScalePercent"
+              :disabled="canvasTooltipLocked"
+              aria-label="Диаметр объекта"
+              @input="onCanvasTooltipScaleInput"
             />
           </div>
           <template v-if="canvasTooltipFields.length">
@@ -7954,6 +8093,7 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
       :has-emoji="activeMenuHasEmoji"
       :has-logo="activeMenuHasLogo"
       :current-scale-percent="activeMenuScalePercent"
+      :node-diameter="getNodeRadiusWorld(activeMenuNode) * 2 * camera.zoom"
       :search-items="menuSearchItems"
       @type-change="onMenuTypeChange"
       @hover-type="onMenuHoverType"
@@ -8070,6 +8210,45 @@ function onNodePlayTap(payload: { nodeId: string; rect: DOMRect }) {
 
 .canvas-viewport.is-panning {
   cursor: grabbing;
+}
+
+.canvas-trash {
+  position: absolute;
+  right: max(20px, env(safe-area-inset-right));
+  bottom: calc(84px + env(safe-area-inset-bottom) + var(--synapse-vv-bottom-offset, 0px));
+  z-index: 130;
+  box-sizing: border-box;
+  min-width: 112px;
+  min-height: 88px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed #fca5a5;
+  border-radius: 20px;
+  background: #fff5f5;
+  color: #dc2626;
+  box-shadow: 0 6px 20px rgba(220, 38, 38, 0.1);
+  pointer-events: none;
+}
+
+.canvas-trash :deep(svg) {
+  width: 26px;
+  height: 26px;
+}
+
+.canvas-trash span {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.canvas-trash.is-hovered {
+  border-style: solid;
+  border-color: #dc2626;
+  background: #fee2e2;
+  box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.12);
 }
 
 .canvas-viewport.is-drop-ready::after {

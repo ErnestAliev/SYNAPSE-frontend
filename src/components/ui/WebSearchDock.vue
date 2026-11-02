@@ -103,7 +103,7 @@ const SEARCH_ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   goal: 'Цель',
   result: 'Результат',
   task: 'Задача',
-  shape: 'Элемент',
+  shape: 'Объект',
 };
 const SEARCH_ENTITY_CONTEXT_FIELDS: Record<EntityType, SearchMetadataFieldConfig[]> = {
   connection: [

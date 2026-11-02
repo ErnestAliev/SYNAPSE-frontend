@@ -74,7 +74,7 @@ const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   goal: 'Цели',
   result: 'Результаты',
   task: 'Задачи',
-  shape: 'Элементы',
+  shape: 'Объекты',
 };
 const PROJECT_PROFILE_FIELD_CONFIGS = [
   { key: 'tags', label: 'Теги' },
